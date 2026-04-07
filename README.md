@@ -9,8 +9,6 @@
 
 > Successor to **YaST Software Management** and **YaST Repository Management**, built with Qt 6 (QML) and libzypp.  
 
-[Japanese / 日本語](README_JP.md)  
-
 ---
 
 ## Overview
