@@ -1,0 +1,19 @@
+# qZypper File Contexts
+#
+# This file defines SELinux security contexts for qZypper executable files.
+#
+# Note: System directories (/var/lib/rpm, /var/cache/zypp, /etc/zypp, etc.)
+# use existing system labels (rpm_var_lib_t, var_cache_t, etc_t, var_lib_t).
+# Access to these directories is granted in the .te policy file.
+#
+# This approach avoids conflicts with openSUSE's existing file context rules.
+#
+# This is a CMake template file (.fc.in). The actual .fc file is generated
+# by configure_file() during the build, replacing @VARIABLES@ with the
+# actual install paths from CMAKE_INSTALL_PREFIX + GNUInstallDirs.
+
+# Main GUI application (unprivileged user context)
+@CMAKE_INSTALL_FULL_BINDIR@/qzypper	--	system_u:object_r:qzypper_exec_t:s0
+
+# D-Bus service daemon (privileged, auto-started by D-Bus activation)
+@CMAKE_INSTALL_FULL_LIBEXECDIR@/qzypper-backend	--	system_u:object_r:qzypper_dbus_exec_t:s0

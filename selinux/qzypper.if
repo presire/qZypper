@@ -1,0 +1,202 @@
+## <summary>qZypper - Qt6/QML GUI for package management via libzypp</summary>
+
+########################################
+## <summary>
+##	Execute qzypper in the qzypper domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition.
+##	</summary>
+## </param>
+#
+interface(`qzypper_domtrans',`
+	gen_require(`
+		type qzypper_t, qzypper_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	domtrans_pattern($1, qzypper_exec_t, qzypper_t)
+')
+
+########################################
+## <summary>
+##	Execute qzypper in the qzypper domain,
+##	and allow the specified role the qzypper domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition.
+##	</summary>
+## </param>
+## <param name="role">
+##	<summary>
+##	Role allowed access.
+##	</summary>
+## </param>
+#
+interface(`qzypper_run',`
+	gen_require(`
+		type qzypper_t;
+		attribute_role qzypper_roles;
+	')
+
+	qzypper_domtrans($1)
+	roleattribute $2 qzypper_roles;
+')
+
+########################################
+## <summary>
+##	Send and receive D-Bus messages with qzypper.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to chat.
+##	</summary>
+## </param>
+#
+interface(`qzypper_dbus_chat',`
+	gen_require(`
+		type qzypper_t;
+		class dbus send_msg;
+	')
+
+	allow $1 qzypper_t:dbus send_msg;
+	allow qzypper_t $1:dbus send_msg;
+')
+
+########################################
+## <summary>
+##	Execute qzypper D-Bus service in the qzypper_dbus domain.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to transition.
+##	</summary>
+## </param>
+#
+interface(`qzypper_dbus_domtrans',`
+	gen_require(`
+		type qzypper_dbus_t, qzypper_dbus_exec_t;
+	')
+
+	corecmd_search_bin($1)
+	domtrans_pattern($1, qzypper_dbus_exec_t, qzypper_dbus_t)
+')
+
+########################################
+## <summary>
+##	Send and receive D-Bus messages with qzypper D-Bus service.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed to chat.
+##	</summary>
+## </param>
+#
+interface(`qzypper_dbus_service_chat',`
+	gen_require(`
+		type qzypper_dbus_t;
+		class dbus send_msg;
+	')
+
+	allow $1 qzypper_dbus_t:dbus send_msg;
+	allow qzypper_dbus_t $1:dbus send_msg;
+')
+
+########################################
+## <summary>
+##	Read qzypper log files.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`qzypper_read_log',`
+	gen_require(`
+		type qzypper_log_t;
+	')
+
+	logging_search_logs($1)
+	read_files_pattern($1, qzypper_log_t, qzypper_log_t)
+')
+
+########################################
+## <summary>
+##	Append to qzypper log files.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`qzypper_append_log',`
+	gen_require(`
+		type qzypper_log_t;
+	')
+
+	logging_search_logs($1)
+	append_files_pattern($1, qzypper_log_t, qzypper_log_t)
+')
+
+########################################
+## <summary>
+##	Manage qzypper log files.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+#
+interface(`qzypper_manage_log',`
+	gen_require(`
+		type qzypper_log_t;
+	')
+
+	logging_search_logs($1)
+	manage_files_pattern($1, qzypper_log_t, qzypper_log_t)
+	manage_dirs_pattern($1, qzypper_log_t, qzypper_log_t)
+')
+
+########################################
+## <summary>
+##	All of the rules required to administrate
+##	a qzypper environment.
+## </summary>
+## <param name="domain">
+##	<summary>
+##	Domain allowed access.
+##	</summary>
+## </param>
+## <param name="role">
+##	<summary>
+##	Role allowed access.
+##	</summary>
+## </param>
+## <rolecap/>
+#
+interface(`qzypper_admin',`
+	gen_require(`
+		type qzypper_t, qzypper_dbus_t;
+		type qzypper_log_t;
+		type qzypper_tmp_t;
+	')
+
+	allow $1 qzypper_t:process { ptrace signal_perms };
+	ps_process_pattern($1, qzypper_t)
+
+	allow $1 qzypper_dbus_t:process { ptrace signal_perms };
+	ps_process_pattern($1, qzypper_dbus_t)
+
+	logging_search_logs($1)
+	admin_pattern($1, qzypper_log_t)
+
+	files_search_tmp($1)
+	admin_pattern($1, qzypper_tmp_t)
+
+	qzypper_run($1, $2)
+')

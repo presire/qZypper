@@ -1,0 +1,203 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/org/presire/qzypper">
+  <interface name="org.presire.qzypper.PackageManager">
+
+    <!-- 初期化 -->
+    <method name="Initialize">
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- リポジトリ操作 -->
+    <method name="RefreshRepos">
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="RefreshSingleRepo">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="GetRepos">
+      <arg direction="out" type="aa{sv}" name="repos"/>
+    </method>
+
+    <method name="AddRepo">
+      <arg direction="in"  type="s" name="url"/>
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <method name="AddRepoFull">
+      <arg direction="in"  type="a{sv}" name="properties"/>
+      <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <method name="RemoveRepo">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="SetRepoEnabled">
+      <arg direction="in" type="s" name="alias"/>
+      <arg direction="in" type="b" name="enabled"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="ModifyRepo">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="in"  type="a{sv}" name="properties"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- サービス操作 -->
+    <method name="GetServices">
+      <arg direction="out" type="aa{sv}" name="services"/>
+    </method>
+
+    <method name="AddService">
+      <arg direction="in"  type="s" name="url"/>
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="RemoveService">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="ModifyService">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="in"  type="a{sv}" name="properties"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="RefreshService">
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- パッケージ検索・一覧 (読み取り専用) -->
+    <method name="SearchPackages">
+      <arg direction="in"  type="s" name="query"/>
+      <arg direction="in"  type="i" name="searchFlags"/>
+      <arg direction="out" type="aa{sv}" name="results"/>
+    </method>
+
+    <method name="GetPackageDetails">
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="out" type="a{sv}" name="details"/>
+    </method>
+
+    <method name="GetPackagesByRepo">
+      <arg direction="in"  type="s" name="repoAlias"/>
+      <arg direction="out" type="aa{sv}" name="packages"/>
+    </method>
+
+    <method name="GetPatterns">
+      <arg direction="out" type="aa{sv}" name="patterns"/>
+    </method>
+
+    <method name="GetPackagesByPattern">
+      <arg direction="in"  type="s" name="patternName"/>
+      <arg direction="out" type="aa{sv}" name="packages"/>
+    </method>
+
+    <method name="GetPatches">
+      <arg direction="in"  type="i" name="category"/>
+      <arg direction="out" type="aa{sv}" name="patches"/>
+    </method>
+
+    <!-- 変更予定一覧 -->
+    <method name="GetPendingChanges">
+      <arg direction="out" type="aa{sv}" name="changes"/>
+    </method>
+
+    <!-- パッケージ状態変更 -->
+    <method name="SetPackageStatus">
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="in"  type="i" name="status"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="SetPackageVersion">
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="in"  type="s" name="version"/>
+      <arg direction="in"  type="s" name="arch"/>
+      <arg direction="in"  type="s" name="repoAlias"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="SetPatternStatus">
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="in"  type="i" name="status"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- 全パッケージ更新 -->
+    <method name="UpdateAllPackages">
+      <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <!-- 依存関係解決 -->
+    <method name="ResolveDependencies">
+      <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <method name="ApplySolution">
+      <arg direction="in"  type="i" name="problemIndex"/>
+      <arg direction="in"  type="i" name="solutionIndex"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- コミット -->
+    <method name="Commit">
+      <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <method name="SaveState"/>
+    <method name="RestoreState"/>
+
+    <!-- ディスク使用量 -->
+    <method name="GetDiskUsage">
+      <arg direction="out" type="aa{sv}" name="diskUsage"/>
+    </method>
+
+    <!-- キャンセル -->
+    <method name="CancelOperation"/>
+
+    <!-- 終了 -->
+    <method name="Quit"/>
+
+    <!-- シグナル -->
+    <signal name="ProgressChanged">
+      <arg type="s" name="packageName"/>
+      <arg type="i" name="percentage"/>
+      <arg type="s" name="stage"/>
+    </signal>
+
+    <signal name="CommitProgressChanged">
+      <arg type="s" name="packageName"/>
+      <arg type="i" name="percentage"/>
+      <arg type="s" name="stage"/>
+      <arg type="i" name="totalSteps"/>
+      <arg type="i" name="completedSteps"/>
+      <arg type="i" name="overallPercentage"/>
+    </signal>
+
+    <signal name="TransactionFinished">
+      <arg type="b" name="success"/>
+      <arg type="s" name="summary"/>
+    </signal>
+
+    <signal name="RepoRefreshProgress">
+      <arg type="s" name="repoAlias"/>
+      <arg type="i" name="percentage"/>
+    </signal>
+
+    <signal name="ErrorOccurred">
+      <arg type="s" name="errorMessage"/>
+    </signal>
+
+  </interface>
+</node>

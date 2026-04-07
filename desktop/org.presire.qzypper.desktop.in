@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=qZypper
+Name[ja]=qZypper ソフトウェア管理
+GenericName=Software Manager
+GenericName[ja]=ソフトウェア管理
+Comment=Install, remove, and manage software packages
+Comment[ja]=ソフトウェアパッケージのインストール・削除・管理
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/qzypper
+Icon=@CMAKE_INSTALL_FULL_DATADIR@/icons/hicolor/scalable/apps/qZypper.svg
+Terminal=false
+Categories=System;PackageManager;Qt;
+Keywords=package;software;install;remove;update;zypper;rpm;
+StartupNotify=true

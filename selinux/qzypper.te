@@ -1,0 +1,1492 @@
+module qzypper 1.0.0;
+
+########################################
+# qZypper SELinux Policy Module
+#
+# This module provides Mandatory Access Control (MAC) for qZypper,
+# a Qt6/QML GUI application for managing packages via libzypp.
+#
+# Architecture:
+#   - qzypper_t: GUI application domain (unprivileged user)
+#   - qzypper_dbus_t: D-Bus service domain (root privileges)
+#
+# Security Model:
+#   - GUI communicates with backend only via D-Bus system bus
+#   - D-Bus service performs privileged operations with PolicyKit auth
+#   - Network access (package download) is limited to backend domain
+#   - RPM database and zypp cache modifications are limited to backend domain
+########################################
+
+########################################
+# Required types and classes from base policy
+########################################
+
+require {
+    # Base system types
+    type unconfined_t;
+    type init_t;
+    type kernel_t;
+    type system_dbusd_t;
+
+    # Executable and library types
+    type bin_t;
+    type shell_exec_t;
+    type lib_t;
+    type ld_so_t;
+    type ld_so_cache_t;
+    type usr_t;
+    type textrel_shlib_t;
+
+    # Configuration types
+    type etc_t;
+    type etc_runtime_t;
+    type locale_t;
+    type fonts_t;
+    type fonts_cache_t;
+
+    # Filesystem types
+    type tmpfs_t;
+    type tmp_t;
+    type var_t;
+    type var_run_t;
+    type var_log_t;
+    type var_lib_t;
+    type sysfs_t;
+    type proc_t;
+    type sysctl_t;
+    type sysctl_kernel_t;
+    type sysctl_dev_t;
+    type root_t;
+    type default_t;
+
+    # Device types
+    type device_t;
+    type devpts_t;
+    type null_device_t;
+    type zero_device_t;
+    type random_device_t;
+    type urandom_device_t;
+    type dri_device_t;
+    type sound_device_t;
+    type event_device_t;
+
+    # Filesystem metadata types
+    type fs_t;
+
+    # User types
+    type user_home_t;
+    type user_home_dir_t;
+    type user_devpts_t;
+    type user_tty_device_t;
+    type cache_home_t;
+    type config_home_t;
+    type user_tmp_t;
+    type user_fonts_t;
+    type user_fonts_config_t;
+    type user_fonts_cache_t;
+
+    # Authentication types
+    type passwd_file_t;
+
+    # X11/Display types
+    type xserver_t;
+    type xauth_home_t;
+    type xdm_t;
+    type xdm_var_run_t;
+    type xkb_var_lib_t;
+    type xserver_tmpfs_t;
+    # D-Bus session types
+    type session_dbusd_tmp_t;
+    type unconfined_dbusd_t;
+    type system_dbusd_var_lib_t;
+    type system_dbusd_var_run_t;
+
+    # Hardware and system data types
+    type hwdata_t;
+    type gconf_home_t;
+    type data_home_t;
+
+    # Logging types
+    type devlog_t;
+
+    # Network types
+    type net_conf_t;
+    type node_t;
+    type port_t;
+    type http_port_t;
+
+    # SSL certificate types
+    type cert_t;
+
+    # Attribute definitions
+    attribute file_type;
+    attribute exec_type;
+    attribute domain;
+
+    # Role definitions (required for domain transitions)
+    role unconfined_r;
+    role system_r;
+
+    # Object classes
+    class process { fork signal signull sigkill sigstop sigchld transition setpgid getpgid getsched setsched setrlimit execmem execstack siginh rlimitinh noatsecure };
+    class file { getattr setattr open read write append execute execute_no_trans create unlink link rename lock ioctl map entrypoint execmod watch relabelfrom relabelto };
+    class dir { getattr setattr open read write search add_name remove_name rename create rmdir ioctl watch watch_reads relabelfrom relabelto };
+    class lnk_file { getattr read create unlink };
+    class fifo_file { getattr open read write create unlink ioctl };
+    class sock_file { getattr setattr open read write create unlink };
+    class chr_file { getattr open read write ioctl map };
+    class blk_file { getattr open read write ioctl };
+    class unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown connectto };
+    class unix_dgram_socket { create bind connect read write sendto getattr setattr setopt getopt };
+    class shm { create destroy getattr setattr read write associate unix_read unix_write };
+    class sem { create destroy getattr setattr read write associate unix_read unix_write };
+    class dbus { send_msg acquire_svc };
+    class fd { use };
+    class capability { dac_override dac_read_search fowner chown fsetid setuid setgid kill sys_nice sys_resource sys_admin sys_chroot sys_ptrace net_admin mknod };
+    class capability2 { block_suspend };
+    class filesystem { getattr mount unmount };
+    class netlink_route_socket { create bind getattr setattr read write nlmsg_read };
+    class netlink_audit_socket { create bind getattr setattr read write nlmsg_read nlmsg_relay };
+    class netlink_kobject_uevent_socket { create bind getattr setattr read write };
+    class tcp_socket { create bind connect listen accept read write getattr setattr setopt getopt shutdown name_connect node_bind ioctl };
+    class udp_socket { create bind connect read write getattr setattr setopt getopt };
+    class key { search read write view link };
+    class msgq { create destroy getattr setattr read write associate enqueue };
+    class msg { send receive };
+}
+
+########################################
+# Type Declarations
+########################################
+
+# GUI application types
+type qzypper_t;
+type qzypper_exec_t;
+
+# D-Bus service types
+type qzypper_dbus_t;
+type qzypper_dbus_exec_t;
+
+# Temporary files type
+type qzypper_tmp_t;
+
+# Tmpfs type for X11/shared memory
+type qzypper_tmpfs_t;
+
+# Log files type (for /var/log/qzypper/)
+type qzypper_log_t;
+
+# Role attribute for qzypper_t domain
+attribute_role qzypper_roles;
+
+# Associate types with attributes
+typeattribute qzypper_t domain;
+typeattribute qzypper_dbus_t domain;
+typeattribute qzypper_exec_t exec_type, file_type;
+typeattribute qzypper_dbus_exec_t exec_type, file_type;
+typeattribute qzypper_tmp_t file_type;
+typeattribute qzypper_tmpfs_t file_type;
+typeattribute qzypper_log_t file_type;
+
+########################################
+# Role associations
+########################################
+
+# Allow unconfined_r role to use qzypper_t domain
+# This is REQUIRED for users to launch the GUI application
+role unconfined_r types qzypper_t;
+role qzypper_roles types qzypper_t;
+
+# Allow system_r role to use qzypper_dbus_t domain
+# This is REQUIRED for D-Bus activated service
+role system_r types qzypper_dbus_t;
+
+########################################
+# qzypper_t (GUI application) policy
+########################################
+
+# Process operations (including execmem/execstack for Qt QML JIT)
+allow qzypper_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched execmem execstack };
+allow qzypper_t self:fifo_file { getattr open read write ioctl };
+allow qzypper_t self:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown };
+allow qzypper_t self:unix_dgram_socket { create bind connect read write sendto getattr setattr };
+allow qzypper_t self:shm { create destroy getattr setattr read write associate unix_read unix_write };
+allow qzypper_t self:sem { create destroy getattr setattr read write associate unix_read unix_write };
+# NOTE: No tcp_socket/udp_socket for GUI - all network access is via D-Bus backend
+
+# Entry point
+allow qzypper_t qzypper_exec_t:file { getattr open read execute entrypoint map };
+
+# Shared libraries (ld.so, libc, Qt6, etc.)
+allow qzypper_t lib_t:dir { getattr open read search };
+allow qzypper_t lib_t:file { getattr open read execute map };
+allow qzypper_t lib_t:lnk_file { getattr read };
+allow qzypper_t ld_so_t:file { getattr open read execute map };
+allow qzypper_t ld_so_cache_t:file { getattr open read map };
+allow qzypper_t textrel_shlib_t:file { getattr open read execute map };
+
+# Filesystem metadata (statfs on root filesystem, etc.)
+allow qzypper_t fs_t:filesystem getattr;
+
+# /etc files (configuration)
+allow qzypper_t etc_t:dir { getattr open read search };
+allow qzypper_t etc_t:file { getattr open read };
+allow qzypper_t etc_t:lnk_file { getattr read };
+allow qzypper_t etc_runtime_t:file { getattr open read };
+
+# /etc/passwd, /etc/group (NSS user/group lookups)
+allow qzypper_t passwd_file_t:file { getattr open read };
+
+# /usr files (Qt plugins, icons, themes)
+allow qzypper_t usr_t:dir { getattr open read search };
+allow qzypper_t usr_t:file { getattr open read map };
+allow qzypper_t usr_t:lnk_file { getattr read };
+allow qzypper_t bin_t:dir { getattr open read search };
+allow qzypper_t bin_t:file { getattr open read execute execute_no_trans map };
+allow qzypper_t bin_t:lnk_file { getattr read };
+
+# Fonts (system and user fonts)
+allow qzypper_t fonts_t:dir { getattr open read search };
+allow qzypper_t fonts_t:file { getattr open read map };
+allow qzypper_t fonts_cache_t:dir { getattr open read search };
+allow qzypper_t fonts_cache_t:file { getattr open read map };
+allow qzypper_t user_fonts_t:dir { getattr open read search };
+allow qzypper_t user_fonts_t:file { getattr open read map };
+allow qzypper_t user_fonts_config_t:dir { getattr open read search };
+allow qzypper_t user_fonts_config_t:file { getattr open read map };
+allow qzypper_t user_fonts_cache_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_t user_fonts_cache_t:file { getattr open read write create unlink map };
+
+# Localization
+allow qzypper_t locale_t:dir { getattr open read search };
+allow qzypper_t locale_t:file { getattr open read map };
+allow qzypper_t locale_t:lnk_file { getattr read };
+
+# /proc filesystem
+allow qzypper_t proc_t:dir { getattr open read search };
+allow qzypper_t proc_t:file { getattr open read };
+allow qzypper_t proc_t:lnk_file { getattr read };
+
+# /sys filesystem
+allow qzypper_t sysfs_t:dir { getattr open read search };
+allow qzypper_t sysfs_t:file { getattr open read };
+allow qzypper_t sysfs_t:lnk_file { getattr read };
+
+# Kernel sysctls (including /proc/sys/dev for device info)
+allow qzypper_t sysctl_t:dir { getattr open read search };
+allow qzypper_t sysctl_t:file { getattr open read };
+allow qzypper_t sysctl_kernel_t:dir { getattr open read search };
+allow qzypper_t sysctl_kernel_t:file { getattr open read };
+allow qzypper_t sysctl_dev_t:dir { getattr open read search };
+allow qzypper_t sysctl_dev_t:file { getattr open read };
+
+# Device access for Qt Quick GPU acceleration
+allow qzypper_t device_t:dir { getattr open read search };
+allow qzypper_t null_device_t:chr_file { getattr open read write };
+allow qzypper_t zero_device_t:chr_file { getattr open read write };
+allow qzypper_t random_device_t:chr_file { getattr open read };
+allow qzypper_t urandom_device_t:chr_file { getattr open read };
+allow qzypper_t dri_device_t:chr_file { getattr open read write ioctl map };
+
+# tmpfs for shared memory (including execmod for Qt QML JIT code)
+allow qzypper_t tmpfs_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_t tmpfs_t:file { getattr open read write create unlink map execute execmod };
+allow qzypper_t qzypper_tmpfs_t:file { getattr open read write create unlink map execute execmod };
+
+# User home directory - read/write for application settings
+allow qzypper_t user_home_dir_t:dir { getattr open read search };
+allow qzypper_t user_home_t:dir { getattr open read search };
+allow qzypper_t user_home_t:file { getattr open read };
+allow qzypper_t user_home_t:lnk_file { getattr read };
+
+# User cache directory (~/.cache/) - full access for Qt Quick shader cache, Mesa, etc.
+allow qzypper_t cache_home_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl };
+allow qzypper_t cache_home_t:file { getattr setattr open read write append create unlink rename link map lock ioctl execute execute_no_trans };
+allow qzypper_t cache_home_t:lnk_file { getattr read create unlink };
+allow qzypper_t cache_home_t:fifo_file { getattr open read write create unlink ioctl };
+allow qzypper_t cache_home_t:sock_file { getattr open read write create unlink };
+
+# User config directory (~/.config/) - full access for application settings
+# (including inotify watch for fcitx etc., and ~/.config/Presire/qZypper.conf read/write)
+allow qzypper_t config_home_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl watch watch_reads };
+allow qzypper_t config_home_t:file { getattr setattr open read write append create unlink rename link map lock ioctl watch };
+allow qzypper_t config_home_t:lnk_file { getattr read create unlink };
+allow qzypper_t config_home_t:fifo_file { getattr open read write create unlink ioctl };
+allow qzypper_t config_home_t:sock_file { getattr open read write create unlink };
+
+# X11 display server - full access
+allow qzypper_t xserver_t:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown connectto };
+allow qzypper_t xserver_t:unix_dgram_socket { create bind connect read write sendto getattr setattr };
+allow qzypper_t xserver_t:process { signull sigchld };
+allow qzypper_t xserver_t:shm { create destroy getattr setattr read write associate unix_read unix_write };
+allow qzypper_t xserver_t:fd use;
+allow qzypper_t xdm_t:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown connectto };
+allow qzypper_t xdm_t:unix_dgram_socket { create bind connect read write sendto getattr setattr };
+allow qzypper_t xdm_t:fd use;
+allow qzypper_t xdm_t:shm { create destroy getattr setattr read write associate unix_read unix_write };
+
+# X11 session management (ICE protocol - /tmp/.ICE-unix)
+allow qzypper_t unconfined_t:unix_stream_socket connectto;
+
+# X11 keyboard layout data
+allow qzypper_t xkb_var_lib_t:dir { getattr open read search };
+allow qzypper_t xkb_var_lib_t:file { getattr open read map };
+
+# X server tmpfs (shared memory segments)
+allow qzypper_t xserver_tmpfs_t:file { getattr open read write map };
+
+# X11 authentication files (~/.Xauthority) - read access for authentication
+allow qzypper_t xauth_home_t:dir { getattr open read search };
+allow qzypper_t xauth_home_t:file { getattr open read map };
+allow qzypper_t xauth_home_t:lnk_file { getattr read };
+
+# X Display Manager runtime (/var/run/xdm, /run/gdm, etc.) - read access and socket connection
+allow qzypper_t xdm_var_run_t:dir { getattr open read search };
+allow qzypper_t xdm_var_run_t:file { getattr open read map };
+allow qzypper_t xdm_var_run_t:sock_file { getattr open read write };
+allow qzypper_t xdm_var_run_t:lnk_file { getattr read };
+allow qzypper_t xdm_var_run_t:fifo_file { getattr open read write };
+
+# Wayland/XDG runtime directory (/run/user/<uid>/) - full access for Wayland compositor
+# Wrapped in optional block for openSUSE compatibility (xdg_runtime_t may not exist)
+optional {
+    require {
+        type xdg_runtime_t;
+    }
+    allow qzypper_t xdg_runtime_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl watch watch_reads };
+    allow qzypper_t xdg_runtime_t:file { getattr setattr open read write append create unlink rename link map lock ioctl };
+    allow qzypper_t xdg_runtime_t:sock_file { getattr open read write create unlink };
+    allow qzypper_t xdg_runtime_t:lnk_file { getattr read create unlink };
+    allow qzypper_t xdg_runtime_t:fifo_file { getattr open read write create unlink ioctl };
+}
+
+# User runtime directory (/run/user/...) and X11 socket directory (/tmp/.X11-unix/) - full access
+allow qzypper_t user_tmp_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl };
+allow qzypper_t user_tmp_t:file { getattr setattr open read write append create unlink rename link map lock ioctl };
+allow qzypper_t user_tmp_t:sock_file { getattr open read write create unlink };
+allow qzypper_t user_tmp_t:lnk_file { getattr read create unlink };
+allow qzypper_t user_tmp_t:fifo_file { getattr open read write create unlink ioctl };
+
+# D-Bus session bus socket (for user session D-Bus communication)
+allow qzypper_t session_dbusd_tmp_t:dir { getattr open read search };
+allow qzypper_t session_dbusd_tmp_t:sock_file { getattr open read write };
+
+# D-Bus session daemon connection (/run/user/UID/bus)
+allow qzypper_t unconfined_dbusd_t:unix_stream_socket connectto;
+allow qzypper_t unconfined_dbusd_t:dbus send_msg;
+allow unconfined_dbusd_t qzypper_t:dbus send_msg;
+
+# D-Bus session daemon (session_dbusd_t) - for dbus-broker/dbus-daemon
+# Wrapped in optional block for openSUSE compatibility (session_dbusd_t may not exist)
+optional {
+    require {
+        type session_dbusd_t;
+    }
+    allow qzypper_t session_dbusd_t:unix_stream_socket connectto;
+    allow qzypper_t session_dbusd_t:dbus send_msg;
+    allow session_dbusd_t qzypper_t:dbus send_msg;
+}
+
+# D-Bus system data (/var/lib/dbus)
+allow qzypper_t system_dbusd_var_lib_t:dir { getattr open read search };
+allow qzypper_t system_dbusd_var_lib_t:file { getattr open read };
+allow qzypper_t system_dbusd_var_lib_t:lnk_file { getattr read };
+
+# Hardware data (/usr/share/hwdata) for GPU/hardware detection
+allow qzypper_t hwdata_t:dir { getattr open read search };
+allow qzypper_t hwdata_t:file { getattr open read map };
+
+# User local data directory (~/.local) - full access for themes, icons, etc.
+allow qzypper_t gconf_home_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl };
+allow qzypper_t gconf_home_t:file { getattr setattr open read write append create unlink rename link map lock ioctl };
+allow qzypper_t gconf_home_t:lnk_file { getattr read create unlink };
+allow qzypper_t gconf_home_t:fifo_file { getattr open read write create unlink ioctl };
+allow qzypper_t gconf_home_t:sock_file { getattr open read write create unlink };
+
+# User data directory (~/.local/share) - full access for application data, icons, themes
+allow qzypper_t data_home_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl };
+allow qzypper_t data_home_t:file { getattr setattr open read write append create unlink rename link map lock ioctl };
+allow qzypper_t data_home_t:lnk_file { getattr read create unlink };
+allow qzypper_t data_home_t:fifo_file { getattr open read write create unlink ioctl };
+allow qzypper_t data_home_t:sock_file { getattr open read write create unlink };
+
+# Access to parent process info in /proc (for process communication)
+allow qzypper_t unconfined_t:dir { getattr open read search };
+allow qzypper_t unconfined_t:file { getattr open read };
+allow qzypper_t unconfined_t:lnk_file { getattr read };
+
+# Terminal access
+allow qzypper_t user_devpts_t:chr_file { getattr open read write ioctl };
+allow qzypper_t user_tty_device_t:chr_file { getattr open read write ioctl };
+allow qzypper_t devpts_t:dir { getattr open read search };
+
+# D-Bus system bus
+allow qzypper_t system_dbusd_t:dbus send_msg;
+allow qzypper_t system_dbusd_t:unix_stream_socket connectto;
+allow system_dbusd_t qzypper_t:dbus send_msg;
+
+# D-Bus system bus socket (/run/dbus/system_bus_socket)
+allow qzypper_t system_dbusd_var_run_t:dir { getattr open read search };
+allow qzypper_t system_dbusd_var_run_t:sock_file { getattr open read write };
+
+# /run directory - read access for runtime data
+allow qzypper_t var_run_t:dir { getattr open read search };
+allow qzypper_t var_run_t:file { getattr open read };
+allow qzypper_t var_run_t:sock_file { getattr open read write };
+allow qzypper_t var_run_t:lnk_file { getattr read };
+
+# Communication with qzypper D-Bus service
+allow qzypper_t qzypper_dbus_t:dbus send_msg;
+allow qzypper_dbus_t qzypper_t:dbus send_msg;
+
+# /var/lib - read-only for GUI (no need to modify RPM/zypp data)
+allow qzypper_t var_lib_t:dir { getattr open read search };
+allow qzypper_t var_lib_t:file { getattr open read };
+allow qzypper_t var_lib_t:lnk_file { getattr read };
+
+# Temporary files
+allow qzypper_t tmp_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_t qzypper_tmp_t:dir { getattr open read search write add_name remove_name create rmdir };
+allow qzypper_t qzypper_tmp_t:file { getattr open read write create unlink rename };
+
+# Syslog
+allow qzypper_t devlog_t:sock_file { getattr write };
+allow qzypper_t kernel_t:unix_dgram_socket sendto;
+
+# File descriptor inheritance
+allow qzypper_t init_t:fd use;
+allow qzypper_t unconfined_t:fd use;
+
+# D-Bus communication with unconfined_t (user session processes)
+allow qzypper_t unconfined_t:dbus send_msg;
+allow unconfined_t qzypper_t:dbus send_msg;
+
+########################################
+# Root directory and system directories
+########################################
+
+# Root directory (/) - read access
+allow qzypper_t root_t:dir { getattr open read search };
+allow qzypper_t root_t:lnk_file { getattr read };
+
+# Default type for unlabeled files - read access
+allow qzypper_t default_t:dir { getattr open read search };
+allow qzypper_t default_t:file { getattr open read };
+allow qzypper_t default_t:lnk_file { getattr read };
+
+# /var - read access
+allow qzypper_t var_t:dir { getattr open read search };
+allow qzypper_t var_t:lnk_file { getattr read };
+
+# Additional device access for input/sound
+allow qzypper_t sound_device_t:chr_file { getattr open read write ioctl map };
+allow qzypper_t event_device_t:chr_file { getattr open read write ioctl };
+
+# DMA device access for GPU acceleration (Leap 16.0+)
+optional {
+    require {
+        type dma_device_t;
+    }
+    allow qzypper_t dma_device_t:chr_file { ioctl open read write };
+}
+
+# Wayland compositor (when wayland_t is defined on Leap 16.0+)
+optional {
+    require {
+        type wayland_t;
+    }
+    allow qzypper_t wayland_t:unix_stream_socket connectto;
+    allow qzypper_t wayland_t:fd use;
+    allow qzypper_t wayland_t:shm { create destroy getattr setattr read write associate unix_read unix_write };
+    allow qzypper_t wayland_t:dbus send_msg;
+    allow wayland_t qzypper_t:dbus send_msg;
+}
+
+# Input Method: IBus (when ibus_t is defined)
+optional {
+    require {
+        type ibus_t;
+    }
+    allow qzypper_t ibus_t:dbus send_msg;
+    allow ibus_t qzypper_t:dbus send_msg;
+    allow qzypper_t ibus_t:unix_stream_socket connectto;
+}
+
+# Input Method: Fcitx/Fcitx5 (when fcitx_t is defined)
+optional {
+    require {
+        type fcitx_t;
+    }
+    allow qzypper_t fcitx_t:dbus send_msg;
+    allow fcitx_t qzypper_t:dbus send_msg;
+    allow qzypper_t fcitx_t:unix_stream_socket connectto;
+}
+
+# Home bin directory (~/bin, ~/.local/bin) - search for path resolution
+optional {
+    require {
+        type home_bin_t;
+    }
+    allow qzypper_t home_bin_t:dir { getattr search };
+}
+
+# systemd-userdbd runtime directory (/run/systemd/userdb)
+optional {
+    require {
+        type systemd_userdbd_runtime_t;
+    }
+    allow qzypper_t systemd_userdbd_runtime_t:dir { getattr search read };
+}
+
+# Journal runtime directory (/run/log/journal) - for sd-journal logging
+optional {
+    require {
+        type syslogd_var_run_t;
+    }
+    allow qzypper_t syslogd_var_run_t:dir { getattr search };
+    allow qzypper_t syslogd_var_run_t:sock_file { getattr write };
+}
+
+# PolicyKit authorization (GUI side - PackageController::checkAuth)
+optional {
+    require {
+        type policykit_t;
+    }
+    allow qzypper_t policykit_t:dbus send_msg;
+    allow policykit_t qzypper_t:dbus send_msg;
+}
+
+# Polkit agent (polkit_auth_t) for authentication dialog
+optional {
+    require {
+        type polkit_auth_t;
+    }
+    allow qzypper_t polkit_auth_t:dbus send_msg;
+    allow polkit_auth_t qzypper_t:dbus send_msg;
+}
+
+# init_var_run_t directory access (used on some distributions)
+optional {
+    require {
+        type init_var_run_t;
+    }
+    allow qzypper_t init_var_run_t:dir search;
+}
+
+# Additional socket permissions (Leap 16.0+)
+# getopt/setopt and ioctl may not be defined on older base policies
+optional {
+    require {
+        class unix_dgram_socket { getopt setopt };
+    }
+    allow qzypper_t self:unix_dgram_socket { getopt setopt };
+}
+
+optional {
+    require {
+        class unix_stream_socket { ioctl };
+    }
+    allow qzypper_t unconfined_t:unix_stream_socket { getattr ioctl read write };
+}
+
+# GUI inherits socket FD from parent process (unconfined_t)
+allow qzypper_t unconfined_t:unix_stream_socket { read write };
+
+########################################
+# qzypper_dbus_t (D-Bus service) policy
+########################################
+
+# Process capabilities
+# dac_override/dac_read_search: bypass file permission checks (root operations)
+# fowner/chown/fsetid: RPM sets file ownership/permissions during install
+# setuid/setgid: RPM scriptlets may switch user (useradd etc.)
+# kill: RPM scriptlets may signal services during install/remove
+# sys_nice: RPM scriptlets may adjust process priority
+# sys_resource: set resource limits
+# sys_admin: btrfs ioctl, mount operations, chroot
+# sys_chroot: RPM may chroot during scriptlet execution
+# sys_ptrace: some scriptlets inspect running processes
+# net_admin: network configuration scriptlets
+# mknod: device node creation by some packages
+allow qzypper_dbus_t self:capability { dac_override dac_read_search fowner chown fsetid setuid setgid kill sys_nice sys_resource sys_admin sys_chroot sys_ptrace net_admin mknod };
+allow qzypper_dbus_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched setrlimit execmem };
+allow qzypper_dbus_t self:fifo_file { getattr open read write ioctl };
+allow qzypper_dbus_t self:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown connectto };
+# gpg connects to gpg-agent socket — both run in qzypper_dbus_t domain
+allow qzypper_dbus_t qzypper_dbus_t:unix_stream_socket connectto;
+allow qzypper_dbus_t self:unix_dgram_socket { create bind connect read write sendto getattr setattr setopt getopt };
+allow qzypper_dbus_t self:netlink_route_socket { create bind getattr setattr read write nlmsg_read };
+
+# Network sockets for package download (HTTP/HTTPS/FTP)
+# setopt/getopt/ioctl: required by libcurl for TCP_NODELAY, SO_KEEPALIVE, socket tuning
+allow qzypper_dbus_t self:tcp_socket { create bind connect listen accept read write getattr setattr setopt getopt shutdown ioctl };
+allow qzypper_dbus_t self:udp_socket { create bind connect read write getattr setattr setopt getopt };
+
+# IPC: some RPM scriptlets use message queues and keys
+allow qzypper_dbus_t self:msgq { create destroy getattr setattr read write associate enqueue };
+allow qzypper_dbus_t self:msg { send receive };
+allow qzypper_dbus_t self:key { search read write view link };
+allow qzypper_dbus_t self:sem { create destroy getattr setattr read write associate unix_read unix_write };
+allow qzypper_dbus_t self:shm { create destroy getattr setattr read write associate unix_read unix_write };
+
+# Entry point
+allow qzypper_dbus_t qzypper_dbus_exec_t:file { getattr open read execute entrypoint map };
+
+# Shared libraries
+allow qzypper_dbus_t lib_t:dir { getattr open read search };
+allow qzypper_dbus_t lib_t:file { getattr open read execute execute_no_trans map };
+allow qzypper_dbus_t lib_t:lnk_file { getattr read };
+allow qzypper_dbus_t ld_so_t:file { getattr open read execute map };
+allow qzypper_dbus_t ld_so_cache_t:file { getattr open read map };
+allow qzypper_dbus_t textrel_shlib_t:file { getattr open read execute map };
+
+# Filesystem metadata (statfs - needed for zypp::DiskUsageCounter::detectMountPoints)
+# Full mount/unmount defined in RPM scriptlet support section
+allow qzypper_dbus_t fs_t:filesystem getattr;
+
+# /etc/passwd, /etc/group (NSS user/group lookups for uid/gid resolution)
+allow qzypper_dbus_t passwd_file_t:file { getattr open read };
+
+# /etc files - includes /etc/zypp configuration
+# SECURITY NOTE: Write access to etc_t is required because /etc/zypp/ is labeled
+# etc_t on current openSUSE systems. libzypp modifies /etc/zypp/repos.d/,
+# /etc/zypp/services.d/, and /etc/zypp/zypp.conf during repository management.
+# When openSUSE introduces dedicated zypp_conf_t labels (see optional block below),
+# etc_t write access can be removed. Until then, this grants broader write access
+# to /etc than strictly necessary.
+allow qzypper_dbus_t etc_t:dir { getattr setattr open read search write add_name remove_name create rmdir watch relabelfrom relabelto };
+allow qzypper_dbus_t etc_t:file { getattr setattr open read write append create unlink rename link lock map relabelfrom relabelto };
+allow qzypper_dbus_t etc_t:lnk_file { getattr read create unlink };
+allow qzypper_dbus_t etc_runtime_t:file { getattr open read write };
+
+# /etc/passwd, /etc/group write access (RPM scriptlets: useradd, groupadd, etc.)
+allow qzypper_dbus_t passwd_file_t:file { getattr setattr open read write create rename link lock };
+
+# /usr files - RPM installs/removes files under /usr/{bin,lib,share,libexec,...}
+# Write access is needed for package file installation, icon/mime/desktop cache updates, etc.
+# relabelfrom/relabelto: rpm sets SELinux contexts during installation
+allow qzypper_dbus_t usr_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t usr_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
+allow qzypper_dbus_t usr_t:lnk_file { getattr read create unlink };
+allow qzypper_dbus_t usr_t:fifo_file { getattr open read write create unlink };
+
+# /usr/bin, /usr/sbin - binary installation and scriptlet execution
+allow qzypper_dbus_t bin_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t bin_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
+allow qzypper_dbus_t bin_t:lnk_file { getattr read create unlink };
+
+# Shared libraries - RPM installs .so files, ldconfig updates cache
+allow qzypper_dbus_t lib_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
+allow qzypper_dbus_t lib_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t lib_t:lnk_file { getattr read create unlink };
+
+# Execute shell (libzypp invokes shell scripts for RPM scriptlets, zypp plugins, etc.)
+allow qzypper_dbus_t shell_exec_t:file { getattr open read execute execute_no_trans map };
+
+# /proc filesystem (RPM scriptlets read various /proc entries)
+allow qzypper_dbus_t proc_t:dir { getattr open read search };
+allow qzypper_dbus_t proc_t:file { getattr open read write };
+allow qzypper_dbus_t proc_t:lnk_file { getattr read };
+
+# /sys filesystem (device enumeration, module loading info)
+allow qzypper_dbus_t sysfs_t:dir { getattr open read search write };
+allow qzypper_dbus_t sysfs_t:file { getattr open read write };
+allow qzypper_dbus_t sysfs_t:lnk_file { getattr read };
+
+# Kernel sysctls (RPM scriptlets may read/write sysctl values)
+allow qzypper_dbus_t sysctl_t:dir { getattr open read search };
+allow qzypper_dbus_t sysctl_t:file { getattr open read write };
+allow qzypper_dbus_t sysctl_kernel_t:dir { getattr open read search };
+allow qzypper_dbus_t sysctl_kernel_t:file { getattr open read write };
+allow qzypper_dbus_t sysctl_dev_t:dir { getattr open read search };
+allow qzypper_dbus_t sysctl_dev_t:file { getattr open read };
+
+# Localization - RPM installs locale files, locale-gen rebuilds cache
+# relabelfrom/relabelto: rpm sets SELinux contexts on .mo files etc.
+allow qzypper_dbus_t locale_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t locale_t:file { getattr setattr open read write create unlink rename link lock map relabelfrom relabelto };
+allow qzypper_dbus_t locale_t:lnk_file { getattr read create unlink };
+
+# Fonts - font packages install into /usr/share/fonts, fc-cache updates cache
+allow qzypper_dbus_t fonts_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t fonts_t:file { getattr setattr open read write create unlink rename link lock map relabelfrom relabelto };
+allow qzypper_dbus_t fonts_cache_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+allow qzypper_dbus_t fonts_cache_t:file { getattr setattr open read write create unlink rename link lock map };
+
+# D-Bus system bus
+allow qzypper_dbus_t system_dbusd_t:dbus { send_msg acquire_svc };
+allow qzypper_dbus_t system_dbusd_t:unix_stream_socket connectto;
+allow system_dbusd_t qzypper_dbus_t:dbus send_msg;
+
+# D-Bus system bus socket (/run/dbus/system_bus_socket)
+allow qzypper_dbus_t system_dbusd_var_run_t:dir { getattr open read search };
+allow qzypper_dbus_t system_dbusd_var_run_t:sock_file { getattr open read write };
+
+########################################
+# qZypper-specific: libzypp / RPM access
+########################################
+
+# /var/lib - RPM database (/var/lib/rpm), zypp data (/var/lib/zypp),
+# systemd (/var/lib/systemd), alternatives, etc.
+allow qzypper_dbus_t var_lib_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl };
+allow qzypper_dbus_t var_lib_t:file { getattr setattr open read write append create unlink rename link lock map };
+allow qzypper_dbus_t var_lib_t:lnk_file { getattr read create unlink };
+allow qzypper_dbus_t var_lib_t:sock_file { getattr open read write create unlink };
+
+# /var/cache/zypp - package cache and metadata
+# var_cache_t is optional (not available on SUSE 16)
+# Fallback: /var/cache/zypp is labeled var_t on SUSE 16
+optional {
+    require {
+        type var_cache_t;
+    }
+    allow qzypper_dbus_t var_cache_t:dir { getattr setattr open read search write add_name remove_name rename create rmdir ioctl };
+    allow qzypper_dbus_t var_cache_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t var_cache_t:lnk_file { getattr read create unlink };
+}
+
+# /var - parent directory traversal and fallback for /var/cache/zypp on SUSE 16
+# On SUSE 16, /var/cache/zypp is labeled var_t (no var_cache_t type)
+allow qzypper_dbus_t var_t:dir { getattr setattr open read search write add_name remove_name rename create rmdir ioctl };
+allow qzypper_dbus_t var_t:file { getattr setattr open read write append create unlink rename link lock map };
+allow qzypper_dbus_t var_t:lnk_file { getattr read create unlink };
+allow qzypper_dbus_t var_t:sock_file { getattr open read write create unlink };
+
+# Root directory traversal (write needed for /snapshot creation by snapper/libzypp)
+allow qzypper_dbus_t root_t:dir { getattr setattr open read search write add_name remove_name create ioctl };
+allow qzypper_dbus_t root_t:file { getattr open read write create unlink rename };
+allow qzypper_dbus_t root_t:lnk_file { getattr read create unlink };
+
+########################################
+# qZypper-specific: Network access
+########################################
+
+# Outbound TCP connections to HTTP/HTTPS ports (package download from repositories)
+allow qzypper_dbus_t http_port_t:tcp_socket name_connect;
+
+# Generic port access (for non-standard repository ports)
+allow qzypper_dbus_t port_t:tcp_socket name_connect;
+
+# Network interface and node access
+allow qzypper_dbus_t node_t:tcp_socket node_bind;
+
+# DNS resolution (/etc/resolv.conf, /etc/hosts, nsswitch.conf)
+allow qzypper_dbus_t net_conf_t:file { getattr open read };
+
+# SSL/TLS certificates (/etc/ssl, /etc/pki) - also used for ca-certificates package updates
+# (full write access defined in "RPM scriptlet support" section below)
+
+########################################
+# Log files
+########################################
+
+# /var/log - zypper/libzypp logs + RPM scriptlet log output
+allow qzypper_dbus_t var_log_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+allow qzypper_dbus_t var_log_t:file { getattr setattr open read write append create unlink rename link lock };
+allow qzypper_dbus_t var_log_t:lnk_file { getattr read };
+
+# /var/log/qzypper - qZypper-specific log files (if qzypper_log_t is used)
+allow qzypper_dbus_t qzypper_log_t:dir { getattr open read search write add_name remove_name create };
+allow qzypper_dbus_t qzypper_log_t:file { getattr open read write append create unlink rename };
+
+# Syslog (/dev/log socket and symlink - RPM scriptlets use syslog)
+allow qzypper_dbus_t devlog_t:sock_file { getattr write };
+allow qzypper_dbus_t devlog_t:lnk_file { read };
+allow qzypper_dbus_t kernel_t:unix_dgram_socket sendto;
+
+########################################
+# /run - runtime data
+########################################
+
+allow qzypper_dbus_t var_run_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_dbus_t var_run_t:file { getattr open read write append create unlink lock };
+allow qzypper_dbus_t var_run_t:lnk_file { getattr read };
+allow qzypper_dbus_t var_run_t:sock_file { getattr open read write };
+
+########################################
+# Device access
+########################################
+
+allow qzypper_dbus_t device_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_dbus_t device_t:chr_file { getattr open read write ioctl };
+allow qzypper_dbus_t device_t:blk_file { getattr open read write ioctl };
+allow qzypper_dbus_t device_t:lnk_file { getattr read };
+allow qzypper_dbus_t null_device_t:chr_file { getattr open read write };
+allow qzypper_dbus_t zero_device_t:chr_file { getattr open read write };
+allow qzypper_dbus_t random_device_t:chr_file { getattr open read };
+allow qzypper_dbus_t urandom_device_t:chr_file { getattr open read };
+allow qzypper_dbus_t devpts_t:dir { getattr open read search };
+allow qzypper_dbus_t devpts_t:chr_file { getattr open read write ioctl };
+
+########################################
+# Temporary files
+########################################
+
+allow qzypper_dbus_t tmp_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+allow qzypper_dbus_t tmp_t:file { getattr setattr open read write create unlink rename link lock map };
+allow qzypper_dbus_t tmp_t:lnk_file { getattr read create unlink };
+allow qzypper_dbus_t tmp_t:sock_file { getattr open read write create unlink };
+allow qzypper_dbus_t tmp_t:fifo_file { getattr open read write create unlink };
+allow qzypper_dbus_t qzypper_tmp_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+allow qzypper_dbus_t qzypper_tmp_t:file { getattr setattr open read write create unlink rename link lock map };
+
+# /var/tmp - libzypp temp directory (/var/tmp/zypp.tmp, labeled user_tmp_t on SUSE 16)
+# GPG agent creates sockets, lock files (.#lk*) need hard link, libzypp sets mtime
+# watch: gpg-agent uses inotify on keyring directories
+allow qzypper_dbus_t user_tmp_t:dir { getattr setattr open read search write add_name remove_name create rmdir ioctl watch watch_reads };
+allow qzypper_dbus_t user_tmp_t:file { getattr setattr open read write append create unlink rename link lock map execute execute_no_trans };
+allow qzypper_dbus_t user_tmp_t:lnk_file { getattr read create unlink };
+# setattr: gpg-agent sets permissions on S.gpg-agent* sockets
+allow qzypper_dbus_t user_tmp_t:sock_file { getattr setattr open read write create unlink };
+allow qzypper_dbus_t user_tmp_t:fifo_file { getattr open read write create unlink };
+allow qzypper_dbus_t tmpfs_t:dir { getattr open read search write add_name remove_name };
+allow qzypper_dbus_t tmpfs_t:file { getattr open read write create unlink map };
+allow qzypper_dbus_t tmpfs_t:filesystem getattr;
+
+########################################
+# File descriptor inheritance
+########################################
+
+allow qzypper_dbus_t system_dbusd_t:fd use;
+allow qzypper_dbus_t init_t:fd use;
+
+# Access to qzypper_t process info in /proc (for D-Bus authentication)
+allow qzypper_dbus_t qzypper_t:dir { getattr open read search };
+allow qzypper_dbus_t qzypper_t:file { getattr open read };
+allow qzypper_dbus_t qzypper_t:lnk_file { getattr read };
+
+# Allow D-Bus service to read GUI executable (for process verification)
+allow qzypper_dbus_t qzypper_exec_t:file { getattr open read };
+
+# Default type for unlabeled/custom-path files - RPM may install files to non-standard paths
+allow qzypper_dbus_t default_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
+allow qzypper_dbus_t default_t:file { getattr setattr open read write create unlink rename link lock map relabelfrom relabelto };
+allow qzypper_dbus_t default_t:lnk_file { getattr read create unlink };
+
+########################################
+# Optional blocks (D-Bus service domain)
+########################################
+
+# PolicyKit authorization D-Bus communication
+# Required for PolicyKit to respond to authorization requests
+optional {
+    require {
+        type policykit_t;
+    }
+    allow policykit_t qzypper_dbus_t:dbus send_msg;
+    allow qzypper_dbus_t policykit_t:dbus send_msg;
+}
+
+# RPM-specific types (when rpm policy module is installed)
+# On systems with RPM SELinux policy, /var/lib/rpm is labeled rpm_var_lib_t
+#
+# CRITICAL: qzypper-backend は libzypp 経由で /usr/lib/zypp/zypp-rpm ヘルパ
+# (rpm_exec_t) を fork+exec してトランザクションを実行する。
+# さらにその子として RPM の %post/%postun スクリプトレット内で
+# systemctl / systemd-sysctl / systemd-hwdb / udevadm 等が実行される。
+#
+# これらを qzypper_dbus_t のまま動かすと大量の denial が発生するため、
+# rpm_exec_t 実行時に rpm_t へドメイン遷移する。rpm_t は既存の RPM SELinux
+# ポリシーで %post スクリプトレット (rpm_script_t) への遷移が正しく定義済み。
+optional {
+    require {
+        type rpm_var_lib_t;
+        type rpm_exec_t;
+        type rpm_tmp_t;
+        type rpm_var_run_t;
+        type rpm_log_t;
+        type rpm_t;
+    }
+    # RPM database (/var/lib/rpm)
+    allow qzypper_dbus_t rpm_var_lib_t:dir { getattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t rpm_var_lib_t:file { getattr open read write create unlink rename lock map };
+    allow qzypper_dbus_t rpm_var_lib_t:lnk_file { getattr read };
+
+    # RPM 実行可能ファイル (/usr/lib/zypp/zypp-rpm も rpm_exec_t にラベル付与)
+    # execute_no_trans は付与せず、必ず rpm_t へ遷移させる
+    allow qzypper_dbus_t rpm_exec_t:file { getattr open read execute map };
+
+    # ドメイン遷移: qzypper_dbus_t が rpm_exec_t を実行 → rpm_t
+    type_transition qzypper_dbus_t rpm_exec_t:process rpm_t;
+    allow qzypper_dbus_t rpm_t:process { transition siginh rlimitinh noatsecure };
+    allow rpm_t qzypper_dbus_t:fd use;
+    allow rpm_t qzypper_dbus_t:process sigchld;
+    allow rpm_t qzypper_dbus_t:fifo_file { read write getattr ioctl };
+    allow rpm_t qzypper_dbus_t:unix_stream_socket { read write getattr };
+
+    # RPM temporary files
+    allow qzypper_dbus_t rpm_tmp_t:dir { getattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t rpm_tmp_t:file { getattr open read write create unlink rename map };
+    # RPM runtime data (zypp.pid lock file requires append)
+    allow qzypper_dbus_t rpm_var_run_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t rpm_var_run_t:file { getattr open read write append create unlink lock };
+    # RPM log
+    allow qzypper_dbus_t rpm_log_t:file { getattr open read write append create };
+}
+
+# RPM var cache type (SUSE 16: /var/cache/zypp is labeled rpm_var_cache_t)
+optional {
+    require {
+        type rpm_var_cache_t;
+    }
+    allow qzypper_dbus_t rpm_var_cache_t:dir { getattr setattr open read search write add_name remove_name rename create rmdir };
+    allow qzypper_dbus_t rpm_var_cache_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t rpm_var_cache_t:lnk_file { getattr read create unlink };
+}
+
+# zypp-specific types (when zypp policy module exists on Leap 16.0+)
+# If openSUSE introduces dedicated SELinux types for zypp paths
+optional {
+    require {
+        type zypp_cache_t;
+        type zypp_conf_t;
+        type zypp_var_lib_t;
+    }
+    # /var/cache/zypp
+    allow qzypper_dbus_t zypp_cache_t:dir { getattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t zypp_cache_t:file { getattr open read write create unlink rename lock map };
+    allow qzypper_dbus_t zypp_cache_t:lnk_file { getattr read create unlink };
+    # /etc/zypp
+    allow qzypper_dbus_t zypp_conf_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t zypp_conf_t:file { getattr open read write create unlink rename };
+    allow qzypper_dbus_t zypp_conf_t:lnk_file { getattr read };
+    # /var/lib/zypp
+    allow qzypper_dbus_t zypp_var_lib_t:dir { getattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t zypp_var_lib_t:file { getattr open read write create unlink rename lock map };
+    allow qzypper_dbus_t zypp_var_lib_t:lnk_file { getattr read create unlink };
+}
+
+# HTTPS port type (separate from http_port_t on some policies)
+optional {
+    require {
+        type https_port_t;
+    }
+    allow qzypper_dbus_t https_port_t:tcp_socket name_connect;
+}
+
+# FTP port type
+optional {
+    require {
+        type ftp_port_t;
+    }
+    allow qzypper_dbus_t ftp_port_t:tcp_socket name_connect;
+}
+
+# systemd-userdbd runtime directory (/run/systemd/userdb) - for NSS lookups
+optional {
+    require {
+        type systemd_userdbd_runtime_t;
+    }
+    allow qzypper_dbus_t systemd_userdbd_runtime_t:dir { getattr search read };
+}
+
+# Journal runtime directory (/run/log/journal) - for sd-journal logging
+# /run/systemd/journal/socket - zypp logs to syslog via this socket
+optional {
+    require {
+        type syslogd_var_run_t;
+    }
+    allow qzypper_dbus_t syslogd_var_run_t:dir { getattr open read search };
+    allow qzypper_dbus_t syslogd_var_run_t:sock_file { getattr open read write };
+}
+
+# run_init_exec_t access (used on some distributions)
+optional {
+    require {
+        type run_init_exec_t;
+    }
+    allow qzypper_dbus_t run_init_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# GPG signature verification (required for repository refresh and package verification)
+# gpg_exec_t: gpg and gpgsm executables
+optional {
+    require {
+        type gpg_exec_t;
+    }
+    allow qzypper_dbus_t gpg_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# GPG agent execution (gpg invokes gpg-agent for key management)
+optional {
+    require {
+        type gpg_agent_exec_t;
+    }
+    allow qzypper_dbus_t gpg_agent_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# GPG home directory (/root/.gnupg - RPM signature keyring)
+optional {
+    require {
+        type gpg_secret_t;
+    }
+    allow qzypper_dbus_t gpg_secret_t:dir { getattr open read search write add_name remove_name create };
+    allow qzypper_dbus_t gpg_secret_t:file { getattr open read write create unlink rename link lock };
+    allow qzypper_dbus_t gpg_secret_t:lnk_file { getattr read };
+    allow qzypper_dbus_t gpg_secret_t:sock_file { getattr open read write create unlink };
+}
+
+# Virtual filesystem enumeration (DiskUsageCounter::detectMountPoints iterates mount points)
+# open + read: opendir() requires both open and read permissions
+# tracefs (/sys/kernel/tracing)
+optional {
+    require {
+        type tracefs_t;
+    }
+    allow qzypper_dbus_t tracefs_t:dir { getattr open read search };
+}
+
+# securityfs + selinuxfs (/sys/fs/selinux, /sys/kernel/security)
+# CRITICAL: rpm reads /sys/fs/selinux/status to verify SELinux state before install.
+# Without this, rpm aborts with "operation canceled as per user request"
+optional {
+    require {
+        type security_t;
+    }
+    allow qzypper_dbus_t security_t:dir { getattr open read search };
+    allow qzypper_dbus_t security_t:file { getattr open read };
+    allow qzypper_dbus_t security_t:filesystem getattr;
+}
+
+# debugfs (/sys/kernel/debug)
+optional {
+    require {
+        type debugfs_t;
+    }
+    allow qzypper_dbus_t debugfs_t:dir { getattr open read search };
+}
+
+# configfs (/sys/kernel/config)
+optional {
+    require {
+        type configfs_t;
+    }
+    allow qzypper_dbus_t configfs_t:dir { getattr open read search };
+}
+
+# pstore (/sys/fs/pstore)
+optional {
+    require {
+        type pstore_t;
+    }
+    allow qzypper_dbus_t pstore_t:dir { getattr open read search };
+}
+
+# bpf filesystem (/sys/fs/bpf)
+optional {
+    require {
+        type bpf_t;
+    }
+    allow qzypper_dbus_t bpf_t:dir { getattr open read search };
+}
+
+# FUSE filesystems (user-mounted filesystems)
+optional {
+    require {
+        type fusefs_t;
+    }
+    allow qzypper_dbus_t fusefs_t:dir { getattr open read search };
+}
+
+# cgroup filesystem (/sys/fs/cgroup)
+optional {
+    require {
+        type cgroup_t;
+    }
+    allow qzypper_dbus_t cgroup_t:dir { getattr open read search };
+}
+
+# EFI variable filesystem (/sys/firmware/efi/efivars)
+optional {
+    require {
+        type efivarfs_t;
+    }
+    allow qzypper_dbus_t efivarfs_t:dir { getattr open read search };
+}
+
+# Btrfs/Snapper integration
+# /.snapshots directory (snapper snapshot data)
+optional {
+    require {
+        type snapperd_data_t;
+    }
+    allow qzypper_dbus_t snapperd_data_t:dir { getattr open read search ioctl };
+}
+
+# Snapper configuration directory (/etc/snapper)
+optional {
+    require {
+        type snapperd_conf_t;
+    }
+    allow qzypper_dbus_t snapperd_conf_t:dir { getattr open read search };
+    allow qzypper_dbus_t snapperd_conf_t:file { getattr open read };
+}
+
+# /home directory traversal (for btrfs subvolume detection)
+# ioctl: BTRFS_IOC_SUBVOL_GETFLAGS used by zypp DiskUsageCounter
+optional {
+    require {
+        type home_root_t;
+    }
+    allow qzypper_dbus_t home_root_t:dir { getattr open read search ioctl };
+}
+
+# /root directory traversal (for btrfs subvolume detection)
+# ioctl: BTRFS_IOC_SUBVOL_GETFLAGS used by zypp DiskUsageCounter
+optional {
+    require {
+        type admin_home_t;
+    }
+    allow qzypper_dbus_t admin_home_t:dir { getattr open read search ioctl };
+}
+
+# Kernel modules directory (/lib/modules - depmod writes modules.dep etc.)
+optional {
+    require {
+        type modules_object_t;
+    }
+    allow qzypper_dbus_t modules_object_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t modules_object_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t modules_object_t:lnk_file { getattr read create unlink };
+}
+
+# Network socket options (libcurl socket tuning)
+optional {
+    require {
+        class netlink_route_socket { getopt setopt };
+        class udp_socket { setopt };
+    }
+    allow qzypper_dbus_t self:netlink_route_socket { getopt setopt };
+    allow qzypper_dbus_t self:udp_socket { setopt };
+}
+
+# init_var_run_t directory access (/run/systemd directory search)
+optional {
+    require {
+        type init_var_run_t;
+    }
+    allow qzypper_dbus_t init_var_run_t:dir search;
+}
+
+# systemd-inhibit lock (/run/systemd/inhibit/*.ref)
+# zypp calls systemd-inhibit to prevent system suspend during transactions
+optional {
+    require {
+        type systemd_logind_inhibit_var_run_t;
+    }
+    allow qzypper_dbus_t systemd_logind_inhibit_var_run_t:dir { getattr open read search };
+    allow qzypper_dbus_t systemd_logind_inhibit_var_run_t:file { getattr open read write };
+    allow qzypper_dbus_t systemd_logind_inhibit_var_run_t:fifo_file { getattr open read write };
+}
+
+# systemd-inhibit executable
+optional {
+    require {
+        type systemd_logind_exec_t;
+    }
+    allow qzypper_dbus_t systemd_logind_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# libcurl/zypp access to user cache directory (~/.cache) when running as root
+optional {
+    require {
+        type cache_home_t;
+    }
+    allow qzypper_dbus_t cache_home_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t cache_home_t:file { getattr open read write create unlink };
+}
+
+########################################
+# RPM scriptlet support (optional types)
+# RPM %pre/%post/%preun/%postun scripts run in qzypper_dbus_t domain
+# and may access a wide variety of system resources.
+########################################
+
+# /etc/shadow, /etc/gshadow - user/group management (useradd, groupadd, etc.)
+optional {
+    require {
+        type shadow_t;
+    }
+    allow qzypper_dbus_t shadow_t:file { getattr setattr open read write create rename link lock };
+}
+
+# /boot - kernel package installation (vmlinuz, initrd, grub configs)
+optional {
+    require {
+        type boot_t;
+    }
+    allow qzypper_dbus_t boot_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t boot_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t boot_t:lnk_file { getattr read create unlink };
+}
+
+# systemd unit files (/usr/lib/systemd/, /etc/systemd/)
+optional {
+    require {
+        type systemd_unit_file_t;
+    }
+    allow qzypper_dbus_t systemd_unit_file_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t systemd_unit_file_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t systemd_unit_file_t:lnk_file { getattr read create unlink };
+}
+
+# init_t (systemd) - RPM scriptlets run systemctl daemon-reload, enable/disable, start/stop
+optional {
+    require {
+        type init_t;
+        type init_exec_t;
+        type init_var_run_t;
+    }
+    allow qzypper_dbus_t init_t:unix_stream_socket connectto;
+    allow qzypper_dbus_t init_t:dbus send_msg;
+    allow init_t qzypper_dbus_t:dbus send_msg;
+    allow qzypper_dbus_t init_exec_t:file { getattr open read execute execute_no_trans map };
+    allow qzypper_dbus_t init_var_run_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t init_var_run_t:file { getattr open read write create unlink lock };
+    allow qzypper_dbus_t init_var_run_t:lnk_file { getattr read };
+    allow qzypper_dbus_t init_var_run_t:sock_file { getattr open read write };
+}
+
+# systemd-tmpfiles (/run/tmpfiles.d, /usr/lib/tmpfiles.d)
+optional {
+    require {
+        type systemd_tmpfiles_exec_t;
+    }
+    allow qzypper_dbus_t systemd_tmpfiles_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# systemd-sysusers (creates system users/groups during package install)
+optional {
+    require {
+        type systemd_sysusers_exec_t;
+    }
+    allow qzypper_dbus_t systemd_sysusers_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# systemd-hwdb (hardware database update)
+optional {
+    require {
+        type systemd_hwdb_exec_t;
+    }
+    allow qzypper_dbus_t systemd_hwdb_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# ldconfig - updates shared library cache after package install
+optional {
+    require {
+        type ldconfig_exec_t;
+    }
+    allow qzypper_dbus_t ldconfig_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# ld.so.cache update (ldconfig writes this)
+optional {
+    require {
+        type ldconfig_cache_t;
+    }
+    allow qzypper_dbus_t ldconfig_cache_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t ldconfig_cache_t:file { getattr setattr open read write create unlink rename link lock map };
+}
+
+# man page database (mandb runs during package install)
+optional {
+    require {
+        type man_t;
+    }
+    allow qzypper_dbus_t man_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t man_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t man_t:lnk_file { getattr read create unlink };
+}
+
+# man cache (/var/cache/man)
+optional {
+    require {
+        type man_cache_t;
+    }
+    allow qzypper_dbus_t man_cache_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t man_cache_t:file { getattr setattr open read write create unlink rename link lock map };
+}
+
+# Hardware data (/usr/share/hwdata) - hwdata package updates
+optional {
+    require {
+        type hwdata_t;
+    }
+    allow qzypper_dbus_t hwdata_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t hwdata_t:file { getattr setattr open read write create unlink rename link lock map };
+}
+
+# SSL/TLS certificates - ca-certificates package updates
+allow qzypper_dbus_t cert_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+allow qzypper_dbus_t cert_t:file { getattr setattr open read write create unlink rename link lock map };
+allow qzypper_dbus_t cert_t:lnk_file { getattr read create unlink };
+
+# /var/spool - cron, mail, etc. package operations
+optional {
+    require {
+        type var_spool_t;
+    }
+    allow qzypper_dbus_t var_spool_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t var_spool_t:file { getattr setattr open read write create unlink rename link lock };
+}
+
+# /srv directory - some packages install to /srv
+optional {
+    require {
+        type var_t;
+    }
+    # Already covered by var_t rules above
+}
+
+# Snapper D-Bus communication (snapper creates snapshots before/after transactions)
+optional {
+    require {
+        type snapperd_t;
+    }
+    allow qzypper_dbus_t snapperd_t:dbus send_msg;
+    allow snapperd_t qzypper_dbus_t:dbus send_msg;
+    allow qzypper_dbus_t snapperd_t:unix_stream_socket connectto;
+}
+
+# Snapper executable (zypp plugin calls snapper directly)
+optional {
+    require {
+        type snapperd_exec_t;
+    }
+    allow qzypper_dbus_t snapperd_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# NSCD (name service cache daemon) - NSS lookups during scriptlets
+optional {
+    require {
+        type nscd_t;
+        type nscd_var_run_t;
+    }
+    allow qzypper_dbus_t nscd_t:unix_stream_socket connectto;
+    allow qzypper_dbus_t nscd_var_run_t:dir { getattr search };
+    allow qzypper_dbus_t nscd_var_run_t:sock_file { getattr open read write };
+}
+
+# SSSD (System Security Services Daemon) - NSS/PAM lookups
+optional {
+    require {
+        type sssd_t;
+        type sssd_var_lib_t;
+    }
+    allow qzypper_dbus_t sssd_t:unix_stream_socket connectto;
+    allow qzypper_dbus_t sssd_var_lib_t:dir { getattr search };
+    allow qzypper_dbus_t sssd_var_lib_t:sock_file { getattr open read write };
+}
+
+# Dracut/mkinitrd - initramfs rebuild during kernel package install
+optional {
+    require {
+        type initrc_exec_t;
+    }
+    allow qzypper_dbus_t initrc_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# udev rules (/usr/lib/udev/) - udev package updates
+optional {
+    require {
+        type udev_exec_t;
+        type udev_var_run_t;
+    }
+    allow qzypper_dbus_t udev_exec_t:file { getattr open read execute execute_no_trans map };
+    allow qzypper_dbus_t udev_var_run_t:dir { getattr open read search };
+    allow qzypper_dbus_t udev_var_run_t:file { getattr open read };
+}
+
+# SELinux file contexts and utilities (restorecon during package install)
+optional {
+    require {
+        type semanage_exec_t;
+        type selinux_config_t;
+        type default_context_t;
+        type file_context_t;
+    }
+    allow qzypper_dbus_t semanage_exec_t:file { getattr open read execute execute_no_trans map };
+    allow qzypper_dbus_t selinux_config_t:dir { getattr open read search write add_name remove_name };
+    allow qzypper_dbus_t selinux_config_t:file { getattr open read write create unlink rename };
+    allow qzypper_dbus_t default_context_t:dir { getattr open read search };
+    allow qzypper_dbus_t default_context_t:file { getattr open read };
+    allow qzypper_dbus_t file_context_t:dir { getattr open read search };
+    allow qzypper_dbus_t file_context_t:file { getattr open read };
+}
+
+# setfiles/restorecon executables (set SELinux labels after RPM install)
+optional {
+    require {
+        type setfiles_exec_t;
+    }
+    allow qzypper_dbus_t setfiles_exec_t:file { getattr open read execute execute_no_trans map };
+}
+
+# /opt directory - third-party package installation
+optional {
+    require {
+        type usr_t;
+    }
+    # Already covered by usr_t rules above
+}
+
+# Unlabeled files/directories (files with no matching file_contexts)
+optional {
+    require {
+        type unlabeled_t;
+    }
+    allow qzypper_dbus_t unlabeled_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
+    allow qzypper_dbus_t unlabeled_t:file { getattr setattr open read write create unlink rename link lock map };
+    allow qzypper_dbus_t unlabeled_t:lnk_file { getattr read create unlink };
+}
+
+# D-Bus communication with unconfined_t (user session processes)
+allow qzypper_dbus_t unconfined_t:dbus send_msg;
+allow unconfined_t qzypper_dbus_t:dbus send_msg;
+
+# Allow backend to read unconfined process info (credential checks)
+allow qzypper_dbus_t unconfined_t:dir { getattr search };
+allow qzypper_dbus_t unconfined_t:file { getattr open read };
+allow qzypper_dbus_t unconfined_t:lnk_file { getattr read };
+
+# Kernel keyring access (RPM signature verification may use kernel keyring)
+allow qzypper_dbus_t kernel_t:key { search read view };
+
+# Filesystem mount operations (some packages need filesystem info)
+allow qzypper_dbus_t fs_t:filesystem { getattr mount unmount };
+
+########################################
+# Domain transitions
+########################################
+
+# unconfined_t -> qzypper_t
+allow unconfined_t qzypper_exec_t:file { getattr open read execute map };
+allow unconfined_t qzypper_t:process transition;
+type_transition unconfined_t qzypper_exec_t:process qzypper_t;
+
+# system_dbusd_t -> qzypper_dbus_t
+allow system_dbusd_t qzypper_dbus_exec_t:file { getattr open read execute map };
+allow system_dbusd_t qzypper_dbus_t:process transition;
+type_transition system_dbusd_t qzypper_dbus_exec_t:process qzypper_dbus_t;
+
+# init_t -> qzypper_dbus_t (for systemd D-Bus activation)
+allow init_t qzypper_dbus_exec_t:file { getattr setattr open read execute execute_no_trans map };
+allow init_t qzypper_dbus_t:process { transition signal signull sigkill sigstop sigchld fork siginh rlimitinh noatsecure };
+type_transition init_t qzypper_dbus_exec_t:process qzypper_dbus_t;
+allow qzypper_dbus_t init_t:process sigchld;
+
+# Inherit D-Bus socket from systemd (passed via D-Bus activation)
+allow qzypper_dbus_t init_t:unix_stream_socket { read write getattr ioctl };
+
+########################################
+# Type transitions for files
+########################################
+
+# Temporary files in /tmp
+type_transition qzypper_t tmp_t:file qzypper_tmp_t;
+type_transition qzypper_t tmp_t:dir qzypper_tmp_t;
+type_transition qzypper_dbus_t tmp_t:file qzypper_tmp_t;
+type_transition qzypper_dbus_t tmp_t:dir qzypper_tmp_t;
+
+# Tmpfs files (shared memory for X11/Wayland/Qt Quick)
+type_transition qzypper_t tmpfs_t:file qzypper_tmpfs_t;

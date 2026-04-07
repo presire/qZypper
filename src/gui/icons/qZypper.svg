@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 256 256"
+   width="256"
+   height="256"
+   version="1.1"
+   id="svg15"
+   sodipodi:docname="qZypper.svg"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview15"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="3.6542969"
+     inkscape:cx="182.11438"
+     inkscape:cy="95.093532"
+     inkscape:current-layer="svg15" />
+  <defs
+     id="defs10">
+    <!-- パッケージボックスのグラデーション -->
+    <linearGradient
+       id="boxTop"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#73BA25"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#6aad20"
+         id="stop2" />
+    </linearGradient>
+    <linearGradient
+       id="boxFront"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#5a9a18"
+         id="stop3" />
+      <stop
+         offset="100%"
+         stop-color="#4a8510"
+         id="stop4" />
+    </linearGradient>
+    <linearGradient
+       id="boxSide"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="0">
+      <stop
+         offset="0%"
+         stop-color="#4a8510"
+         id="stop5" />
+      <stop
+         offset="100%"
+         stop-color="#3d7009"
+         id="stop6" />
+    </linearGradient>
+    <!-- 矢印のグラデーション -->
+    <linearGradient
+       id="arrowGrad"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0%"
+         stop-color="#ffffff"
+         id="stop7" />
+      <stop
+         offset="100%"
+         stop-color="#e0e0e0"
+         id="stop8" />
+    </linearGradient>
+    <!-- 背景円のグラデーション -->
+    <radialGradient
+       id="bgGrad"
+       cx="50%"
+       cy="40%"
+       r="55%">
+      <stop
+         offset="0%"
+         stop-color="#2a2a2a"
+         id="stop9" />
+      <stop
+         offset="100%"
+         stop-color="#1a1a1a"
+         id="stop10" />
+    </radialGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#arrowGrad"
+       id="linearGradient15"
+       x1="200.5551"
+       y1="46.906061"
+       x2="200.5551"
+       y2="76.48646"
+       gradientTransform="matrix(0.84515425,0,0,1.183216,-1.5050775,0.41047568)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#arrowGrad"
+       id="linearGradient16"
+       x1="72.767781"
+       y1="139.87303"
+       x2="72.767781"
+       y2="169.45343"
+       gradientTransform="matrix(0.84515425,0,0,1.183216,-11.903794,11.493319)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <!-- 背景の角丸四角 -->
+  <rect
+     x="8"
+     y="8"
+     width="240"
+     height="240"
+     rx="48"
+     ry="48"
+     fill="url(#bgGrad)"
+     id="rect10" />
+  <rect
+     x="8"
+     y="8"
+     width="240"
+     height="240"
+     rx="48"
+     ry="48"
+     fill="none"
+     stroke="#73BA25"
+     stroke-width="3"
+     stroke-opacity="0.4"
+     id="rect11" />
+  <!-- パッケージボックス (アイソメトリック風) -->
+  <!-- 上面 -->
+  <polygon
+     points="128,62 196,100 128,138 60,100"
+     fill="url(#boxTop)"
+     id="polygon11" />
+  <!-- 上面の封テープライン -->
+  <line
+     x1="128"
+     y1="62"
+     x2="128"
+     y2="138"
+     stroke="#8cd038"
+     stroke-width="2.5"
+     stroke-opacity="0.6"
+     id="line11" />
+  <!-- 前面 -->
+  <polygon
+     points="60,100 128,138 128,206 60,168"
+     fill="url(#boxFront)"
+     id="polygon12" />
+  <!-- 前面の封テープライン -->
+  <line
+     x1="94"
+     y1="119"
+     x2="94"
+     y2="187"
+     stroke="#6aad20"
+     stroke-width="2.5"
+     stroke-opacity="0.4"
+     id="line12" />
+  <!-- 右側面 -->
+  <polygon
+     points="196,100 128,138 128,206 196,168"
+     fill="url(#boxSide)"
+     id="polygon13" />
+  <!-- 右側面の封テープライン -->
+  <line
+     x1="162"
+     y1="119"
+     x2="162"
+     y2="187"
+     stroke="#4a8510"
+     stroke-width="2.5"
+     stroke-opacity="0.3"
+     id="line13" />
+  <!-- ボックスのエッジ (ハイライト) -->
+  <polyline
+     points="60,100 128,138 196,100"
+     fill="none"
+     stroke="#8cd038"
+     stroke-width="1.5"
+     stroke-opacity="0.5"
+     id="polyline13" />
+  <line
+     x1="128"
+     y1="138"
+     x2="128"
+     y2="206"
+     stroke="#5a9a18"
+     stroke-width="1"
+     stroke-opacity="0.3"
+     id="line14" />
+  <!-- 循環矢印 (パッケージ更新を表現) -->
+  <!-- 右上の矢印弧 -->
+  <path
+     d="M 155,46 A 60,60 0 0 1 206,90"
+     fill="none"
+     stroke="url(#arrowGrad)"
+     stroke-width="10"
+     stroke-linecap="round"
+     id="path14"
+     style="stroke:url(#linearGradient15)" />
+  <!-- 矢印の先端 -->
+  <polygon
+     points="214,78 210,106 188,86"
+     fill="white"
+     fill-opacity="0.9"
+     id="polygon14" />
+  <!-- 左下の矢印弧 -->
+  <path
+     d="m 98.810797,218.75681 a 60,60 0 0 1 -51,-44"
+     fill="none"
+     stroke="url(#arrowGrad)"
+     stroke-width="10"
+     stroke-linecap="round"
+     stroke-opacity="0.8"
+     id="path15"
+     style="stroke:url(#linearGradient16)" />
+  <!-- 矢印の先端 -->
+  <polygon
+     points="68,170 42,178 46,150 "
+     fill="#ffffff"
+     fill-opacity="0.7"
+     id="polygon15"
+     transform="rotate(6.0217705,-9.2527324,118.53321)" />
+</svg>

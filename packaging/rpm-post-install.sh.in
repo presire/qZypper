@@ -1,0 +1,11 @@
+#!/bin/bash
+# qZypper RPM %post script
+# Load SELinux policy module and relabel binaries
+
+if command -v semodule >/dev/null 2>&1 && selinuxenabled 2>/dev/null; then
+    semodule -i /usr/share/selinux/packages/qzypper.pp 2>/dev/null || true
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -R @CMAKE_INSTALL_FULL_BINDIR@/qzypper 2>/dev/null || true
+        restorecon -R @CMAKE_INSTALL_FULL_LIBEXECDIR@/qzypper-backend 2>/dev/null || true
+    fi
+fi

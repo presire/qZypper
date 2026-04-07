@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.presire.qzypper
+Exec=@CMAKE_INSTALL_FULL_LIBEXECDIR@/qzypper-backend
+User=root

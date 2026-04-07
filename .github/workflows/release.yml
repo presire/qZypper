@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract and validate version
+        id: version
+        run: |
+          tag_ver="${GITHUB_REF_NAME#v}"
+          cmake_ver=$(grep -oP 'project\(qZypper VERSION \K[0-9.]+' CMakeLists.txt)
+          if [ "$tag_ver" != "$cmake_ver" ]; then
+            echo "::error::Tag version ($tag_ver) does not match CMakeLists.txt version ($cmake_ver)"
+            exit 1
+          fi
+          echo "VERSION=$tag_ver" >> "$GITHUB_OUTPUT"
+          echo "Version: $tag_ver"
+
+  build-rpm-leap16:
+    needs: validate
+    runs-on: ubuntu-latest
+    container:
+      image: opensuse/leap:16.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install -y \
+            cmake gcc-c++ pkg-config rpm-build \
+            qt6-core-devel qt6-gui-devel \
+            qt6-declarative-devel qt6-quickcontrols2-devel \
+            qt6-dbus-devel qt6-svg-devel qt6-linguist-devel \
+            libzypp-devel libpolkit-qt6-1-devel \
+            libboost_thread-devel \
+            selinux-policy-devel checkpolicy policycoreutils
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel $(nproc)
+
+      - name: Package RPM
+        run: |
+          cd build
+          cpack -G RPM
+
+      - name: Verify RPM dependencies
+        run: |
+          cd build
+          echo "=== RPM Requires ==="
+          rpm -qpR *.rpm
+          echo "=== RPM Provides ==="
+          rpm -qp --provides *.rpm
+
+      - name: Rename artifact
+        run: |
+          cd build
+          arch=$(uname -m)
+          for f in *.rpm; do
+            mv "$f" "qzypper-${{ needs.validate.outputs.version }}-leap16.${arch}.rpm"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-leap16
+          path: build/*.rpm
+
+  build-rpm-tumbleweed:
+    needs: validate
+    runs-on: ubuntu-latest
+    container:
+      image: opensuse/tumbleweed
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          zypper --non-interactive --gpg-auto-import-keys refresh
+          zypper --non-interactive install -y \
+            cmake gcc-c++ pkg-config rpm-build \
+            qt6-core-devel qt6-gui-devel \
+            qt6-declarative-devel qt6-quickcontrols2-devel \
+            qt6-dbus-devel qt6-svg-devel qt6-linguist-devel \
+            libzypp-devel libpolkit-qt6-1-devel \
+            libboost_thread-devel \
+            selinux-policy-devel checkpolicy policycoreutils
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel $(nproc)
+
+      - name: Package RPM
+        run: |
+          cd build
+          cpack -G RPM
+
+      - name: Verify RPM dependencies
+        run: |
+          cd build
+          echo "=== RPM Requires ==="
+          rpm -qpR *.rpm
+          echo "=== RPM Provides ==="
+          rpm -qp --provides *.rpm
+
+      - name: Rename artifact
+        run: |
+          cd build
+          arch=$(uname -m)
+          for f in *.rpm; do
+            mv "$f" "qzypper-${{ needs.validate.outputs.version }}-tumbleweed.${arch}.rpm"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-tumbleweed
+          path: build/*.rpm
+
+  release:
+    needs: [validate, build-rpm-leap16, build-rpm-tumbleweed]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "qZypper ${{ needs.validate.outputs.version }}" \
+            --generate-notes \
+            artifacts/*

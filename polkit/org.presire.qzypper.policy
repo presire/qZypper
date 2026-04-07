@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+
+  <vendor>qZypper</vendor>
+  <vendor_url>https://github.com/user/qzypper</vendor_url>
+
+  <!-- リポジトリのリフレッシュ -->
+  <action id="org.presire.qzypper.refresh-repos">
+    <description>Refresh package repositories</description>
+    <description xml:lang="ja">パッケージリポジトリの更新</description>
+    <message>Authentication is required to refresh package repositories.</message>
+    <message xml:lang="ja">パッケージリポジトリを更新するには認証が必要です。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- リポジトリの追加・削除・変更 -->
+  <action id="org.presire.qzypper.manage-repos">
+    <description>Manage package repositories</description>
+    <description xml:lang="ja">パッケージリポジトリの管理</description>
+    <message>Authentication is required to manage package repositories.</message>
+    <message xml:lang="ja">パッケージリポジトリを管理するには認証が必要です。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- パッケージのインストール・削除・更新 -->
+  <action id="org.presire.qzypper.install-packages">
+    <description>Install, remove, or update packages</description>
+    <description xml:lang="ja">パッケージのインストール・削除・更新</description>
+    <message>Authentication is required to install, remove, or update packages.</message>
+    <message xml:lang="ja">パッケージをインストール・削除・更新するには認証が必要です。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>

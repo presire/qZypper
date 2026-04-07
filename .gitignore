@@ -1,0 +1,95 @@
+# ビルド出力
+**/Debug/
+**/Release/
+**/build/
+**/build-*/
+**/cmake-build-*/
+**/out/
+
+# オブジェクト・ライブラリ
+**/*.o
+**/*.lo
+**/*.so
+**/*.so.*
+**/*.a
+**/*.la
+**/*.out
+**/*.0
+
+# Qt 生成物
+**/moc_*.cpp
+**/moc_*.h
+**/qrc_*.cpp
+**/ui_*.h
+**/*.qm
+**/.qmlls.ini
+**/qmlcache/
+
+# SELinux ビルド生成物
+selinux/qzypper.fc
+selinux/qzypper.mod
+selinux/qzypper.pp
+
+# CPack / RPM 成果物
+**/_CPack_Packages/
+**/*.rpm
+**/*.srpm
+**/*.tar.gz
+**/*.tar.xz
+**/*.tar.bz2
+
+# プロジェクト固有
+**/ca/
+**/key/
+**/*_bak.*
+**/*_bak/
+**/SambaConfig.json
+**/Required_Build.txt
+
+# IDE
+**/*.user
+**/.idea/
+**/.qtcreator/
+**/.vscode/
+**/compile_commands.json
+**/.cache/
+
+# CMake
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/Testing/
+**/.cmake/
+
+# Claude Code
+.claude/
+.mcp.json
+CLAUDE.md
+
+# OpenCode
+.opencode/
+opencode.json
+AGENTS.md
+
+# その他参照資料・ローカル専用
+**/libyui/
+**/yast-packager/
+**/README_JP.md
+**/docs/*.drawio
+
+# エディタ・一時ファイル
+tags
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej
+.DS_Store
+Thumbs.db
+
+# ログ・コアダンプ
+*.log
+core
+core.*
