@@ -11,6 +11,11 @@
 
 ---
 
+<p align="center">
+  <img src="src/gui/icons/qZypper@256.png" alt="qZypper" width="256" valign="middle">
+  <img src="src/gui/icons/Qt.png" alt="Qt" width="139" valign="middle">
+</p>
+
 ## Overview
 
 qZypper is a graphical package management tool designed as a replacement for YaST Software Management and  
@@ -222,7 +227,7 @@ cd build && cpack -G RPM
 | D-Bus service | `/usr/share/dbus-1/system-services/org.presire.qzypper.service` |
 | Polkit policy | `/usr/share/polkit-1/actions/org.presire.qzypper.policy` |
 | Desktop entry | `/usr/share/applications/org.presire.qzypper.desktop` |
-| App icon | `/usr/share/icons/hicolor/scalable/apps/qZypper.svg` |
+| App icon | `/usr/share/icons/hicolor/{64x64,128x128,256x256,512x512,1024x1024}/apps/qZypper.png` |
 | SELinux policy | `/usr/share/selinux/packages/qzypper.pp` |
 
 ## Directory Structure

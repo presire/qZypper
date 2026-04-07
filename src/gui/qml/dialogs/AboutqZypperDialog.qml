@@ -43,8 +43,10 @@ Dialog {
                 // qZypperロゴ画像
                 Image {
                     id: qZypperLogo
-                    source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/qZypper.svg"
+                    source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/qZypper@256.png"
                     fillMode: Image.PreserveAspectFit
+                    sourceSize.width: 256
+                    sourceSize.height: 256
                     Layout.alignment: Qt.AlignHCenter | Qt.AlignTop
                     Layout.preferredWidth: 200
                     Layout.preferredHeight: 200

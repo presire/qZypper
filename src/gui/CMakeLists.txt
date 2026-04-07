@@ -36,13 +36,22 @@ qt_add_qml_module(qzypper
         qml/components/UrlTypeSelector.qml
     RESOURCES
         icons/Qt.png
-        icons/qZypper.svg
+        icons/qZypper@64.png
+        icons/qZypper@128.png
+        icons/qZypper@256.png
+        icons/qZypper@512.png
+        icons/qZypper@1024.png
 )
 
 # アプリケーションアイコン (QMLモジュールとは別に登録し、起動時から利用可能にする)
 qt_add_resources(qzypper "app_icons"
     PREFIX "/icons"
-    FILES icons/qZypper.svg
+    FILES
+        icons/qZypper@64.png
+        icons/qZypper@128.png
+        icons/qZypper@256.png
+        icons/qZypper@512.png
+        icons/qZypper@1024.png
 )
 
 target_include_directories(qzypper PRIVATE
@@ -78,8 +87,10 @@ install(TARGETS qzypper
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# アプリケ���ションアイコン
-install(FILES ${CMAKE_SOURCE_DIR}/src/gui/icons/qZypper.svg
-    DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps
-    RENAME qZypper.svg
-)
+# アプリケーションアイコン (hicolor テーマに各サイズをインストール)
+foreach(ICON_SIZE 64 128 256 512 1024)
+    install(FILES ${CMAKE_SOURCE_DIR}/src/gui/icons/qZypper@${ICON_SIZE}.png
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps
+        RENAME qZypper.png
+    )
+endforeach()

@@ -73,7 +73,15 @@ int main(int argc, char *argv[])
     app.setApplicationVersion(APP_VERSION);
     app.setOrganizationName("Presire");
     app.setDesktopFileName("org.presire.qzypper");
-    app.setWindowIcon(QIcon(":/icons/icons/qZypper.svg"));
+    {
+        QIcon appIcon;
+        appIcon.addFile(":/icons/icons/qZypper@64.png",   QSize(64, 64));
+        appIcon.addFile(":/icons/icons/qZypper@128.png",  QSize(128, 128));
+        appIcon.addFile(":/icons/icons/qZypper@256.png",  QSize(256, 256));
+        appIcon.addFile(":/icons/icons/qZypper@512.png",  QSize(512, 512));
+        appIcon.addFile(":/icons/icons/qZypper@1024.png", QSize(1024, 1024));
+        app.setWindowIcon(appIcon);
+    }
 
     // ロケールに応じた翻訳ファイルの読み込み
     QTranslator translator;
