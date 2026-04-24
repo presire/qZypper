@@ -98,7 +98,6 @@ public:
     Q_INVOKABLE void applyDarkMode(bool dark);                               // ダークモード適用
     Q_INVOKABLE void saveState();                                           // 選択状態を保存
     Q_INVOKABLE void restoreState();                                        // 選択状態を復元
-    Q_INVOKABLE void quitBackend();                                         // バックエンド終了
 
 signals:
     void connectedChanged();                                // 接続状態変更
@@ -123,6 +122,8 @@ signals:
     void transactionFinished(bool success,                  // トランザクション完了
                              const QString &summary);
     void errorOccurred(const QString &errorMessage);        // エラー通知
+    void packageStateChanged(const QString &packageName,   // パッケージ状態遷移
+                             const QString &event);
     void refreshFinished(bool success);                     // リフレッシュ完了
     void conflictsDetected(const QVariantList &problems);   // コンフリクト検出
 

@@ -92,9 +92,6 @@ public:
     void saveState();                                   // 選択状態を保存
     void restoreState();                                // 選択状態を復元
 
-    // バックエンド終了
-    void quit();                                        // バックエンド終了要求
-
 signals:
     void backendConnected();                            // バックエンド接続完了
     void backendDisconnected();                         // バックエンド接続断
@@ -115,6 +112,8 @@ signals:
     void transactionFinished(bool success,              // トランザクション完了
                              const QString &summary);
     void errorOccurred(const QString &errorMessage);    // エラー通知
+    void packageStateChanged(const QString &packageName,  // パッケージ状態遷移
+                             const QString &event);
 
 private:
     static constexpr const char* SERVICE_NAME = "org.presire.qzypper";

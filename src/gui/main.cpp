@@ -20,8 +20,7 @@ namespace {
  * UNIX シグナルハンドラからは async-signal-safe な操作しか
  * 実行できないため、パイプに 1 バイト書き込むだけで復帰する。
  * 読み出し側を QSocketNotifier で監視し、Qt イベントループ内で
- * QCoreApplication::quit() を呼ぶ。これにより aboutToQuit が
- * 発火し、D-Bus バックエンドも正しく終了する。
+ * QCoreApplication::quit() を呼ぶ。
  */
 int g_signalPipe[2] = {-1, -1};
 
@@ -47,8 +46,7 @@ int main(int argc, char *argv[])
 
     // SIGINT (Ctrl+C) / SIGTERM ハンドラを登録
     // self-pipe にバイトを書き込み、QSocketNotifier が Qt イベントループで
-    // これを読み取って quit() を呼ぶ → aboutToQuit → quitBackend の順で
-    // D-Bus バックエンドを伴って安全に終了する
+    // これを読み取って quit() を呼ぶ
     if (::pipe(g_signalPipe) == 0) {
         struct sigaction sa;
         sa.sa_handler = unixSignalHandler;
@@ -121,10 +119,6 @@ int main(int argc, char *argv[])
     // PackageController をシングルトンとして登録
     auto *controller = new qZypper::PackageController(&app);
     qmlRegisterSingletonInstance("org.presire.qzypper.gui", 1, 0, "PackageController", controller);
-
-    // GUI終了時に D-Bus バックエンドプロセスも終了させる
-    QObject::connect(&app, &QCoreApplication::aboutToQuit,
-                     controller, &qZypper::PackageController::quitBackend);
 
     engine.loadFromModule("org.presire.qzypper.gui", "Main");
 

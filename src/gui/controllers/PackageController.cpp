@@ -1,6 +1,7 @@
 #include <QDebug>
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QDBusConnection>
 #include <PolkitQt1/Authority>
 #include <PolkitQt1/Subject>
 #include "PackageController.h"
@@ -43,6 +44,8 @@ PackageController::PackageController(QObject *parent)
             this, &PackageController::progressChanged);
     connect(m_dbus, &DBusClient::commitProgressChanged,
             this, &PackageController::commitProgressChanged);
+    connect(m_dbus, &DBusClient::packageStateChanged,
+            this, &PackageController::packageStateChanged);
     connect(m_dbus, &DBusClient::commitFinished,
             this, [this](const QVariantMap &result) {
         m_commitResult = result;
@@ -53,6 +56,8 @@ PackageController::PackageController(QObject *parent)
         else
             setStatusMessage(tr("Some operations encountered errors"));
 
+        refreshPackageStatuses();
+        loadPatterns();
         setBusy(false);
     });
     connect(m_dbus, &DBusClient::transactionFinished,
@@ -988,10 +993,10 @@ bool PackageController::hasPendingChanges()
  */
 bool PackageController::checkAuth(const QString &actionId)
 {
-    auto authority = PolkitQt1::Authority::instance();
-    auto result = authority->checkAuthorizationSync(
-        actionId,
-        PolkitQt1::UnixProcessSubject(QCoreApplication::applicationPid()),
+    PolkitQt1::SystemBusNameSubject subject(
+        QDBusConnection::systemBus().baseService());
+    auto result = PolkitQt1::Authority::instance()->checkAuthorizationSync(
+        actionId, subject,
         PolkitQt1::Authority::AllowUserInteraction
     );
     return result == PolkitQt1::Authority::Yes;
@@ -1027,25 +1032,25 @@ void PackageController::applyDarkMode(bool dark)
     QPalette p;
 
     // Active / Inactive
-    const QColor window          = dark ? QColor("#353535") : QColor("#efefef");
-    const QColor windowText      = dark ? QColor("#ffffff") : QColor("#000000");
-    const QColor base            = dark ? QColor("#252525") : QColor("#ffffff");
-    const QColor alternateBase   = dark ? QColor("#353535") : QColor("#f7f7f7");
-    const QColor text            = dark ? QColor("#ffffff") : QColor("#000000");
-    const QColor button          = dark ? QColor("#454545") : QColor("#e0e0e0");
-    const QColor buttonText      = dark ? QColor("#ffffff") : QColor("#000000");
-    const QColor highlight       = dark ? QColor("#2196F3") : QColor("#308cc6");
-    const QColor highlightedText = dark ? QColor("#ffffff") : QColor("#ffffff");
-    const QColor placeholderText = dark ? QColor("#888888") : QColor("#595959");
-    const QColor mid             = dark ? QColor("#555555") : QColor("#b0b0b0");
-    const QColor light           = dark ? QColor("#555555") : QColor("#ffffff");
-    const QColor midlight        = dark ? QColor("#404040") : QColor("#e3e3e3");
-    const QColor darkColor       = dark ? QColor("#232323") : QColor("#9f9f9f");
-    const QColor shadow          = dark ? QColor("#141414") : QColor("#767676");
-    const QColor link            = dark ? QColor("#64b5f6") : QColor("#0000ff");
-    const QColor linkVisited     = dark ? QColor("#ce93d8") : QColor("#ff00ff");
-    const QColor toolTipBase     = dark ? QColor("#454545") : QColor("#ffffdc");
-    const QColor toolTipText     = dark ? QColor("#ffffff") : QColor("#000000");
+    const QColor window          = dark ? QColor(0x35, 0x35, 0x35) : QColor(0xef, 0xef, 0xef);
+    const QColor windowText      = dark ? QColor(0xff, 0xff, 0xff) : QColor(0x00, 0x00, 0x00);
+    const QColor base            = dark ? QColor(0x25, 0x25, 0x25) : QColor(0xff, 0xff, 0xff);
+    const QColor alternateBase   = dark ? QColor(0x35, 0x35, 0x35) : QColor(0xf7, 0xf7, 0xf7);
+    const QColor text            = dark ? QColor(0xff, 0xff, 0xff) : QColor(0x00, 0x00, 0x00);
+    const QColor button          = dark ? QColor(0x45, 0x45, 0x45) : QColor(0xe0, 0xe0, 0xe0);
+    const QColor buttonText      = dark ? QColor(0xff, 0xff, 0xff) : QColor(0x00, 0x00, 0x00);
+    const QColor highlight       = dark ? QColor(0x21, 0x96, 0xf3) : QColor(0x30, 0x8c, 0xc6);
+    const QColor highlightedText = dark ? QColor(0xff, 0xff, 0xff) : QColor(0xff, 0xff, 0xff);
+    const QColor placeholderText = dark ? QColor(0x88, 0x88, 0x88) : QColor(0x59, 0x59, 0x59);
+    const QColor mid             = dark ? QColor(0x55, 0x55, 0x55) : QColor(0xb0, 0xb0, 0xb0);
+    const QColor light           = dark ? QColor(0x55, 0x55, 0x55) : QColor(0xff, 0xff, 0xff);
+    const QColor midlight        = dark ? QColor(0x40, 0x40, 0x40) : QColor(0xe3, 0xe3, 0xe3);
+    const QColor darkColor       = dark ? QColor(0x23, 0x23, 0x23) : QColor(0x9f, 0x9f, 0x9f);
+    const QColor shadow          = dark ? QColor(0x14, 0x14, 0x14) : QColor(0x76, 0x76, 0x76);
+    const QColor link            = dark ? QColor(0x64, 0xb5, 0xf6) : QColor(0x00, 0x00, 0xff);
+    const QColor linkVisited     = dark ? QColor(0xce, 0x93, 0xd8) : QColor(0xff, 0x00, 0xff);
+    const QColor toolTipBase     = dark ? QColor(0x45, 0x45, 0x45) : QColor(0xff, 0xff, 0xdc);
+    const QColor toolTipText     = dark ? QColor(0xff, 0xff, 0xff) : QColor(0x00, 0x00, 0x00);
 
     for (auto group : {QPalette::Active, QPalette::Inactive}) {
         p.setColor(group, QPalette::Window,          window);
@@ -1070,16 +1075,16 @@ void PackageController::applyDarkMode(bool dark)
     }
 
     // Disabled
-    const QColor disWindowText      = dark ? QColor("#808080") : QColor("#a0a0a0");
-    const QColor disBase            = dark ? QColor("#2a2a2a") : QColor("#efefef");
-    const QColor disText            = dark ? QColor("#808080") : QColor("#a0a0a0");
-    const QColor disButtonText      = dark ? QColor("#808080") : QColor("#a0a0a0");
-    const QColor disHighlight       = dark ? QColor("#444444") : QColor("#c0c0c0");
-    const QColor disHighlightedText = dark ? QColor("#808080") : QColor("#a0a0a0");
-    const QColor disPlaceholderText = dark ? QColor("#606060") : QColor("#c0c0c0");
-    const QColor disLink            = dark ? QColor("#506888") : QColor("#8080c0");
-    const QColor disLinkVisited     = dark ? QColor("#7a6888") : QColor("#c080c0");
-    const QColor disToolTipText     = dark ? QColor("#808080") : QColor("#a0a0a0");
+    const QColor disWindowText      = dark ? QColor(0x80, 0x80, 0x80) : QColor(0xa0, 0xa0, 0xa0);
+    const QColor disBase            = dark ? QColor(0x2a, 0x2a, 0x2a) : QColor(0xef, 0xef, 0xef);
+    const QColor disText            = dark ? QColor(0x80, 0x80, 0x80) : QColor(0xa0, 0xa0, 0xa0);
+    const QColor disButtonText      = dark ? QColor(0x80, 0x80, 0x80) : QColor(0xa0, 0xa0, 0xa0);
+    const QColor disHighlight       = dark ? QColor(0x44, 0x44, 0x44) : QColor(0xc0, 0xc0, 0xc0);
+    const QColor disHighlightedText = dark ? QColor(0x80, 0x80, 0x80) : QColor(0xa0, 0xa0, 0xa0);
+    const QColor disPlaceholderText = dark ? QColor(0x60, 0x60, 0x60) : QColor(0xc0, 0xc0, 0xc0);
+    const QColor disLink            = dark ? QColor(0x50, 0x68, 0x88) : QColor(0x80, 0x80, 0xc0);
+    const QColor disLinkVisited     = dark ? QColor(0x7a, 0x68, 0x88) : QColor(0xc0, 0x80, 0xc0);
+    const QColor disToolTipText     = dark ? QColor(0x80, 0x80, 0x80) : QColor(0xa0, 0xa0, 0xa0);
 
     p.setColor(QPalette::Disabled, QPalette::Window,          window);
     p.setColor(QPalette::Disabled, QPalette::WindowText,      disWindowText);
@@ -1102,14 +1107,6 @@ void PackageController::applyDarkMode(bool dark)
     p.setColor(QPalette::Disabled, QPalette::ToolTipText,     disToolTipText);
 
     QGuiApplication::setPalette(p);
-}
-
-/**
- * @brief バックエンドプロセスを終了させる。
- */
-void PackageController::quitBackend()
-{
-    m_dbus->quit();
 }
 
 } // namespace qZypper

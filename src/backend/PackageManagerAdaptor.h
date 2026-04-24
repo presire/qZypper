@@ -60,7 +60,7 @@ public slots:
 
     // 状態変更
     bool SetPackageStatus(const QString &name, int status);   // パッケージ状態変更
-    bool SetPackageVersion(const QString &name,              // パッケージバージョン変更
+    bool SetPackageVersion(const QString &name,               // パッケージバージョン変更
                            const QString &version,
                            const QString &arch,
                            const QString &repoAlias);
@@ -86,9 +86,6 @@ public slots:
     // キャンセル
     void CancelOperation();                             // 操作キャンセル
 
-    // 終了
-    void Quit();                                        // バックエンド終了
-
 signals:
     void ProgressChanged(const QString &packageName, int percentage, const QString &stage);  // 操作進捗
     void CommitProgressChanged(const QString &packageName, int percentage,                   // コミット進捗 (詳細版)
@@ -97,6 +94,7 @@ signals:
     void TransactionFinished(bool success, const QString &summary);                          // トランザクション完了
     void RepoRefreshProgress(const QString &repoAlias, int percentage);                      // リフレッシュ進捗
     void ErrorOccurred(const QString &errorMessage);                                         // エラー通知
+    void PackageStateChanged(const QString &packageName, const QString &event);              // パッケージ状態遷移
 
 private:
     void resetIdleTimer();                              // アイドルタイマリセット

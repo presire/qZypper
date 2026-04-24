@@ -111,7 +111,8 @@ public:
         std::string errorMessage;                       // エラーメッセージ
     };
 
-    CommitResult commit(ProgressCallbackFn progressCallback = nullptr);  // コミット実行
+    CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミット実行
+                        StateEventCallbackFn stateCallback = nullptr);
 
     // ディスク使用量
     std::vector<DiskUsageInfo> getDiskUsage() const;       // ディスク使用量取得

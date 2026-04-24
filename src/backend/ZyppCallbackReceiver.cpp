@@ -31,10 +31,12 @@ int calcOverall(int completedSteps, int currentPercent, int totalSteps)
  * @param totalSteps 全ステップ数
  * @param cancelFlag キャンセルフラグ
  */
-InstallReceiver::InstallReceiver(ProgressCallbackFn cb, int &completedSteps,
+InstallReceiver::InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                                 int &completedSteps,
                                  int totalSteps, const std::atomic<bool> &cancelFlag,
                                  std::string &problemDetail)
     : m_callback(std::move(cb))
+    , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
     , m_totalSteps(totalSteps)
     , m_cancelFlag(cancelFlag)
@@ -68,6 +70,9 @@ void InstallReceiver::start(zypp::Resolvable::constPtr resolvable)
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
+
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "install_start");
 
     if (m_callback) {
         CommitProgressInfo info;
@@ -111,6 +116,8 @@ void InstallReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
                              Error /*error*/, const std::string &/*reason*/,
                              RpmLevel /*level*/)
 {
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "install_end");
     ++m_completedSteps;
 }
 
@@ -119,10 +126,12 @@ void InstallReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
 /**
  * @brief RemoveReceiver を構築する。
  */
-RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, int &completedSteps,
+RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                               int &completedSteps,
                                int totalSteps, const std::atomic<bool> &cancelFlag,
                                std::string &problemDetail)
     : m_callback(std::move(cb))
+    , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
     , m_totalSteps(totalSteps)
     , m_cancelFlag(cancelFlag)
@@ -153,6 +162,9 @@ void RemoveReceiver::start(zypp::Resolvable::constPtr resolvable)
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
+
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "remove_start");
 
     if (m_callback) {
         CommitProgressInfo info;
@@ -195,6 +207,8 @@ bool RemoveReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable
 void RemoveReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
                             Error /*error*/, const std::string &/*reason*/)
 {
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "remove_end");
     ++m_completedSteps;
 }
 
@@ -203,10 +217,12 @@ void RemoveReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
 /**
  * @brief DownloadReceiver を構築する。
  */
-DownloadReceiver::DownloadReceiver(ProgressCallbackFn cb, int &completedSteps,
+DownloadReceiver::DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                                   int &completedSteps,
                                    int totalSteps, const std::atomic<bool> &cancelFlag,
                                    std::string &problemDetail)
     : m_callback(std::move(cb))
+    , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
     , m_totalSteps(totalSteps)
     , m_cancelFlag(cancelFlag)
@@ -247,9 +263,11 @@ DownloadReceiver::Action DownloadReceiver::problem(
  * @param resolvable キャッシュ済みパッケージ
  * @param localfile ローカルファイルパス
  */
-void DownloadReceiver::infoInCache(zypp::Resolvable::constPtr /*resolvable*/,
+void DownloadReceiver::infoInCache(zypp::Resolvable::constPtr resolvable,
                                    const zypp::Pathname &/*localfile*/)
 {
+    if (m_stateCallback && resolvable)
+        m_stateCallback(resolvable->name(), "cached");
     ++m_completedSteps;
 }
 
@@ -264,6 +282,9 @@ void DownloadReceiver::start(zypp::Resolvable::constPtr resolvable,
     if (resolvable)
         m_currentPkg = resolvable->name();
     m_retryCount = 0;  // パッケージ切替でリトライ回数をリセット
+
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "download_start");
 
     if (m_callback) {
         CommitProgressInfo info;
@@ -306,6 +327,8 @@ bool DownloadReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvab
 void DownloadReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
                               Error /*error*/, const std::string &/*reason*/)
 {
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "download_end");
     ++m_completedSteps;
 }
 
@@ -314,9 +337,11 @@ void DownloadReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
 /**
  * @brief InstallReceiverSA を構築する。
  */
-InstallReceiverSA::InstallReceiverSA(ProgressCallbackFn cb, int &completedSteps,
+InstallReceiverSA::InstallReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                                     int &completedSteps,
                                      int totalSteps, const std::atomic<bool> &cancelFlag)
     : m_callback(std::move(cb))
+    , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
     , m_totalSteps(totalSteps)
     , m_cancelFlag(cancelFlag)
@@ -331,6 +356,9 @@ void InstallReceiverSA::start(zypp::Resolvable::constPtr resolvable,
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
+
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "install_start");
 
     if (m_callback) {
         CommitProgressInfo info;
@@ -368,6 +396,8 @@ void InstallReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolva
 void InstallReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
                                Error /*error*/, const zypp::callback::UserData &/*userData*/)
 {
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "install_end");
     ++m_completedSteps;
 }
 
@@ -376,9 +406,11 @@ void InstallReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
 /**
  * @brief RemoveReceiverSA を構築する。
  */
-RemoveReceiverSA::RemoveReceiverSA(ProgressCallbackFn cb, int &completedSteps,
+RemoveReceiverSA::RemoveReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                                   int &completedSteps,
                                    int totalSteps, const std::atomic<bool> &cancelFlag)
     : m_callback(std::move(cb))
+    , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
     , m_totalSteps(totalSteps)
     , m_cancelFlag(cancelFlag)
@@ -393,6 +425,9 @@ void RemoveReceiverSA::start(zypp::Resolvable::constPtr resolvable,
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
+
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "remove_start");
 
     if (m_callback) {
         CommitProgressInfo info;
@@ -430,6 +465,8 @@ void RemoveReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvab
 void RemoveReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
                               Error /*error*/, const zypp::callback::UserData &/*userData*/)
 {
+    if (m_stateCallback)
+        m_stateCallback(m_currentPkg, "remove_end");
     ++m_completedSteps;
 }
 

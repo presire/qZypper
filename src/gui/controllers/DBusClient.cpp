@@ -190,6 +190,11 @@ bool DBusClient::connectToBackend()
         "ErrorOccurred",
         this, SIGNAL(errorOccurred(QString))
     );
+    bus.connect(
+        SERVICE_NAME, OBJECT_PATH, INTERFACE,
+        "PackageStateChanged",
+        this, SIGNAL(packageStateChanged(QString, QString))
+    );
 
     m_connected = true;
     qDebug() << "DBusClient: connected to backend";
@@ -985,15 +990,6 @@ void DBusClient::restoreState()
 {
     if (!isConnected()) return;
     m_iface->call(QDBus::NoBlock, "RestoreState");
-}
-
-/**
- * @brief バックエンドプロセスを終了させる。
- */
-void DBusClient::quit()
-{
-    if (!isConnected()) return;
-    m_iface->call(QDBus::NoBlock, "Quit");
 }
 
 } // namespace qZypper

@@ -52,14 +52,10 @@ ApplicationWindow {
         property alias colAvailable: pkgPane.colAvailable
     }
 
-    onClosing: {
-        PackageController.quitBackend()
-    }
-
     // -- グローバルショートカット --
     Shortcut {
         sequence: "Ctrl+Q"
-        onActivated: { PackageController.quitBackend(); Qt.quit() }
+        onActivated: Qt.quit()
     }
 
     Shortcut {
@@ -218,7 +214,7 @@ ApplicationWindow {
                 icon.name: "application-exit"
                 icon.color: palette.text
                 Layout.fillWidth: true
-                onClicked: { PackageController.quitBackend(); Qt.quit() }
+                onClicked: Qt.quit()
             }
         }
     }
@@ -1678,7 +1674,6 @@ ApplicationWindow {
                 text: qsTr("Cancel")
                 onClicked: {
                     PackageController.restoreState()
-                    PackageController.quitBackend()
                     Qt.quit()
                 }
             }
@@ -1721,12 +1716,12 @@ ApplicationWindow {
         }
 
         // PackageController.busyに連動して自動開閉
-        // ただし、progressDialog / conflictDialog / refreshOverlay表示中は開かない
+        // ただし、commitProgressDialog / conflictDialog / refreshOverlay表示中は開かない
         Connections {
             target: PackageController
             function onBusyChanged() {
                 if (PackageController.busy) {
-                    if (!progressDialog.visible && !conflictDialog.visible && !refreshOverlay.visible)
+                    if (!commitProgressDialog.visible && !conflictDialog.visible && !refreshOverlay.visible)
                         solverWaitDialog.open()
                 } else {
                     solverWaitDialog.close()
@@ -1735,120 +1730,9 @@ ApplicationWindow {
         }
     }
 
-    // 進捗ダイアログ
-    Dialog {
-        id: progressDialog
-        title: qsTr("Performing Installation")
-        anchors.centerIn: parent
-        modal: true
-        closePolicy: Dialog.NoAutoClose
-        width: 500
-        standardButtons: Dialog.NoButton
-
-        property string currentPackage: ""
-        property int overallPercent: 0
-        property int totalPkgs: 0
-        property int completedPkgs: 0
-        property string currentStage: "installing"
-
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 16
-
-            // ステージ表示
-            Label {
-                text: {
-                    if (progressDialog.currentStage === "downloading")
-                        return qsTr("Downloading packages...")
-                    else if (progressDialog.currentStage === "removing")
-                        return qsTr("Removing packages...")
-                    else
-                        return qsTr("Installing packages...")
-                }
-                font.bold: true
-                font.pixelSize: 14
-                Layout.fillWidth: true
-            }
-
-            // プログレスバー
-            ProgressBar {
-                id: progressBar
-                Layout.fillWidth: true
-                from: 0
-                to: 100
-                value: progressDialog.overallPercent
-                indeterminate: progressDialog.overallPercent === 0
-            }
-
-            // パッケージ名 + パーセント
-            RowLayout {
-                Layout.fillWidth: true
-
-                Label {
-                    text: progressDialog.currentPackage
-                    elide: Text.ElideMiddle
-                    Layout.fillWidth: true
-                    color: palette.text
-                }
-
-                Label {
-                    text: progressDialog.overallPercent + "%"
-                    font.bold: true
-                    color: palette.highlight
-                }
-            }
-
-            // 残りパッケージ数
-            Label {
-                text: {
-                    var remaining = progressDialog.totalPkgs - progressDialog.completedPkgs
-                    if (remaining > 0)
-                        return qsTr("Remaining: %1 package(s)").arg(remaining)
-                    return qsTr("Finishing up...")
-                }
-                color: palette.mid
-                font.pixelSize: 12
-            }
-
-            // 区切り線
-            Rectangle {
-                Layout.fillWidth: true
-                height: 1
-                color: palette.mid
-            }
-
-            // キャンセルボタン
-            RowLayout {
-                Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: qsTr("Cancel")
-                    onClicked: {
-                        PackageController.cancelOperation()
-                    }
-                }
-            }
-        }
-
-        Connections {
-            target: PackageController
-            function onCommitProgressChanged(packageName, percentage, stage,
-                                              totalSteps, completedSteps,
-                                              overallPercentage) {
-                progressDialog.currentPackage = packageName
-                progressDialog.overallPercent = overallPercentage
-                progressDialog.completedPkgs = completedSteps
-                progressDialog.currentStage = stage
-                progressBar.indeterminate = false
-            }
-            function onCommitResultChanged() {
-                progressDialog.close()
-                var cr = PackageController.commitResult
-                resultDialog.resultSuccess = cr.success || false
-                resultDialog.resultData = cr
-                resultDialog.open()
-            }
-        }
+    // コミット進捗ダイアログ (myrlyn風 To Do / Downloads / Doing / Done)
+    Dialogs.CommitProgressDialog {
+        id: commitProgressDialog
     }
 
     // トランザクション結果ダイアログ
@@ -1860,20 +1744,33 @@ ApplicationWindow {
         standardButtons: Dialog.Ok
         width: 520
         // 縦サイズは親ウィンドウの60%を上限 (大量パッケージ時もコンパクトに)
-        height: Math.min(root.height * 0.6, 480)
+        height: Math.min(root.height * 0.85, 700)
+
+        background: Rectangle {
+            color: palette.window
+            border.color: palette.highlight
+            border.width: 2
+        }
+        header: Label {
+            text: resultDialog.title
+            font.bold: true
+            padding: 10
+        }
 
         property bool resultSuccess: true
         property var resultData: ({})
 
-        ScrollView {
-            id: resultScroll
+        Flickable {
+            id: resultFlickable
             anchors.fill: parent
+            contentHeight: resultColumn.implicitHeight
             clip: true
-            ScrollBar.vertical.policy: ScrollBar.AsNeeded
-            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            boundsMovement: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
             ColumnLayout {
-                width: resultScroll.availableWidth
+                id: resultColumn
+                width: resultFlickable.width
                 spacing: 12
 
             // ヘッダ
@@ -1932,7 +1829,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.leftMargin: 16
                     color: palette.text
-                    font.pixelSize: 12
+                    font.pixelSize: 13
                     font.family: "monospace"
                     visible: (resultDialog.resultData.installedPackages || []).length > 0
                 }
@@ -1958,7 +1855,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.leftMargin: 16
                     color: palette.text
-                    font.pixelSize: 12
+                    font.pixelSize: 13
                     font.family: "monospace"
                     visible: (resultDialog.resultData.updatedPackages || []).length > 0
                 }
@@ -1984,7 +1881,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.leftMargin: 16
                     color: palette.text
-                    font.pixelSize: 12
+                    font.pixelSize: 13
                     font.family: "monospace"
                     visible: (resultDialog.resultData.removedPackages || []).length > 0
                 }
@@ -2011,7 +1908,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     Layout.leftMargin: 16
                     color: "#F44336"
-                    font.pixelSize: 12
+                    font.pixelSize: 13
                     font.family: "monospace"
                 }
             }
@@ -2058,7 +1955,7 @@ ApplicationWindow {
                 }
             }
             }   // ColumnLayout
-        }   // ScrollView
+        }   // Flickable
 
         onAccepted: {
             // パッケージリストを再検索して更新
@@ -2263,12 +2160,8 @@ ApplicationWindow {
 
             // コミット実行
             var pending = PackageController.getPendingChanges()
-            progressDialog.totalPkgs = pending.length
-            progressDialog.completedPkgs = 0
-            progressDialog.overallPercent = 0
-            progressDialog.currentPackage = ""
-            progressDialog.currentStage = "installing"
-            progressDialog.open()
+            commitProgressDialog.initFromPendingChanges(pending)
+            commitProgressDialog.open()
             PackageController.commitAsync()
         }
     }

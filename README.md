@@ -1,6 +1,6 @@
 # qZypper
 
-**A modern GUI package manager for openSUSE Leap 16 / SLE 16**  
+**A modern GUI package manager for openSUSE / SLE 16**  
 
 [![License: GPL-2.0-or-later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
 [![Qt 6.5+](https://img.shields.io/badge/Qt-6.5%2B-41cd52.svg)](https://www.qt.io/)

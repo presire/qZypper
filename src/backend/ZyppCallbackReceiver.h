@@ -27,6 +27,15 @@ struct CommitProgressInfo {
 using ProgressCallbackFn = std::function<void(const CommitProgressInfo&)>;
 
 /**
+ * @brief パッケージ状態遷移イベントのコールバック型。
+ *
+ * download_start / download_end / cached / install_start / install_end /
+ * remove_start / remove_end のイベントを GUI へ伝達する。
+ */
+using StateEventCallbackFn = std::function<void(const std::string& packageName,
+                                                 const std::string& event)>;
+
+/**
  * @brief libzypp InstallResolvableReport の受信クラス。
  *
  * パッケージインストール進捗をコールバック経由で通知する。
@@ -35,7 +44,8 @@ class InstallReceiver
     : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReport>
 {
 public:
-    InstallReceiver(ProgressCallbackFn cb, int &completedSteps,
+    InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                    int &completedSteps,
                     int totalSteps, const std::atomic<bool> &cancelFlag,
                     std::string &problemDetail);
 
@@ -49,6 +59,7 @@ public:
 
 private:
     ProgressCallbackFn m_callback;
+    StateEventCallbackFn m_stateCallback;
     int &m_completedSteps;
     int m_totalSteps;
     const std::atomic<bool> &m_cancelFlag;
@@ -65,7 +76,8 @@ class RemoveReceiver
     : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReport>
 {
 public:
-    RemoveReceiver(ProgressCallbackFn cb, int &completedSteps,
+    RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                   int &completedSteps,
                    int totalSteps, const std::atomic<bool> &cancelFlag,
                    std::string &problemDetail);
 
@@ -78,6 +90,7 @@ public:
 
 private:
     ProgressCallbackFn m_callback;
+    StateEventCallbackFn m_stateCallback;
     int &m_completedSteps;
     int m_totalSteps;
     const std::atomic<bool> &m_cancelFlag;
@@ -94,7 +107,8 @@ class DownloadReceiver
     : public zypp::callback::ReceiveReport<zypp::repo::DownloadResolvableReport>
 {
 public:
-    DownloadReceiver(ProgressCallbackFn cb, int &completedSteps,
+    DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                     int &completedSteps,
                      int totalSteps, const std::atomic<bool> &cancelFlag,
                      std::string &problemDetail);
 
@@ -111,6 +125,7 @@ public:
 
 private:
     ProgressCallbackFn m_callback;
+    StateEventCallbackFn m_stateCallback;
     int &m_completedSteps;
     int m_totalSteps;
     const std::atomic<bool> &m_cancelFlag;
@@ -126,7 +141,8 @@ class InstallReceiverSA
     : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReportSA>
 {
 public:
-    InstallReceiverSA(ProgressCallbackFn cb, int &completedSteps,
+    InstallReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                      int &completedSteps,
                       int totalSteps, const std::atomic<bool> &cancelFlag);
 
     void start(zypp::Resolvable::constPtr resolvable,
@@ -138,6 +154,7 @@ public:
 
 private:
     ProgressCallbackFn m_callback;
+    StateEventCallbackFn m_stateCallback;
     int &m_completedSteps;
     int m_totalSteps;
     const std::atomic<bool> &m_cancelFlag;
@@ -151,7 +168,8 @@ class RemoveReceiverSA
     : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReportSA>
 {
 public:
-    RemoveReceiverSA(ProgressCallbackFn cb, int &completedSteps,
+    RemoveReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
+                     int &completedSteps,
                      int totalSteps, const std::atomic<bool> &cancelFlag);
 
     void start(zypp::Resolvable::constPtr resolvable,
@@ -163,6 +181,7 @@ public:
 
 private:
     ProgressCallbackFn m_callback;
+    StateEventCallbackFn m_stateCallback;
     int &m_completedSteps;
     int m_totalSteps;
     const std::atomic<bool> &m_cancelFlag;

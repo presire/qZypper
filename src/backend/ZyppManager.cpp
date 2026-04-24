@@ -1260,7 +1260,8 @@ bool ZyppManager::applySolution(int problemIndex, int solutionIndex)
  * @param progressCallback 進捗コールバック
  * @return コミット結果
  */
-ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallback)
+ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallback,
+                                              StateEventCallbackFn stateCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     CommitResult result;
@@ -1304,15 +1305,15 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         std::string problemDetail;
 
         // コールバックレシーバー登録
-        InstallReceiver installRcv(progressCallback, completedSteps,
+        InstallReceiver installRcv(progressCallback, stateCallback, completedSteps,
                                    totalSteps, m_cancelRequested, problemDetail);
-        RemoveReceiver removeRcv(progressCallback, completedSteps,
+        RemoveReceiver removeRcv(progressCallback, stateCallback, completedSteps,
                                  totalSteps, m_cancelRequested, problemDetail);
-        DownloadReceiver downloadRcv(progressCallback, completedSteps,
+        DownloadReceiver downloadRcv(progressCallback, stateCallback, completedSteps,
                                      totalSteps, m_cancelRequested, problemDetail);
-        InstallReceiverSA installRcvSA(progressCallback, completedSteps,
+        InstallReceiverSA installRcvSA(progressCallback, stateCallback, completedSteps,
                                        totalSteps, m_cancelRequested);
-        RemoveReceiverSA removeRcvSA(progressCallback, completedSteps,
+        RemoveReceiverSA removeRcvSA(progressCallback, stateCallback, completedSteps,
                                      totalSteps, m_cancelRequested);
         installRcv.connect();
         removeRcv.connect();

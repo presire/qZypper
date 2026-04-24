@@ -3,13 +3,11 @@
 #include <QDBusMessage>
 #include <QEventLoop>
 #include <QThread>
+#include <iostream>
 #include "PackageManagerAdaptor.h"
 #include "ZyppManager.h"
 #include "ZyppCallbackReceiver.h"
 #include "RepoInfo.h"
-
-// Polkit認証 (polkit-qt6が利用可能な場合)
-// #include <PolkitQt1/Authority>
 
 namespace qZypper {
 
@@ -57,7 +55,8 @@ bool PackageManagerAdaptor::Initialize()
                            err.isEmpty() ? QStringLiteral("Unknown initialization error") : err);
         }
         return ok;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         sendErrorReply(QDBusError::Failed,
                        QStringLiteral("Initialization exception: %1").arg(QString::fromLocal8Bit(e.what())));
         return false;
@@ -74,12 +73,8 @@ bool PackageManagerAdaptor::Initialize()
  */
 bool PackageManagerAdaptor::RefreshRepos()
 {
-    // リフレッシュ後は GUI の Quit 呼び出しまでバックエンドを
-    // 生存させ続けるため、アイドルタイマを永続停止する
-    m_idleTimer.stop();
+    LongOperationGuard guard(this);
 
-    // ワーカースレッドでリフレッシュを実行し、
-    // QEventLoopでD-Busイベント(CancelOperation等)を処理しつつスレッド完了を待つ
     bool result = false;
     QEventLoop loop;
 
@@ -108,7 +103,7 @@ bool PackageManagerAdaptor::RefreshRepos()
  */
 bool PackageManagerAdaptor::RefreshSingleRepo(const QString &alias)
 {
-    m_idleTimer.stop();   // 永続停止 (GUI Quit まで生存)
+    LongOperationGuard guard(this);
 
     bool result = false;
     QEventLoop loop;
@@ -181,8 +176,11 @@ QVariantMap PackageManagerAdaptor::AddRepoFull(const QVariantMap &properties)
     RepoInfo info = RepoInfo::fromVariantMap(properties);
     bool ok = mgr.addRepo(info);
     result["success"] = ok;
-    if (!ok)
+
+    if (!ok) {
         result["errorMessage"] = QString::fromStdString(mgr.lastError());
+    }
+
     return result;
 }
 
@@ -234,8 +232,10 @@ QVariantList PackageManagerAdaptor::GetServices()
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& svc : ZyppManager::instance().getServices())
+    for (const auto& svc : ZyppManager::instance().getServices()) {
         result.append(svc.toVariantMap());
+    }
+
     return result;
 }
 
@@ -284,7 +284,7 @@ bool PackageManagerAdaptor::ModifyService(const QString &alias, const QVariantMa
  */
 bool PackageManagerAdaptor::RefreshService(const QString &alias)
 {
-    m_idleTimer.stop();   // 永続停止 (GUI Quit まで生存)
+    LongOperationGuard guard(this);
     return ZyppManager::instance().refreshService(alias.toStdString());
 }
 
@@ -301,8 +301,10 @@ QVariantList PackageManagerAdaptor::SearchPackages(const QString &query, int sea
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& pkg : ZyppManager::instance().searchPackages(query.toStdString(), searchFlags))
+    for (const auto& pkg : ZyppManager::instance().searchPackages(query.toStdString(), searchFlags)) {
         result.append(pkg.toVariantMap());
+    }
+
     return result;
 }
 
@@ -327,8 +329,10 @@ QVariantList PackageManagerAdaptor::GetPackagesByRepo(const QString &repoAlias)
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& pkg : ZyppManager::instance().getPackagesByRepo(repoAlias.toStdString()))
+    for (const auto& pkg : ZyppManager::instance().getPackagesByRepo(repoAlias.toStdString())) {
         result.append(pkg.toVariantMap());
+    }
+
     return result;
 }
 
@@ -341,8 +345,10 @@ QVariantList PackageManagerAdaptor::GetPatterns()
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& pat : ZyppManager::instance().getPatterns())
+    for (const auto& pat : ZyppManager::instance().getPatterns()) {
         result.append(pat.toVariantMap());
+    }
+
     return result;
 }
 
@@ -356,8 +362,10 @@ QVariantList PackageManagerAdaptor::GetPackagesByPattern(const QString &patternN
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& pkg : ZyppManager::instance().getPackagesByPattern(patternName.toStdString()))
+    for (const auto& pkg : ZyppManager::instance().getPackagesByPattern(patternName.toStdString())) {
         result.append(pkg.toVariantMap());
+    }
+
     return result;
 }
 
@@ -371,8 +379,10 @@ QVariantList PackageManagerAdaptor::GetPatches(int category)
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& patch : ZyppManager::instance().getPatches(category))
+    for (const auto& patch : ZyppManager::instance().getPatches(category)) {
         result.append(patch.toVariantMap());
+    }
+
     return result;
 }
 
@@ -387,8 +397,10 @@ QVariantList PackageManagerAdaptor::GetPendingChanges()
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& pkg : ZyppManager::instance().getPendingChanges())
+    for (const auto& pkg : ZyppManager::instance().getPendingChanges()) {
         result.append(pkg.toVariantMap());
+    }
+
     return result;
 }
 
@@ -456,10 +468,12 @@ QVariantMap PackageManagerAdaptor::UpdateAllPackages()
         for (const auto& problem : solverResult.problems)
             problems.append(problem.toVariantMap());
         result["problems"] = problems;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         qWarning() << "UpdateAllPackages exception:" << e.what();
         result["success"] = false;
-    } catch (...) {
+    }
+    catch (...) {
         qWarning() << "UpdateAllPackages: unknown exception";
         result["success"] = false;
     }
@@ -488,10 +502,12 @@ QVariantMap PackageManagerAdaptor::ResolveDependencies()
         for (const auto& problem : solverResult.problems)
             problems.append(problem.toVariantMap());
         result["problems"] = problems;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         qWarning() << "ResolveDependencies exception:" << e.what();
         result["success"] = false;
-    } catch (...) {
+    }
+    catch (...) {
         qWarning() << "ResolveDependencies: unknown exception";
         result["success"] = false;
     }
@@ -521,31 +537,37 @@ bool PackageManagerAdaptor::ApplySolution(int problemIndex, int solutionIndex)
  */
 QVariantMap PackageManagerAdaptor::Commit()
 {
-    // インストール/アンインストール/更新後は GUI の Quit 呼び出しまで
-    // バックエンドを生存させ続けるため、アイドルタイマを永続停止する
-    m_idleTimer.stop();
-
-    // ワーカースレッドでコミットを実行し、
-    // QEventLoopでD-Busイベント(CancelOperation等)を処理しつつスレッド完了を待つ
+    LongOperationGuard guard(this);
     ZyppManager::CommitResult commitResult;
     QEventLoop loop;
 
     auto *thread = QThread::create([this, &commitResult]() {
         auto& mgr = ZyppManager::instance();
-        commitResult = mgr.commit([this](const CommitProgressInfo& info) {
-            auto pkgName = QString::fromStdString(info.packageName);
-            auto stage   = QString::fromStdString(info.stage);
-            int pct      = info.percentage;
-            int total    = info.totalSteps;
-            int done     = info.completedSteps;
-            int overall  = info.overallPercentage;
-            QMetaObject::invokeMethod(this, [this, pkgName, pct, stage,
-                                             total, done, overall]() {
-                emit CommitProgressChanged(pkgName, pct, stage,
-                                           total, done, overall);
-                emit ProgressChanged(pkgName, overall, stage);
-            }, Qt::QueuedConnection);
-        });
+        commitResult = mgr.commit(
+            [this](const CommitProgressInfo& info) {
+                auto pkgName = QString::fromStdString(info.packageName);
+                auto stage   = QString::fromStdString(info.stage);
+                int pct      = info.percentage;
+                int total    = info.totalSteps;
+                int done     = info.completedSteps;
+                int overall  = info.overallPercentage;
+                QMetaObject::invokeMethod(this, [this, pkgName, pct, stage,
+                                                 total, done, overall]() {
+                    emit CommitProgressChanged(pkgName, pct, stage,
+                                               total, done, overall);
+                    emit ProgressChanged(pkgName, overall, stage);
+                }, Qt::QueuedConnection);
+            },
+            [this](const std::string& pkgName, const std::string& event) {
+                auto qPkgName = QString::fromStdString(pkgName);
+                auto qEvent   = QString::fromStdString(event);
+                std::cerr << "PackageStateChanged: " << pkgName
+                          << " -> " << event << std::endl;
+                QMetaObject::invokeMethod(this, [this, qPkgName, qEvent]() {
+                    emit PackageStateChanged(qPkgName, qEvent);
+                }, Qt::QueuedConnection);
+            }
+        );
     });
     connect(thread, &QThread::finished, &loop, &QEventLoop::quit);
     connect(thread, &QThread::finished, thread, &QThread::deleteLater);
@@ -561,14 +583,22 @@ QVariantMap PackageManagerAdaptor::Commit()
 
     // パッケージ名リスト
     QStringList installedList, updatedList, removedList, failed;
-    for (const auto& p : commitResult.installedPackages)
+    for (const auto& p : commitResult.installedPackages){
         installedList << QString::fromStdString(p);
-    for (const auto& p : commitResult.updatedPackages)
+    }
+
+    for (const auto& p : commitResult.updatedPackages) {
         updatedList << QString::fromStdString(p);
-    for (const auto& p : commitResult.removedPackages)
+    }
+
+    for (const auto& p : commitResult.removedPackages) {
         removedList << QString::fromStdString(p);
-    for (const auto& f : commitResult.failedPackages)
+    }
+
+    for (const auto& f : commitResult.failedPackages) {
         failed << QString::fromStdString(f);
+    }
+
     result["installedPackages"] = installedList;
     result["updatedPackages"]   = updatedList;
     result["removedPackages"]   = removedList;
@@ -627,8 +657,10 @@ QVariantList PackageManagerAdaptor::GetDiskUsage()
     resetIdleTimer();
 
     QVariantList result;
-    for (const auto& du : ZyppManager::instance().getDiskUsage())
+    for (const auto& du : ZyppManager::instance().getDiskUsage()) {
         result.append(du.toVariantMap());
+    }
+
     return result;
 }
 
@@ -640,16 +672,6 @@ QVariantList PackageManagerAdaptor::GetDiskUsage()
 void PackageManagerAdaptor::CancelOperation()
 {
     ZyppManager::instance().cancelOperation();
-}
-
-// -- 終了 --
-
-/**
- * @brief バックエンドプロセスを終了する。
- */
-void PackageManagerAdaptor::Quit()
-{
-    QCoreApplication::quit();
 }
 
 } // namespace qZypper

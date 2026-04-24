@@ -1,4 +1,4 @@
-module qzypper 1.0.0;
+module qzypper 0.2.0;
 
 ########################################
 # qZypper SELinux Policy Module
@@ -218,8 +218,9 @@ allow qzypper_t self:sem { create destroy getattr setattr read write associate u
 allow qzypper_t qzypper_exec_t:file { getattr open read execute entrypoint map };
 
 # Shared libraries (ld.so, libc, Qt6, etc.)
+# execute_no_trans: browser launchers execute scripts under /usr/lib64/ (e.g. firefox.sh)
 allow qzypper_t lib_t:dir { getattr open read search };
-allow qzypper_t lib_t:file { getattr open read execute map };
+allow qzypper_t lib_t:file { getattr open read execute execute_no_trans map };
 allow qzypper_t lib_t:lnk_file { getattr read };
 allow qzypper_t ld_so_t:file { getattr open read execute map };
 allow qzypper_t ld_so_cache_t:file { getattr open read map };
@@ -244,6 +245,9 @@ allow qzypper_t usr_t:lnk_file { getattr read };
 allow qzypper_t bin_t:dir { getattr open read search };
 allow qzypper_t bin_t:file { getattr open read execute execute_no_trans map };
 allow qzypper_t bin_t:lnk_file { getattr read };
+
+# Shell execution (Qt.openUrlExternally → xdg-open fallback on X11; xdg-open is a shell script)
+allow qzypper_t shell_exec_t:file { getattr open read execute execute_no_trans map };
 
 # Fonts (system and user fonts)
 allow qzypper_t fonts_t:dir { getattr open read search };
@@ -289,9 +293,10 @@ allow qzypper_t urandom_device_t:chr_file { getattr open read };
 allow qzypper_t dri_device_t:chr_file { getattr open read write ioctl map };
 
 # tmpfs for shared memory (including execmod for Qt QML JIT code)
+# ioctl: PulseAudio memfd operations when child processes (browser) initialize audio
 allow qzypper_t tmpfs_t:dir { getattr open read search write add_name remove_name };
-allow qzypper_t tmpfs_t:file { getattr open read write create unlink map execute execmod };
-allow qzypper_t qzypper_tmpfs_t:file { getattr open read write create unlink map execute execmod };
+allow qzypper_t tmpfs_t:file { getattr open read write create unlink map execute execmod ioctl };
+allow qzypper_t qzypper_tmpfs_t:file { getattr open read write create unlink map execute execmod ioctl };
 
 # User home directory - read/write for application settings
 allow qzypper_t user_home_dir_t:dir { getattr open read search };
@@ -521,6 +526,48 @@ optional {
     allow fcitx_t qzypper_t:dbus send_msg;
     allow qzypper_t fcitx_t:unix_stream_socket connectto;
 }
+
+# xdg-desktop-portal D-Bus communication (Qt.openUrlExternally on Wayland)
+# On Wayland, Qt calls org.freedesktop.portal.OpenURI via D-Bus session bus.
+# The portal process typically runs as unconfined_t (covered by existing rules).
+# This optional block handles systems where a dedicated type is defined.
+optional {
+    require {
+        type xdg_desktop_portal_t;
+    }
+    allow qzypper_t xdg_desktop_portal_t:dbus send_msg;
+    allow xdg_desktop_portal_t qzypper_t:dbus send_msg;
+}
+
+# PulseAudio home directory (~/.config/pulse/) - kde-open initializes audio subsystem
+optional {
+    require {
+        type pulseaudio_home_t;
+    }
+    allow qzypper_t pulseaudio_home_t:dir { getattr open read search };
+    allow qzypper_t pulseaudio_home_t:file { getattr open read map };
+}
+
+# Browser domain transition (Qt.openUrlExternally → kde-open/xdg-open → browser)
+# On SUSE 16, mozilla_t/chromium_t process domains do not exist — browsers
+# normally run as unconfined_t. Transition to unconfined_t to match that behavior
+# and avoid inheriting qzypper_t's restricted permissions (no network etc.).
+optional {
+    require {
+        type mozilla_exec_t;
+    }
+    allow qzypper_t mozilla_exec_t:file { getattr open read execute map };
+    type_transition qzypper_t mozilla_exec_t:process unconfined_t;
+}
+optional {
+    require {
+        type chromium_exec_t;
+    }
+    allow qzypper_t chromium_exec_t:file { getattr open read execute map };
+    type_transition qzypper_t chromium_exec_t:process unconfined_t;
+}
+# Permit qzypper_t → unconfined_t process transition (browser child processes)
+allow qzypper_t unconfined_t:process { transition siginh rlimitinh noatsecure };
 
 # Home bin directory (~/bin, ~/.local/bin) - search for path resolution
 optional {
@@ -1120,6 +1167,15 @@ optional {
     }
     allow qzypper_dbus_t snapperd_conf_t:dir { getattr open read search };
     allow qzypper_dbus_t snapperd_conf_t:file { getattr open read };
+}
+
+# CUPS configuration directory (/etc/cups)
+# libzypp traverses /etc/cups when enumerating package file lists
+optional {
+    require {
+        type cupsd_etc_t;
+    }
+    allow qzypper_dbus_t cupsd_etc_t:dir { getattr search };
 }
 
 # /home directory traversal (for btrfs subvolume detection)
