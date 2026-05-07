@@ -402,6 +402,31 @@ ApplicationWindow {
     property int sortColumn: -1       // -1=なし, 0=チェックボックス, 1=パッケージ名
     property bool sortAscending: true
 
+    // -- パッケージ一覧の typeahead 検索バッファ --
+    property string pkgSearchBuffer: ""
+
+    Timer {
+        id: pkgSearchClearTimer
+        interval: 5000
+        repeat: false
+        onTriggered: pkgSearchBuffer = ""
+    }
+
+    function performPkgSearch() {
+        var q = pkgSearchBuffer.toLowerCase()
+        if (q.length === 0) return
+        var m = packageListView.model
+        var n = (m && m.length !== undefined) ? m.length : packageListView.count
+        for (var i = 0; i < n; ++i) {
+            var name = (m[i].name || "").toLowerCase()
+            if (name.startsWith(q)) {
+                packageListView.currentIndex = i
+                packageListView.positionViewAtIndex(i, ListView.Center)
+                break
+            }
+        }
+    }
+
     function sortedPackages() {
         var pkgs = PackageController.packages
         if (sortColumn < 0) return pkgs
@@ -443,6 +468,8 @@ ApplicationWindow {
         target: PackageController
         function onPackagesChanged() {
             packageListView.model = sortedPackages()
+            pkgSearchBuffer = ""
+            pkgSearchClearTimer.stop()
         }
     }
 
@@ -969,6 +996,75 @@ ApplicationWindow {
                             height: packageFlickable.height
                             clip: true
                             model: sortedPackages()
+                            focus: true
+                            activeFocusOnTab: true
+                            keyNavigationWraps: false
+                            highlightMoveDuration: 0
+                            highlightMoveVelocity: -1
+                            highlightResizeDuration: 0
+
+                            Keys.onPressed: function(event) {
+                                switch (event.key) {
+                                    case Qt.Key_Up:
+                                        if (currentIndex > 0) currentIndex--
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_Down:
+                                        if (currentIndex < count - 1) currentIndex++
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_Home:
+                                        if (count > 0) {
+                                            currentIndex = 0
+                                            positionViewAtIndex(0, ListView.Beginning)
+                                        }
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_End:
+                                        if (count > 0) {
+                                            currentIndex = count - 1
+                                            positionViewAtIndex(count - 1, ListView.End)
+                                        }
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_PageUp:
+                                        currentIndex = Math.max(0, currentIndex - Math.floor(height / 28))
+                                        positionViewAtIndex(currentIndex, ListView.Contain)
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_PageDown:
+                                        currentIndex = Math.min(count - 1, currentIndex + Math.floor(height / 28))
+                                        positionViewAtIndex(currentIndex, ListView.Contain)
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_Escape:
+                                        pkgSearchBuffer = ""
+                                        pkgSearchClearTimer.stop()
+                                        event.accepted = true
+                                        break
+                                    case Qt.Key_Backspace:
+                                        if (pkgSearchBuffer.length > 0) {
+                                            pkgSearchBuffer = pkgSearchBuffer.slice(0, -1)
+                                            if (pkgSearchBuffer.length > 0) {
+                                                performPkgSearch()
+                                                pkgSearchClearTimer.restart()
+                                            }
+                                            else {
+                                                pkgSearchClearTimer.stop()
+                                            }
+                                        }
+                                        event.accepted = true
+                                        break
+                                    default:
+                                        if (event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
+                                            pkgSearchBuffer += event.text
+                                            performPkgSearch()
+                                            pkgSearchClearTimer.restart()
+                                            event.accepted = true
+                                        }
+                                        break
+                                }
+                            }
 
                             delegate: ItemDelegate {
                                 id: pkgDelegate
@@ -1004,6 +1100,7 @@ ApplicationWindow {
 
                                 onClicked: {
                                     packageListView.currentIndex = pkgDelegate.index
+                                    packageListView.forceActiveFocus()
                                     PackageController.loadPackageDetails(pkgDelegate.modelData.name)
                                 }
 
@@ -1011,6 +1108,7 @@ ApplicationWindow {
                                     acceptedButtons: Qt.RightButton
                                     onTapped: {
                                         packageListView.currentIndex = pkgDelegate.index
+                                        packageListView.forceActiveFocus()
                                         pkgContextMenu.targetPkg = pkgDelegate.modelData
                                         pkgContextMenu.popup()
                                     }
@@ -1156,6 +1254,31 @@ ApplicationWindow {
                             }
 
                             ScrollBar.vertical: ScrollBar {}
+                        }
+
+                        // typeahead 検索オーバーレイ
+                        Rectangle {
+                            id: pkgSearchPopup
+                            z: 1000
+                            visible: pkgSearchBuffer.length > 0
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.topMargin: 8
+                            anchors.rightMargin: 16
+                            radius: 5
+                            color: root.darkMode ? "#1B5E20" : "#2E7D32"
+                            border.color: root.darkMode ? "#0E3A12" : "#1B5E20"
+                            border.width: 1
+                            width: Math.max(220, pkgSearchPopupLabel.implicitWidth + 24)
+                            height: 36
+
+                            Label {
+                                id: pkgSearchPopupLabel
+                                anchors.centerIn: parent
+                                text: qsTr("Search: ") + pkgSearchBuffer
+                                color: "#ffffff"
+                                font.bold: true
+                            }
                         }
                     }
 
@@ -2174,7 +2297,7 @@ ApplicationWindow {
         id: aboutQtDialog
     }
 
-    // リポジトリ管理は repoDrawer (上部で定義) に移行済み
+    // リポジトリ管理はrepoDrawer (上部で定義) に移行済み
 
     // -- 起動時ウェイトダイアログ --
     Dialog {
@@ -2241,6 +2364,11 @@ ApplicationWindow {
         if (cbDesc.checked)     flags |= 0x08
         if (cbRequires.checked) flags |= 0x10
         if (cbProvides.checked) flags |= 0x20
+
+        // 検索結果はパッケージ名昇順で表示
+        sortColumn = 1
+        sortAscending = true
+
         PackageController.searchPackages(searchField.text, flags)
     }
 
