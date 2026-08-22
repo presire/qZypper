@@ -1,6 +1,6 @@
 # qZypper
 
-**A modern GUI package manager for openSUSE / SLE 16**  
+**A modern GUI package manager for openSUSE Leap 16 / SLE 16**  
 
 [![License: GPL-2.0-or-later](https://img.shields.io/badge/License-GPL--2.0--or--later-blue.svg)](LICENSE)
 [![Qt 6.5+](https://img.shields.io/badge/Qt-6.5%2B-41cd52.svg)](https://www.qt.io/)
@@ -62,8 +62,11 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 ### Security
 
 - D-Bus privilege separation (GUI runs unprivileged, backend runs as root)
+- systemd-managed D-Bus activation (backend runs as root under a dedicated systemd service)
+- Environment sanitization in the systemd unit (fixed `HOME`/`PATH`, inherited variables unset)
 - Polkit authentication for privileged operations
 - SELinux policy module for Leap 16 / SLE 16
+- Dedicated SELinux GPG-agent socket type (`qzypper_gpg_agent_socket_t`) with a socket type transition (policy configuration)
 
 ### Internationalization
 
@@ -158,7 +161,7 @@ Press `Escape` or click the cancel button to gracefully abort the operation afte
 | Qt 6 | 6.5+ | Core, Quick, QuickControls2, DBus, LinguistTools, Svg |
 | libzypp | latest | Package management library |
 | PolkitQt6-1 | latest | Polkit authentication (optional, with fallback) |
-| boost_thread | latest | Thread management for ZyppManager |
+| Boost.Thread | 1.86+ | Thread management for ZyppManager (imported Boost::thread target linked into qzypper-zypp) |
 
 ## Build Dependencies (openSUSE)
 
@@ -225,6 +228,7 @@ cd build && cpack -G RPM
 | Backend binary | `/usr/libexec/qzypper-backend` |
 | D-Bus config | `/usr/share/dbus-1/system.d/org.presire.qzypper.conf` |
 | D-Bus service | `/usr/share/dbus-1/system-services/org.presire.qzypper.service` |
+| systemd unit | `/usr/lib/systemd/system/dbus-org.presire.qzypper.service` (default, controlled by `SYSTEMD_SYSTEM_UNIT_DIR`) |
 | Polkit policy | `/usr/share/polkit-1/actions/org.presire.qzypper.policy` |
 | Desktop entry | `/usr/share/applications/org.presire.qzypper.desktop` |
 | App icon | `/usr/share/icons/hicolor/{64x64,128x128,256x256,512x512,1024x1024}/apps/qZypper.png` |
@@ -244,6 +248,7 @@ qZypper/
 │       ├── controllers/           #   PackageController, DBusClient
 │       └── qml/                   #   QML screens, dialogs, components
 ├── dbus/                          # D-Bus bus policy and service file
+├── systemd/                       # systemd D-Bus activation unit
 ├── polkit/                        # Polkit action definitions
 ├── desktop/                       # Desktop entry template
 ├── selinux/                       # SELinux policy module
@@ -254,20 +259,39 @@ qZypper/
 
 ## D-Bus Interface
 
-- **Service**: `org.presire.qzypper`
-- **Object path**: `/org/presire/qzypper`
-- **Interface**: `org.presire.qzypper.PackageManager`
-- **Bus**: System bus
+- **Service**: `org.presire.qzypper`  
+- **Object path**: `/org/presire/qzypper`  
+- **Interface**: `org.presire.qzypper.PackageManager`  
+- **Bus**: System bus  
+
+### Backend Activation (systemd)
+
+D-Bus activation delegates to a systemd service instead of starting the backend binary directly. The D-Bus service file sets `SystemdService=dbus-org.presire.qzypper.service`, so the system bus asks systemd to launch the unit.
+
+The systemd unit (`systemd/dbus-org.presire.qzypper.service.in`) describes a root backend service:  
+
+- `Type=dbus` with `BusName=org.presire.qzypper`: systemd considers the service started once the bus name is acquired.  
+- `User=root`: the backend runs with root privileges for libzypp operations.  
+- `ExecStart` points at `/usr/libexec/qzypper-backend`.  
+
+The unit fixes the process environment and unsets inherited variables:  
+
+- `Environment=HOME=/root` and a fixed `PATH` (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`).  
+- `UnsetEnvironment=` removes the dynamic loader variables (`LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`, `GLIBC_TUNABLES`), the XDG directory variables,  
+  GnuPG variables (`GNUPGHOME`, `GPG_AGENT_INFO`), the session D-Bus address (`DBUS_SESSION_BUS_ADDRESS`), the Qt/QML import path variables,  
+  and the libzypp override variables (`ZYPP_CONF`, `ZYPP_REPO_RELEASEVER`, `ZYPP_PLUGIN_*`).  
+
+The backend therefore starts with a deterministic environment rather than inheriting the activating caller's.  
 
 ### Backend (`qzypper-backend`) Lifetime
 
-The backend is auto-started via D-Bus activation and terminates according to the following rules:
+The backend is auto-started via systemd-managed D-Bus activation and terminates according to the following rules:  
 
-**1. Normal mode — Idle auto-exit (5 minutes)**
+**1. Normal mode — Idle auto-exit (5 minutes)**  
 
 While only lightweight read-only operations (`GetRepos`, `SearchPackages`, `GetPackageDetails`, etc.) are issued (e.g. just after GUI startup), the backend auto-exits 5 minutes after the last D-Bus method call. This is a security measure to avoid leaving an unused root-privileged process running.
 
-**2. After long-running operations — Idle timer permanently stopped**
+**2. After long-running operations — Idle timer permanently stopped**  
 
 Once **any** of the following methods is invoked even once, the idle timer is stopped and the backend keeps running until the GUI explicitly asks it to quit (unlimited lifetime).
 
@@ -293,7 +317,7 @@ The following methods stop the idle timer only while executing and restart the 5
 
 When the qzypper GUI exits (`QCoreApplication::aboutToQuit`), `DBusClient::quit()` calls the backend's `Quit` D-Bus method, which cleanly terminates the backend process. `Ctrl+C` (SIGINT) and SIGTERM are handled via a self-pipe signal handler that routes through the same path, so the backend is always taken down together with the GUI.
 
-**5. On backend crash — Auto-reconnect**
+**5. On backend crash — Auto-reconnect**  
 
 If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the service re-registration and automatically reconnects via the `backendReconnected` signal, which triggers `Initialize()` + `loadRepos()`. The user's session is not interrupted.
 
