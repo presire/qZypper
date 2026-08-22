@@ -26,11 +26,14 @@ Dialog {
     }
     footer: Item { implicitHeight: 0 }
 
-    property bool showDetails: commitSettings.showDetails
     property bool showSummaryPage: commitSettings.showSummaryPage
-    property string currentPackage: ""
     property int overallPercent: 0
-    property string currentStage: "downloading"
+
+    // 現在実行中の単一アクティビティ (カード表示用)
+    property string currentPackage: ""
+    property string currentStage: ""
+    property int currentPercent: 0
+    property bool currentRemoval: false
 
     // PackageStateChanged 未対応の旧バックエンド用:
     // CommitProgressChanged の stage/packageName 変化から状態遷移を推定
@@ -38,26 +41,123 @@ Dialog {
     property string _prevStage: ""
     property bool _hasStateSignal: false
 
-    ListModel { id: todoModel }
-    ListModel { id: downloadsModel }
-    ListModel { id: doingModel }
+    ListModel { id: pendingModel }
     ListModel { id: doneModel }
 
     Settings {
         id: commitSettings
         category: "commitProgress"
-        property bool showDetails: true
         property bool showSummaryPage: true
     }
 
+    // -- モデル操作ヘルパー (重複なし / 現在カードを持つ堅牢な検索・移動) --
+
+    function indexOf(model, name) {
+        for (var i = 0; i < model.count; i++) {
+            if (model.get(i).name === name)
+                return i
+        }
+        return -1
+    }
+
+    function removeFromPending(name) {
+        var idx = indexOf(pendingModel, name)
+        if (idx >= 0)
+            pendingModel.remove(idx)
+    }
+
+    function setPendingDownloadDone(name, done) {
+        var idx = indexOf(pendingModel, name)
+        if (idx >= 0)
+            pendingModel.setProperty(idx, "downloadDone", done)
+    }
+
+    // ダウンロード完了の記録。現在カードが同一パッケージなら Pending へ戻し、
+    // Pending に無ければダウンロード済みとして追加 (重複防止)。
+    function markDownloaded(name) {
+        if (currentPackage === name && currentStage === "downloading") {
+            appendPending(name, false, true)
+            clearCurrent()
+            return
+        }
+        if (indexOf(pendingModel, name) >= 0) {
+            setPendingDownloadDone(name, true)
+        } else if (indexOf(doneModel, name) < 0) {
+            appendPending(name, false, true)
+        }
+    }
+
+    function appendPending(name, isRemoval, downloadDone) {
+        if (indexOf(pendingModel, name) < 0) {
+            pendingModel.append({
+                name: name,
+                isRemoval: isRemoval,
+                downloadDone: downloadDone
+            })
+        }
+    }
+
+    function appendDone(name, isRemoval) {
+        if (indexOf(doneModel, name) < 0)
+            doneModel.append({ name: name, isRemoval: isRemoval })
+    }
+
+    function clearCurrent() {
+        currentPackage = ""
+        currentStage = ""
+        currentPercent = 0
+        currentRemoval = false
+    }
+
+    // 現在カードのアクティビティを完了させる。ダウンロード途中なら Pending へ返す。
+    function finalizeCurrent() {
+        if (currentPackage === "")
+            return
+        if (currentStage === "downloading") {
+            // ダウンロードのみ完了 → ダウンロード済みとして Pending へ戻す
+            appendPending(currentPackage, false, true)
+        } else {
+            // install / remove 完了 → Done へ
+            appendDone(currentPackage, currentRemoval)
+        }
+        clearCurrent()
+    }
+
+    // 新規アクティビティを現在カードに表示する。カードが別パッケージで占有中なら先に完了させる。
+    function startCurrent(name, stage, isRemoval) {
+        if (currentPackage !== "" && currentPackage !== name)
+            finalizeCurrent()
+        removeFromPending(name)
+        currentPackage = name
+        currentStage = stage
+        currentRemoval = isRemoval
+    }
+
+    function phaseText(stage) {
+        switch (stage) {
+        case "downloading": return qsTr("Downloading")
+        case "installing": return qsTr("Installing")
+        case "removing": return qsTr("Removing")
+        default: return qsTr("Working")
+        }
+    }
+
+    function tagText(isRemoval, downloadDone) {
+        if (isRemoval)
+            return qsTr("to remove")
+        if (downloadDone)
+            return qsTr("downloaded")
+        return qsTr("to download")
+    }
+
     function initFromPendingChanges(pendingList) {
-        todoModel.clear()
-        downloadsModel.clear()
-        doingModel.clear()
+        pendingModel.clear()
         doneModel.clear()
         overallPercent = 0
         currentPackage = ""
-        currentStage = "downloading"
+        currentStage = ""
+        currentPercent = 0
+        currentRemoval = false
         _prevPkg = ""
         _prevStage = ""
         _hasStateSignal = false
@@ -68,36 +168,11 @@ Dialog {
         for (var i = 0; i < sorted.length; i++) {
             var statusVal = sorted[i].status || 0
             var isRemoval = (statusVal === 6 || statusVal === 7)
-            todoModel.append({
+            pendingModel.append({
                 name: sorted[i].name,
-                downloadDone: false,
-                isRemoval: isRemoval
+                isRemoval: isRemoval,
+                downloadDone: false
             })
-        }
-    }
-
-    function moveItem(fromModel, toModel, packageName) {
-        for (var i = 0; i < fromModel.count; i++) {
-            if (fromModel.get(i).name === packageName) {
-                var item = fromModel.get(i)
-                toModel.append({
-                    name: item.name,
-                    downloadDone: item.downloadDone,
-                    isRemoval: item.isRemoval
-                })
-                fromModel.remove(i)
-                return true
-            }
-        }
-        return false
-    }
-
-    function setDownloadDone(model, packageName, done) {
-        for (var i = 0; i < model.count; i++) {
-            if (model.get(i).name === packageName) {
-                model.setProperty(i, "downloadDone", done)
-                return
-            }
         }
     }
 
@@ -105,249 +180,217 @@ Dialog {
         anchors.fill: parent
         spacing: 10
 
-        // Header
-        RowLayout {
+        // 現在の操作カード (常時表示)
+        Frame {
             Layout.fillWidth: true
+            Layout.preferredHeight: 100
 
-            Label {
-                text: commitProgressDialog.currentPackage !== ""
-                    ? commitProgressDialog.currentPackage
-                    : qsTr("Preparing...")
-                font.bold: true
-                font.pixelSize: 15
-                elide: Text.ElideRight
-                Layout.fillWidth: true
+            background: Rectangle {
+                color: Qt.rgba(palette.highlight.r, palette.highlight.g,
+                               palette.highlight.b, 0.12)
+                border.color: palette.highlight
+                border.width: 1
+                radius: 4
             }
 
-            Button {
-                id: detailsToggleBtn
-                text: commitProgressDialog.showDetails
-                    ? qsTr("Hide Details")
-                    : qsTr("Show Details")
-                onClicked: {
-                    commitProgressDialog.showDetails = !commitProgressDialog.showDetails
-                    commitSettings.showDetails = commitProgressDialog.showDetails
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: commitProgressDialog.currentPackage !== ""
+                            ? (commitProgressDialog.currentRemoval
+                               ? ("- " + commitProgressDialog.currentPackage)
+                               : commitProgressDialog.currentPackage)
+                            : qsTr("Preparing...")
+                        font.bold: true
+                        font.pixelSize: 15
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                        color: palette.text
+                    }
+                    Label {
+                        text: commitProgressDialog.currentPackage !== ""
+                            ? commitProgressDialog.phaseText(commitProgressDialog.currentStage)
+                            : qsTr("Idle")
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                        Layout.preferredWidth: 84
+                        color: commitProgressDialog.currentPackage !== ""
+                            ? palette.highlight
+                            : palette.placeholderText
+                    }
+                }
+
+                ProgressBar {
+                    id: packageProgressBar
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 100
+                    value: commitProgressDialog.currentPercent
+                    indeterminate: commitProgressDialog.currentPackage === ""
+                        || commitProgressDialog.currentPercent === 0
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Item { Layout.fillWidth: true }
+                    Label {
+                        text: commitProgressDialog.currentPackage !== ""
+                            ? (commitProgressDialog.currentPercent + "%")
+                            : ""
+                        font.pixelSize: 12
+                        color: palette.text
+                    }
                 }
             }
         }
 
-        // Details frame
-        Frame {
-            id: detailsFrame
-            visible: commitProgressDialog.showDetails
+        // Pending と Done の2列 (下部を占有)
+        RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            spacing: 10
 
-            RowLayout {
-                anchors.fill: parent
-                spacing: 10
+            // Pending 列
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
 
-                // To Do column
-                ColumnLayout {
+                Label {
+                    text: pendingModel.count > 0
+                        ? qsTr("Pending (%1)").arg(pendingModel.count)
+                        : qsTr("Pending")
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    Layout.fillWidth: true
+                    color: palette.text
+                }
+
+                ListView {
+                    id: pendingListView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.preferredWidth: 1
+                    model: pendingModel
+                    clip: true
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    Label {
-                        text: todoModel.count > 0
-                            ? qsTr("To Do (%1)").arg(todoModel.count)
-                            : qsTr("To Do")
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.fillWidth: true
-                    }
-
-                    ListView {
-                        id: todoListView
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        model: todoModel
-                        clip: true
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        delegate: ItemDelegate {
-                            width: todoListView.width
-                            height: 24
-                            contentItem: Label {
+                    delegate: ItemDelegate {
+                        width: pendingListView.width
+                        height: 24
+                        contentItem: RowLayout {
+                            spacing: 6
+                            Label {
+                                text: commitProgressDialog.tagText(model.isRemoval, model.downloadDone)
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: 88
+                                color: (model.downloadDone || model.isRemoval)
+                                    ? palette.highlight
+                                    : palette.text
+                            }
+                            Label {
                                 text: model.isRemoval ? ("- " + model.name) : model.name
                                 elide: Text.ElideRight
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 12
+                                color: palette.text
+                                Layout.fillWidth: true
                             }
-                            background: null
                         }
+                        background: null
                     }
                 }
+            }
 
-                // Separator
-                Rectangle {
-                    Layout.fillHeight: true
-                    width: 1
-                    color: palette.mid
+            Rectangle {
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+                Layout.minimumWidth: 1
+                color: palette.mid
+            }
+
+            // Done 列
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredWidth: 1
+
+                Label {
+                    text: doneModel.count > 0
+                        ? qsTr("Done (%1)").arg(doneModel.count)
+                        : qsTr("Done")
+                    font.bold: true
+                    horizontalAlignment: Text.AlignHCenter
+                    Layout.fillWidth: true
+                    color: palette.placeholderText
                 }
 
-                // Downloads + Doing column
-                ColumnLayout {
+                ListView {
+                    id: doneListView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    Layout.preferredWidth: 1
+                    model: doneModel
+                    clip: true
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    Label {
-                        text: downloadsModel.count > 0
-                            ? qsTr("Downloads (%1)").arg(downloadsModel.count)
-                            : qsTr("Downloads")
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.fillWidth: true
-                    }
-
-                    ListView {
-                        id: downloadsListView
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        model: downloadsModel
-                        clip: true
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        delegate: ItemDelegate {
-                            width: downloadsListView.width
-                            height: 24
-                            contentItem: RowLayout {
-                                spacing: 4
-                                Label {
-                                    text: model.downloadDone ? "⬇✓" : "⬇"
-                                    color: model.downloadDone ? "#4CAF50" : "#2196F3"
-                                    font.pixelSize: 12
-                                    Layout.preferredWidth: 28
-                                }
-                                Label {
-                                    text: model.name
-                                    elide: Text.ElideRight
-                                    verticalAlignment: Text.AlignVCenter
-                                    font.pixelSize: 12
-                                    Layout.fillWidth: true
-                                }
+                    delegate: ItemDelegate {
+                        width: doneListView.width
+                        height: 24
+                        contentItem: RowLayout {
+                            spacing: 6
+                            Label {
+                                text: qsTr("Done")
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                                Layout.preferredWidth: 88
+                                color: palette.placeholderText
                             }
-                            background: null
-                        }
-                    }
-
-                    Label {
-                        text: qsTr("Doing")
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.fillWidth: true
-                    }
-
-                    ListView {
-                        id: doingListView
-                        Layout.fillWidth: true
-                        Layout.maximumHeight: 70
-                        Layout.preferredHeight: 70
-                        model: doingModel
-                        clip: true
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        delegate: ItemDelegate {
-                            width: doingListView.width
-                            height: 24
-                            contentItem: Label {
-                                text: model.name
+                            Label {
+                                text: model.isRemoval ? ("- " + model.name) : model.name
                                 elide: Text.ElideRight
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 12
+                                color: palette.placeholderText
+                                Layout.fillWidth: true
                             }
-                            background: null
                         }
-                    }
-                }
-
-                // Separator
-                Rectangle {
-                    Layout.fillHeight: true
-                    width: 1
-                    color: palette.mid
-                }
-
-                // Done column
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredWidth: 1
-
-                    Label {
-                        text: doneModel.count > 0
-                            ? qsTr("Done (%1)").arg(doneModel.count)
-                            : qsTr("Done")
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        Layout.fillWidth: true
-                    }
-
-                    ListView {
-                        id: doneListView
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        model: doneModel
-                        clip: true
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        delegate: ItemDelegate {
-                            width: doneListView.width
-                            height: 24
-                            contentItem: Label {
-                                text: model.name
-                                elide: Text.ElideRight
-                                verticalAlignment: Text.AlignVCenter
-                                font.pixelSize: 12
-                            }
-                            background: null
-                        }
+                        background: null
                     }
                 }
             }
         }
 
-        // Spacer (fills space when details hidden)
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: !commitProgressDialog.showDetails
-            visible: !commitProgressDialog.showDetails
-        }
-
-        // Progress bar
-        ProgressBar {
-            id: totalProgressBar
-            Layout.fillWidth: true
-            from: 0
-            to: 100
-            value: commitProgressDialog.overallPercent
-            indeterminate: commitProgressDialog.overallPercent === 0
-        }
-
-        // Percentage label
-        Label {
-            text: commitProgressDialog.overallPercent + "%"
-            horizontalAlignment: Text.AlignHCenter
-            Layout.fillWidth: true
-            font.pixelSize: 13
-        }
-
-        // Cancel button
+        // コンパクトなフッター行: 全体進捗 + パーセント + キャンセル + サマリー表示
         RowLayout {
             Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
+            spacing: 10
+
+            ProgressBar {
+                id: totalProgressBar
+                Layout.fillWidth: true
+                from: 0
+                to: 100
+                value: commitProgressDialog.overallPercent
+                indeterminate: commitProgressDialog.overallPercent === 0
+            }
+
+            Label {
+                text: commitProgressDialog.overallPercent + "%"
+                Layout.preferredWidth: 44
+                horizontalAlignment: Text.AlignRight
+                font.pixelSize: 13
+            }
+
             Button {
                 text: qsTr("Cancel")
                 onClicked: PackageController.cancelOperation()
             }
-            Item { Layout.fillWidth: true }
-        }
 
-        // Show Summary Page checkbox
-        RowLayout {
-            Layout.fillWidth: true
-            Item { Layout.fillWidth: true }
             CheckBox {
                 text: qsTr("Show Summary Page")
                 checked: commitProgressDialog.showSummaryPage
@@ -366,32 +409,34 @@ Dialog {
             commitProgressDialog._hasStateSignal = true
             switch (event) {
             case "download_start":
-                moveItem(todoModel, downloadsModel, packageName)
-                setDownloadDone(downloadsModel, packageName, false)
+                commitProgressDialog.currentPercent = 0
+                commitProgressDialog.startCurrent(packageName, "downloading", false)
                 break
             case "download_end":
-                setDownloadDone(downloadsModel, packageName, true)
+                commitProgressDialog.markDownloaded(packageName)
                 break
             case "cached":
-                moveItem(todoModel, downloadsModel, packageName)
-                setDownloadDone(downloadsModel, packageName, true)
+                commitProgressDialog.markDownloaded(packageName)
                 break
             case "install_start":
-                if (!moveItem(downloadsModel, doingModel, packageName))
-                    if (!moveItem(todoModel, doingModel, packageName))
-                        doingModel.append({ name: packageName, downloadDone: true, isRemoval: false })
+                commitProgressDialog.currentPercent = 0
+                commitProgressDialog.startCurrent(packageName, "installing", false)
                 break
             case "install_end":
-                if (!moveItem(doingModel, doneModel, packageName))
-                    doneModel.append({ name: packageName, downloadDone: true, isRemoval: false })
+                commitProgressDialog.appendDone(packageName, false)
+                commitProgressDialog.removeFromPending(packageName)
+                if (commitProgressDialog.currentPackage === packageName)
+                    commitProgressDialog.clearCurrent()
                 break
             case "remove_start":
-                if (!moveItem(todoModel, doingModel, packageName))
-                    doingModel.append({ name: packageName, downloadDone: false, isRemoval: true })
+                commitProgressDialog.currentPercent = 0
+                commitProgressDialog.startCurrent(packageName, "removing", true)
                 break
             case "remove_end":
-                if (!moveItem(doingModel, doneModel, packageName))
-                    doneModel.append({ name: packageName, downloadDone: false, isRemoval: true })
+                commitProgressDialog.appendDone(packageName, true)
+                commitProgressDialog.removeFromPending(packageName)
+                if (commitProgressDialog.currentPackage === packageName)
+                    commitProgressDialog.clearCurrent()
                 break
             }
         }
@@ -399,9 +444,8 @@ Dialog {
         function onCommitProgressChanged(packageName, percentage, stage,
                                           totalSteps, completedSteps,
                                           overallPercentage) {
-            commitProgressDialog.currentPackage = packageName
             commitProgressDialog.overallPercent = overallPercentage
-            commitProgressDialog.currentStage = stage
+            commitProgressDialog.currentPercent = percentage
             totalProgressBar.indeterminate = false
 
             if (commitProgressDialog._hasStateSignal || packageName === "")
@@ -413,19 +457,15 @@ Dialog {
             var prevStage = commitProgressDialog._prevStage
 
             if (stage === "downloading") {
-                moveItem(todoModel, downloadsModel, packageName)
+                commitProgressDialog.startCurrent(packageName, "downloading", false)
             } else if (stage === "installing") {
                 if (prev !== "" && prev !== packageName)
-                    moveItem(doingModel, doneModel, prev)
-                setDownloadDone(downloadsModel, packageName, true)
-                if (!moveItem(downloadsModel, doingModel, packageName))
-                    if (!moveItem(todoModel, doingModel, packageName))
-                        doingModel.append({ name: packageName, downloadDone: true, isRemoval: false })
+                    commitProgressDialog.finalizeCurrent()
+                commitProgressDialog.startCurrent(packageName, "installing", false)
             } else if (stage === "removing") {
                 if (prev !== "" && prev !== packageName)
-                    moveItem(doingModel, doneModel, prev)
-                if (!moveItem(todoModel, doingModel, packageName))
-                    doingModel.append({ name: packageName, downloadDone: false, isRemoval: true })
+                    commitProgressDialog.finalizeCurrent()
+                commitProgressDialog.startCurrent(packageName, "removing", true)
             }
 
             commitProgressDialog._prevPkg = packageName
@@ -433,16 +473,8 @@ Dialog {
         }
 
         function onCommitResultChanged() {
-            // 残りの Doing アイテムを Done に移動
-            while (doingModel.count > 0) {
-                var item = doingModel.get(0)
-                doneModel.append({
-                    name: item.name,
-                    downloadDone: item.downloadDone,
-                    isRemoval: item.isRemoval
-                })
-                doingModel.remove(0)
-            }
+            // 残りの現在アクティビティを完了させる
+            commitProgressDialog.finalizeCurrent()
 
             commitProgressDialog.close()
             var cr = PackageController.commitResult

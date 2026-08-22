@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(qZypper VERSION 0.3.0 LANGUAGES CXX)
+project(qZypper VERSION 0.3.1 LANGUAGES CXX)
 
 # Default install prefix to /usr (standard system location for packaged software)
 # NOTE: Must be AFTER project() — CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
@@ -45,6 +45,9 @@ pkg_check_modules(ZYPP REQUIRED IMPORTED_TARGET libzypp)
 # Polkit-Qt6
 find_package(PolkitQt6-1 REQUIRED)
 
+# Boost.Thread (system-installed; imported target avoids dev-only -L paths)
+find_package(Boost 1.86 REQUIRED COMPONENTS thread)
+
 # サブディレクトリ
 add_subdirectory(src/common)
 add_subdirectory(src/backend)
@@ -52,6 +55,11 @@ add_subdirectory(src/gui)
 
 # インストール設定
 include(GNUInstallDirs)
+
+# systemd D-Bus activation unit directory
+set(SYSTEMD_SYSTEM_UNIT_DIR "/usr/lib/systemd/system" CACHE PATH
+    "Path for systemd system unit files"
+)
 
 # テンプレートからファイルを生成 (CMAKE_INSTALL_FULL_*変数を展開)
 configure_file(
@@ -69,6 +77,11 @@ configure_file(
     ${CMAKE_CURRENT_BINARY_DIR}/desktop/org.presire.qzypper.desktop
     @ONLY
 )
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/systemd/dbus-org.presire.qzypper.service.in
+    ${CMAKE_CURRENT_BINARY_DIR}/systemd/dbus-org.presire.qzypper.service
+    @ONLY
+)
 
 # SELinuxポリシーモジュール
 option(ENABLE_SELINUX "Build and install SELinux policy module" ON)
@@ -81,6 +94,9 @@ install(FILES dbus/org.presire.qzypper.conf
 )
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/dbus/org.presire.qzypper.service
     DESTINATION /usr/share/dbus-1/system-services
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/systemd/dbus-org.presire.qzypper.service
+    DESTINATION ${SYSTEMD_SYSTEM_UNIT_DIR}
 )
 install(FILES polkit/org.presire.qzypper.policy
     DESTINATION /usr/share/polkit-1/actions

@@ -176,6 +176,9 @@ type qzypper_tmpfs_t;
 # Log files type (for /var/log/qzypper/)
 type qzypper_log_t;
 
+# GPG-agent socket type
+type qzypper_gpg_agent_socket_t;
+
 # Role attribute for qzypper_t domain
 attribute_role qzypper_roles;
 
@@ -187,6 +190,7 @@ typeattribute qzypper_dbus_exec_t exec_type, file_type;
 typeattribute qzypper_tmp_t file_type;
 typeattribute qzypper_tmpfs_t file_type;
 typeattribute qzypper_log_t file_type;
+typeattribute qzypper_gpg_agent_socket_t file_type;
 
 ########################################
 # Role associations
@@ -979,6 +983,10 @@ optional {
     allow qzypper_dbus_t rpm_var_cache_t:dir { getattr setattr open read search write add_name remove_name rename create rmdir };
     allow qzypper_dbus_t rpm_var_cache_t:file { getattr setattr open read write create unlink rename link lock map };
     allow qzypper_dbus_t rpm_var_cache_t:lnk_file { getattr read create unlink };
+
+    # Use a dedicated type instead of granting access to every rpm_var_cache_t socket.
+    type_transition qzypper_dbus_t rpm_var_cache_t:sock_file qzypper_gpg_agent_socket_t;
+    allow qzypper_dbus_t qzypper_gpg_agent_socket_t:sock_file { getattr setattr open read write create unlink };
 }
 
 # zypp-specific types (when zypp policy module exists on Leap 16.0+)

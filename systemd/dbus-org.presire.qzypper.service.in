@@ -1,0 +1,15 @@
+[Unit]
+Description=qZypper D-Bus backend (libzypp package manager)
+
+[Service]
+Type=dbus
+BusName=org.presire.qzypper
+User=root
+ExecStart=@CMAKE_INSTALL_FULL_LIBEXECDIR@/qzypper-backend
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT GLIBC_TUNABLES
+UnsetEnvironment=XDG_CONFIG_HOME XDG_CONFIG_DIRS XDG_CACHE_HOME XDG_DATA_HOME XDG_DATA_DIRS XDG_STATE_HOME XDG_RUNTIME_DIR
+UnsetEnvironment=GNUPGHOME GPG_AGENT_INFO DBUS_SESSION_BUS_ADDRESS
+UnsetEnvironment=QT_PLUGIN_PATH QT_QPA_PLATFORM_PLUGIN_PATH QML_IMPORT_PATH QML2_IMPORT_PATH
+UnsetEnvironment=ZYPP_CONF ZYPP_REPO_RELEASEVER ZYPP_PLUGIN_SEND_TIMEOUT ZYPP_PLUGIN_RECEIVE_TIMEOUT ZYPP_PLUGIN_TIMEOUT

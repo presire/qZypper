@@ -2,3 +2,4 @@
 Name=org.presire.qzypper
 Exec=@CMAKE_INSTALL_FULL_LIBEXECDIR@/qzypper-backend
 User=root
+SystemdService=dbus-org.presire.qzypper.service

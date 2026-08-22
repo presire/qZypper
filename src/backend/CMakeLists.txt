@@ -14,7 +14,7 @@ target_link_libraries(qzypper-zypp PUBLIC
     qzypper-common
     Qt6::Core
     PkgConfig::ZYPP
-    boost_thread
+    Boost::thread
 )
 
 # D-Busバックエンドサービス
