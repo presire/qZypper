@@ -460,14 +460,20 @@ ApplicationWindow {
             sortColumn = col
             sortAscending = true
         }
+        // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
+        packageListView.currentIndex = -1
         packageListView.model = sortedPackages()
+        if (packageListView.count > 0) packageListView.currentIndex = 0
     }
 
     // パッケージリスト更新時にソートを再適用
     Connections {
         target: PackageController
         function onPackagesChanged() {
+            // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
+            packageListView.currentIndex = -1
             packageListView.model = sortedPackages()
+            if (packageListView.count > 0) packageListView.currentIndex = 0
             pkgSearchBuffer = ""
             pkgSearchClearTimer.stop()
         }
@@ -1003,6 +1009,16 @@ ApplicationWindow {
                             highlightMoveVelocity: -1
                             highlightResizeDuration: 0
 
+                            // 選択変更時は常にこの経路で詳細を読み込む (唯一の詳細読込パス)
+                            onCurrentIndexChanged: {
+                                var idx = packageListView.currentIndex
+                                if (idx >= 0 && idx < packageListView.count) {
+                                    var m = packageListView.model
+                                    if (m && m[idx] && m[idx].name)
+                                        PackageController.loadPackageDetails(m[idx].name)
+                                }
+                            }
+
                             Keys.onPressed: function(event) {
                                 switch (event.key) {
                                     case Qt.Key_Up:
@@ -1101,7 +1117,6 @@ ApplicationWindow {
                                 onClicked: {
                                     packageListView.currentIndex = pkgDelegate.index
                                     packageListView.forceActiveFocus()
-                                    PackageController.loadPackageDetails(pkgDelegate.modelData.name)
                                 }
 
                                 TapHandler {

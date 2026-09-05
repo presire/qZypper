@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(qZypper VERSION 0.3.1 LANGUAGES CXX)
+project(qZypper VERSION 0.3.2 LANGUAGES CXX)
 
 # Default install prefix to /usr (standard system location for packaged software)
 # NOTE: Must be AFTER project() — CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
