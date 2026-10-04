@@ -251,6 +251,8 @@ ApplicationWindow {
     // Escキーハンドリング
     // リフレッシュ中は refreshOverlay 内の Shortcut が取消しを扱い、
     // オーバーレイは refreshFinished まで閉じない
+    // ウィンドウ全体の Shortcut が Esc を先に受け取るため、パッケージ一覧の
+    // typeahead 検索文字列のクリアもここで処理する (ListView の Keys.onPressed には Esc が届かない)
     Shortcut {
         sequence: "Escape"
         enabled: !refreshOverlay.visible
@@ -259,6 +261,9 @@ ApplicationWindow {
                 repoDrawer.close()
             } else if (navDrawer.visible) {
                 navDrawer.close()
+            } else if (pkgSearchBuffer.length > 0) {
+                pkgSearchBuffer = ""
+                pkgSearchClearTimer.stop()
             }
         }
     }
@@ -467,10 +472,59 @@ ApplicationWindow {
         if (packageListView.count > 0) packageListView.currentIndex = 0
     }
 
+    // ステータス変更に伴うパッケージリスト再取得中は true (スクロール位置と選択パッケージを保持する)
+    property bool preservePkgListView: false
+
+    // パッケージリストの再取得を伴うステータス変更操作を、表示位置を保持したまま実行する
+    function runPreservingPkgListView(operation) {
+        preservePkgListView = true
+        try {
+            return operation()
+        } finally {
+            preservePkgListView = false
+        }
+    }
+
+    // ステータスのみが変化したリストへ差し替え、スクロール位置と選択パッケージを復元する
+    function reloadPackageListPreservingView() {
+        var savedContentY = packageListView.contentY
+        var oldModel = packageListView.model
+        var oldIndex = packageListView.currentIndex
+        var selectedName = (oldIndex >= 0 && oldModel && oldModel[oldIndex]) ? (oldModel[oldIndex].name || "") : ""
+
+        var newModel = sortedPackages()
+        var newIndex = -1
+        if (selectedName.length > 0) {
+            for (var i = 0; i < newModel.length; ++i) {
+                if (newModel[i].name === selectedName) {
+                    newIndex = i
+                    break
+                }
+            }
+        }
+
+        // モデル差し替え時に ListView が currentIndex を 0 へ戻すため、その間の詳細読込を抑止する
+        packageListView.suppressDetailsLoad = true
+        packageListView.model = newModel
+        packageListView.currentIndex = newIndex
+        packageListView.suppressDetailsLoad = false
+
+        // モデル差し替えで先頭に戻ったスクロール位置を復元する (currentIndex 設定後に行う)
+        var maxContentY = packageListView.originY + Math.max(0, packageListView.contentHeight - packageListView.height)
+        packageListView.contentY = Math.min(Math.max(savedContentY, packageListView.originY), maxContentY)
+
+        if (newIndex >= 0) PackageController.loadPackageDetails(selectedName)
+    }
+
     // パッケージリスト更新時にソートを再適用
     Connections {
         target: PackageController
         function onPackagesChanged() {
+            if (preservePkgListView) {
+                reloadPackageListPreservingView()
+                return
+            }
+
             // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
             packageListView.currentIndex = -1
             packageListView.model = sortedPackages()
@@ -1015,6 +1069,10 @@ ApplicationWindow {
 
                         ListView {
                             id: packageListView
+
+                            // reloadPackageListPreservingView() のモデル差し替え中は詳細読込を抑止する
+                            property bool suppressDetailsLoad: false
+
                             width: packageFlickable.contentWidth
                             height: packageFlickable.height
                             clip: true
@@ -1026,8 +1084,9 @@ ApplicationWindow {
                             highlightMoveVelocity: -1
                             highlightResizeDuration: 0
 
-                            // 選択変更時は常にこの経路で詳細を読み込む (唯一の詳細読込パス)
+                            // 通常の選択変更時の詳細読込パス (表示保持の再読込時は reloadPackageListPreservingView() で読み込む)
                             onCurrentIndexChanged: {
+                                if (packageListView.suppressDetailsLoad) return
                                 var idx = packageListView.currentIndex
                                 if (idx >= 0 && idx < packageListView.count) {
                                     var m = packageListView.model
@@ -1071,6 +1130,7 @@ ApplicationWindow {
                                         event.accepted = true
                                         break
                                     case Qt.Key_Escape:
+                                        // 通常はウィンドウ側の Shortcut(Escape) が処理する。キーがここへ届いた場合のフォールバック
                                         pkgSearchBuffer = ""
                                         pkgSearchClearTimer.stop()
                                         event.accepted = true
@@ -2145,7 +2205,9 @@ ApplicationWindow {
         standardButtons: Dialog.NoButton
 
         onRejected: {
-            PackageController.restoreState()
+            runPreservingPkgListView(function() {
+                PackageController.restoreState()
+            })
         }
 
         property var problems: []
@@ -2294,8 +2356,10 @@ ApplicationWindow {
                             // 「適用」からの呼び出し — 再度依存関係解決
                             applyChanges()
                         } else {
-                            // チェックボックスからの呼び出し — ソルバー再実行
-                            var result = PackageController.resolveDependencies()
+                            // チェックボックスからの呼び出し — ソルバー再実行 (パッケージリストの表示位置は保持)
+                            var result = runPreservingPkgListView(function() {
+                                return PackageController.resolveDependencies()
+                            })
                             if (result && !result.success && result.problems && result.problems.length > 0) {
                                 conflictDialog.problems = result.problems
                                 conflictDialog.open()
@@ -2307,8 +2371,10 @@ ApplicationWindow {
                 Button {
                     text: qsTr("Cancel (C)")
                     onClicked: {
-                        // ステータス変更を元に戻す (内部でパッケージリスト再取得も実行)
-                        PackageController.restoreState()
+                        // ステータス変更を元に戻す (内部でパッケージリスト再取得も実行、表示位置は保持)
+                        runPreservingPkgListView(function() {
+                            PackageController.restoreState()
+                        })
                         conflictDialog.close()
                     }
                 }
@@ -2449,7 +2515,10 @@ ApplicationWindow {
 
     function setStatus(packageName, status) {
         // C++側でステータス変更 → ソルバー実行 → パッケージリスト再読み込みを一括処理
-        PackageController.setPackageStatus(packageName, status)
+        // 再読み込みはステータス反映のみのため、スクロール位置と選択パッケージを保持する
+        runPreservingPkgListView(function() {
+            return PackageController.setPackageStatus(packageName, status)
+        })
     }
 
     function updateAllPackages() {
