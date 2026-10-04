@@ -18,9 +18,8 @@ int main(int argc, char *argv[])
     app.setApplicationName("qzypper-backend");
     app.setApplicationVersion(APP_VERSION);
 
-    // D-Busオブジェクト (アダプタの親)
-    QObject serviceObject;
-    new qZypper::PackageManagerAdaptor(&serviceObject);
+    // QDBusContext を持つオブジェクトを直接登録する。
+    qZypper::PackageManagerAdaptor adaptor;
 
     // システムバスに接続
     auto bus = QDBusConnection::systemBus();
@@ -29,16 +28,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // サービス名を登録
-    if (!bus.registerService("org.presire.qzypper")) {
-        std::cerr << "Error: Cannot register D-Bus service: "
+    // オブジェクトパスを先に登録 (サービス名取得直後に届く呼び出しの取りこぼし防止)
+    if (!bus.registerObject("/org/presire/qzypper", &adaptor,
+                            QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllSignals)) {
+        std::cerr << "Error: Cannot register D-Bus object: "
                   << bus.lastError().message().toStdString() << std::endl;
         return 1;
     }
 
-    // オブジェクトパスを登録
-    if (!bus.registerObject("/org/presire/qzypper", &serviceObject)) {
-        std::cerr << "Error: Cannot register D-Bus object: "
+    // サービス名を登録
+    if (!bus.registerService("org.presire.qzypper")) {
+        std::cerr << "Error: Cannot register D-Bus service: "
                   << bus.lastError().message().toStdString() << std::endl;
         return 1;
     }

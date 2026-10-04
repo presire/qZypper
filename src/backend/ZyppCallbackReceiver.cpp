@@ -1,6 +1,8 @@
 #include "ZyppCallbackReceiver.h"
 
 #include <algorithm>
+#include <cctype>
+#include <QLoggingCategory>
 
 
 namespace qZypper {
@@ -470,82 +472,191 @@ void RemoveReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
     ++m_completedSteps;
 }
 
-// ─── KeyRingReceiver ────────────────────────
+// ─── KeyRingReceiver (fail-closed) ────────────────────────
 
 /**
- * @brief GPG鍵を信頼するか確認する。
+ * @brief フィンガープリントを正規化する。
  *
- * パッケージマネージャとして既知リポジトリの鍵は自動的に信頼・インポートする。
- * これはYaST/zypperと同等の動作である。
+ * ASCII 空白を除去して大文字化する。結果が40桁または64桁の16進数で
+ * なければ "" を返す (不正な指紋は承認集合に載せないため)。
+ * @param raw 生フィンガープリント文字列
+ * @return 正規化済みフィンガープリント、または ""
+ */
+std::string KeyRingReceiver::normalizeFingerprint(const std::string &raw)
+{
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : raw) {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v')
+            continue;
+        out += static_cast<char>(std::toupper(c));
+    }
+    if (out.size() != 40 && out.size() != 64)
+        return "";
+    for (unsigned char c : out) {
+        if (!std::isxdigit(c))
+            return "";
+    }
+    return out;
+}
+
+/**
+ * @brief フィンガープリントを承認済み集合に登録する (mutex 保護)。
+ * @param normalizedFingerprint 正規化済みフィンガープリント
+ */
+void KeyRingReceiver::approveFingerprint(const std::string &normalizedFingerprint)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_approved.insert(normalizedFingerprint);
+}
+
+/**
+ * @brief 未信頼鍵通知コールバックを設定する (mutex 保護)。
+ * @param cb 通知コールバック
+ */
+void KeyRingReceiver::setUntrustedKeyCallback(UntrustedKeyCallbackFn cb)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_untrustedCb = std::move(cb);
+}
+
+/**
+ * @brief GPG鍵を信頼するか確認する (fail-closed)。
+ *
+ * 事前に approveFingerprint で承認されたフィンガープリントと一致した
+ *場合のみ KEY_TRUST_AND_IMPORT を返す (承認はワンショット消費)。
+ * それ以外の鍵は UntrustedKeyInfo をコールバック通知して KEY_DONT_TRUST を返す。
+ * @param key 対象の公開鍵
+ * @param keycontext 鍵のコンテキスト (リポジトリ情報)
+ * @return 承認済みの場合 KEY_TRUST_AND_IMPORT、それ以外は KEY_DONT_TRUST
  */
 KeyRingReceiver::KeyTrust KeyRingReceiver::askUserToAcceptKey(
-    const zypp::PublicKey &/*key*/,
-    const zypp::KeyContext &/*keycontext*/)
+    const zypp::PublicKey &key,
+    const zypp::KeyContext &keycontext)
 {
-    return KEY_TRUST_AND_IMPORT;
+    const std::string rawFp = key.fingerprint();
+    const std::string fp = normalizeFingerprint(rawFp);
+
+    UntrustedKeyCallbackFn cb;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!fp.empty()) {
+            auto it = m_approved.find(fp);
+            if (it != m_approved.end()) {
+                m_approved.erase(it);
+                return KEY_TRUST_AND_IMPORT;
+            }
+        }
+        cb = m_untrustedCb;
+    }
+
+    UntrustedKeyInfo info;
+    info.fingerprint = fp.empty() ? rawFp : fp;
+    info.id = key.id();
+    info.name = key.name();
+    info.created = static_cast<std::int64_t>(key.created());
+    info.expires = static_cast<std::int64_t>(key.expires());
+    info.repoAlias = keycontext.repoInfo().alias();
+    info.repoName = keycontext.repoInfo().name();
+
+    qWarning("Refusing to trust GPG key id=%s fingerprint=%s repo=%s (no explicit approval)",
+             info.id.c_str(), info.fingerprint.c_str(), info.repoAlias.c_str());
+
+    // ロック外で通知する (デッドロック回避)
+    if (cb)
+        cb(info);
+
+    return KEY_DONT_TRUST;
 }
 
 /**
- * @brief 未署名ファイルを受け入れるか確認する — 受け入れる。
+ * @brief 未署名ファイルを受け入れるか確認する — 常に拒否する。
+ * @param file 対象ファイル名
+ * @param keycontext 鍵のコンテキスト
+ * @return 常に false (libzypp の安全なデフォルトと同様)
  */
 bool KeyRingReceiver::askUserToAcceptUnsignedFile(
-    const std::string &/*file*/,
+    const std::string &file,
     const zypp::KeyContext &/*keycontext*/)
 {
-    return true;
+    qWarning("Refusing unsigned file: %s", file.c_str());
+    return false;
 }
 
 /**
- * @brief 未知の鍵IDを受け入れるか確認する — 受け入れる。
+ * @brief 未知の鍵IDを受け入れるか確認する — 常に拒否する。
+ * @param file 対象ファイル名
+ * @param id 未知の鍵ID
+ * @param keycontext 鍵のコンテキスト
+ * @return 常に false (libzypp の安全なデフォルトと同様)
  */
 bool KeyRingReceiver::askUserToAcceptUnknownKey(
-    const std::string &/*file*/,
-    const std::string &/*id*/,
+    const std::string &file,
+    const std::string &id,
     const zypp::KeyContext &/*keycontext*/)
 {
-    return true;
+    qWarning("Refusing unknown key id=%s for file: %s", id.c_str(), file.c_str());
+    return false;
 }
 
 /**
- * @brief 署名検証失敗を受け入れるか確認する — 受け入れる。
+ * @brief 署名検証失敗を受け入れるか確認する — 常に拒否する。
+ * @param file 対象ファイル名
+ * @param key 検証に使われた公開鍵
+ * @param keycontext 鍵のコンテキスト
+ * @return 常に false (libzypp の安全なデフォルトと同様)
  */
 bool KeyRingReceiver::askUserToAcceptVerificationFailed(
-    const std::string &/*file*/,
-    const zypp::PublicKey &/*key*/,
+    const std::string &file,
+    const zypp::PublicKey &key,
     const zypp::KeyContext &/*keycontext*/)
 {
-    return true;
+    qWarning("Refusing file with failed verification: %s key id=%s",
+             file.c_str(), key.id().c_str());
+    return false;
 }
 
-// ─── DigestReceiver ─────────────────────────
+// ─── DigestReceiver (fail-closed) ─────────────────────────
 
 /**
- * @brief ダイジェストなしファイルを受け入れる。
+ * @brief ダイジェストなしファイルを受け入れるか — 常に拒否する。
+ * @param file 対象ファイルパス
+ * @return 常に false
  */
-bool DigestReceiver::askUserToAcceptNoDigest(const zypp::Pathname &/*file*/)
+bool DigestReceiver::askUserToAcceptNoDigest(const zypp::Pathname &file)
 {
-    return true;
+    qWarning("Refusing file without digest: %s", file.c_str());
+    return false;
 }
 
 /**
- * @brief 未知のダイジェストタイプを受け入れる。
+ * @brief 未知のダイジェスト種別を受け入れるか — 常に拒否する。
+ * @param file 対象ファイルパス
+ * @param name ダイジェスト名
+ * @return 常に false
  */
 bool DigestReceiver::askUserToAccepUnknownDigest(
-    const zypp::Pathname &/*file*/,
-    const std::string &/*name*/)
+    const zypp::Pathname &file,
+    const std::string &name)
 {
-    return true;
+    qWarning("Refusing file with unknown digest %s: %s", name.c_str(), file.c_str());
+    return false;
 }
 
 /**
- * @brief 不一致ダイジェストを受け入れる。
+ * @brief 不一致ダイジェストを受け入れるか — 常に拒否する。
+ * @param file 対象ファイルパス
+ * @param requested 要求されたダイジェスト
+ * @param found 実際のダイジェスト
+ * @return 常に false
  */
 bool DigestReceiver::askUserToAcceptWrongDigest(
-    const zypp::Pathname &/*file*/,
+    const zypp::Pathname &file,
     const std::string &/*requested*/,
     const std::string &/*found*/)
 {
-    return true;
+    qWarning("Refusing file with wrong digest: %s", file.c_str());
+    return false;
 }
 
 } // namespace qZypper

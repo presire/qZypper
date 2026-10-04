@@ -71,6 +71,8 @@ public:
     Q_INVOKABLE bool applySolution(int problemIndex, int solutionIndex);      // 解決策適用
     Q_INVOKABLE QVariantMap commit();                                         // 変更をコミット (同期)
     Q_INVOKABLE void commitAsync();                                          // 変更をコミット (非同期)
+    Q_INVOKABLE bool prepareCommit();                                        // コミット用リビジョン取得
+    Q_INVOKABLE bool trustKey(const QString &fingerprint);                   // 署名鍵を信頼
     Q_INVOKABLE void cancelOperation();                                      // 操作キャンセル
 
     Q_INVOKABLE bool addRepo(const QString &url, const QString &name);        // リポ追加
@@ -126,6 +128,7 @@ signals:
                              const QString &event);
     void refreshFinished(bool success);                     // リフレッシュ完了
     void conflictsDetected(const QVariantList &problems);   // コンフリクト検出
+    void untrustedKeyDetected(const QVariantMap &keyInfo);  // 未信頼鍵検出
 
 private:
     enum class PackageSource { None, Search, Repo, Pattern, Patches };
@@ -144,6 +147,7 @@ private:
     QVariantList m_patterns;                            // パターン一覧キャッシュ
     QVariantMap m_currentDetails;                       // 選択中パッケージ詳細
     QVariantMap m_commitResult;                         // コミット結果
+    quint64 m_commitRevision = 0;                        // コミット用選択リビジョン (0=未確定)
     PackageSource m_lastSource = PackageSource::None;   // 最後のパッケージソース
     QString m_lastSourceParam;                          // 最後のソースパラメータ
     int m_lastSearchFlags = 0x07;                       // 最後の検索フラグ

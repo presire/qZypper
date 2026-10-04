@@ -1,9 +1,14 @@
 #include <algorithm>
+#include <cctype>
 #include <chrono>
-#include <regex>
+#include <filesystem>
+#include <fstream>
 #include <set>
+#include <boost/logic/tribool.hpp>
 #include <QLoggingCategory>
 #include <zypp/base/Logger.h>
+#include <zypp/ZConfig.h>
+#include <zypp-core/fs/PathInfo.h>
 #include <zypp/target/rpm/RpmDb.h>
 #include <zypp/sat/Pool.h>
 #include <zypp/sat/Transaction.h>
@@ -11,6 +16,7 @@
 #include <zypp/ZYppCommitResult.h>
 #include <zypp/DiskUsageCounter.h>
 #include <zypp-core/base/UserRequestException>
+#include <zypp-core/base/String.h>
 #include "ZyppManager.h"
 #include "ZyppCallbackReceiver.h"
 
@@ -64,11 +70,19 @@ bool ZyppManager::initialize(const std::string& root)
     try {
         m_zypp = zypp::getZYpp();
 
+        // GPG鍵信頼・ダイジェスト検証コールバックを先行登録 (fail-closed)。
+        // 以降の buildCache/loadFromCache より前に有効化する必要がある。
+        m_keyRingReceiver.connect();
+        m_digestReceiver.connect();
+
         // ターゲット (RPMデータベース) の初期化
         m_zypp->initializeTarget(zypp::Pathname(root));
 
-        // リポジトリマネージャの初期化
+        // リポジトリマネージャの初期化。
+        // probe を無効化し、addRepository (refreshService 内部経由を含む) が
+        // サービス提供リポジトリのメディアを開かないようにする。
         zypp::RepoManagerOptions opts{zypp::Pathname(root)};
+        opts.probe = false;
         m_repoManager = std::make_unique<zypp::RepoManager>(opts);
 
         // 有効なリポジトリのキャッシュを読み込み
@@ -76,7 +90,24 @@ bool ZyppManager::initialize(const std::string& root)
             if (!repo.enabled())
                 continue;
 
+            // メディア/キャッシュに触れる前にポリシー検査。不適合は読み込まない。
+            std::string policyErr;
+            if (!checkRepoPolicy(repo, policyErr)) {
+                m_lastError = "Skipping repository with policy violation: " + policyErr;
+                qCWarning(lcZypp) << "Skipping repo during initialize:"
+                                  << QString::fromStdString(policyErr);
+                continue;
+            }
+
             if (!m_repoManager->isCached(repo)) {
+                // raw metadata が無い場合 buildCache は内部で refreshMetadata を行い
+                // ミラー端点を開くため、端点検査を先に行う
+                if (!checkRepoOrigins(repo, policyErr)) {
+                    m_lastError = "Skipping repository with policy violation: " + policyErr;
+                    qCWarning(lcZypp) << "Skipping repo during initialize:"
+                                      << QString::fromStdString(policyErr);
+                    continue;
+                }
                 try {
                     m_repoManager->buildCache(repo);
                 } catch (const zypp::Exception& e) {
@@ -103,11 +134,6 @@ bool ZyppManager::initialize(const std::string& root)
         // ディスク使用量計算用のマウントポイントを設定
         m_zypp->setPartitions(zypp::DiskUsageCounter::detectMountPoints());
 
-        // GPG鍵信頼・ダイジェスト検証コールバックを登録
-        // （リポジトリリフレッシュ・パッケージダウンロード・コミット全てで必要）
-        m_keyRingReceiver.connect();
-        m_digestReceiver.connect();
-
         m_initialized = true;
         return true;
 
@@ -115,6 +141,617 @@ bool ZyppManager::initialize(const std::string& root)
         m_lastError = "Initialization failed: " + e.msg();
         return false;
     }
+}
+
+// -- 入力検証・鍵承認 --
+
+/**
+ * @brief リポジトリ/サービスURLを検証する。
+ *
+ * 空URL・制御文字を拒否し、zypp::Url で構文解析する。
+ * スキームは許可リスト (http, https, ftp, tftp, file, dir, hd, iso,
+ * cd, dvd, nfs, nfs4, smb, cifs) のみ許可する (特に plugin を拒否)。
+ * iso スキームの url クエリパラメータは再帰的に検証する。
+ * @param url 検証対象URL
+ * @param err 失敗時のエラー詳細
+ * @param allowIsoNesting iso ネスト検証を許可するか
+ * @return 有効時 true
+ */
+bool ZyppManager::validateUrl(const std::string &url, std::string &err,
+                              bool allowIsoNesting)
+{
+    if (url.empty()) {
+        err = "empty URL";
+        return false;
+    }
+    for (unsigned char c : url) {
+        if (c < 0x20 || c == 0x7f) {
+            err = "URL contains control characters";
+            return false;
+        }
+    }
+
+    zypp::Url parsed;
+    try {
+        parsed = zypp::Url(url);
+    } catch (const zypp::Exception &e) {
+        err = std::string("malformed URL: ") + e.msg();
+        return false;
+    } catch (const std::exception &e) {
+        err = std::string("malformed URL: ") + e.what();
+        return false;
+    }
+    if (!parsed.isValid()) {
+        err = "malformed URL";
+        return false;
+    }
+
+    const std::string scheme = zypp::str::toLower(parsed.getScheme());
+    static const std::set<std::string> kAllowedSchemes = {
+        "http", "https", "ftp", "tftp", "file", "dir", "hd", "iso",
+        "cd", "dvd", "nfs", "nfs4", "smb", "cifs"
+    };
+    if (kAllowedSchemes.count(scheme) == 0) {
+        err = "disallowed URL scheme: " + parsed.getScheme();
+        return false;
+    }
+
+    if (scheme == "iso" && allowIsoNesting) {
+        std::string nested;
+        try {
+            nested = parsed.getQueryParam("url");
+        } catch (const zypp::Exception &e) {
+            err = std::string("bad iso query parameter: ") + e.msg();
+            return false;
+        } catch (const std::exception &e) {
+            err = std::string("bad iso query parameter: ") + e.what();
+            return false;
+        }
+        if (!nested.empty() && !validateUrl(nested, err, false)) {
+            err = "invalid nested iso url: " + err;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief リポジトリ/サービスエイリアスを検証する。
+ *
+ * INI インジェクション (改行・セクション記号) とパストラバーサル
+ * ('/', '\\', 先頭 '.') を防ぐ。
+ * @param alias 検証対象エイリアス
+ * @param err 失敗時のエラー詳細
+ * @return 有効時 true
+ */
+bool ZyppManager::validateAlias(const std::string &alias, std::string &err)
+{
+    if (alias.empty()) {
+        err = "empty alias";
+        return false;
+    }
+    if (alias.size() > 200) {
+        err = "alias too long (max 200 bytes)";
+        return false;
+    }
+    if (alias[0] == '.') {
+        err = "alias must not start with '.'";
+        return false;
+    }
+    for (unsigned char c : alias) {
+        if (c < 0x20 || c == 0x7f) {
+            err = "alias contains control characters";
+            return false;
+        }
+        if (c == '/' || c == '\\' || c == '[' || c == ']') {
+            err = std::string("alias contains forbidden character '") + static_cast<char>(c) + "'";
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief リポジトリ/サービス表示名を検証する。
+ *
+ * 制御文字 (CR/LF を含む) を拒否する。空文字列は有効
+ * (呼び出し側 API が空を許す箇所用)。
+ * @param name 検証対象名
+ * @param err 失敗時のエラー詳細
+ * @return 有効時 true
+ */
+bool ZyppManager::validateName(const std::string &name, std::string &err)
+{
+    if (name.size() > 1024) {
+        err = "name too long (max 1024 bytes)";
+        return false;
+    }
+    for (unsigned char c : name) {
+        if (c < 0x20 || c == 0x7f) {
+            err = "name contains control characters";
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * @brief リポジトリポリシーを検査する。
+ *
+ * サービスやミラーリスト由来のリポジトリデータが URL/INI/GPG 検証を
+ * 迂回するのを防ぐ。制御文字・不正 URL・不審なミラーリスト/GPG 鍵 URL を拒否する。
+ * エラー文にはエイリアス・理由・スキームのみを含め、完全な URL は含めない
+ * (認証情報を含む可能性があるため)。
+ * @param repo 検査対象リポジトリ
+ * @param err 失敗時のエラー詳細
+ * @return ポリシー準拠時 true
+ */
+bool ZyppManager::checkRepoPolicy(const zypp::RepoInfo &repo, std::string &err)
+{
+    const std::string alias = repo.alias();
+
+    auto hasControlChar = [](const std::string &s) {
+        for (unsigned char c : s) {
+            if (c < 0x20 || c == 0x7f)
+                return true;
+        }
+        return false;
+    };
+
+    // エイリアス・名前に制御文字があれば INI 書き出し時の注入とみなす
+    if (hasControlChar(alias) || hasControlChar(repo.name())) {
+        err = "repo '" + alias + "': alias or name contains control characters";
+        return false;
+    }
+
+    // 実効ベース URL (変数置換済み) を全件検証
+    for (const auto &u : repo.baseUrls()) {
+        const std::string urlStr = u.asString();
+        std::string urlErr;
+        if (!validateUrl(urlStr, urlErr)) {
+            err = "repo '" + alias + "': invalid base URL (" + urlErr + ")";
+            return false;
+        }
+    }
+
+    // ミラーリスト/メタリンクは信頼できる転送手段のみ許可する。
+    // RepoMirrorList は返却ミラー端点のスキームを濾過しないため。
+    const zypp::Url mirrorUrl = repo.mirrorListUrl();
+    if (!mirrorUrl.asString().empty()) {
+        std::string scheme;
+        try {
+            scheme = zypp::str::toLower(mirrorUrl.getScheme());
+        } catch (...) {
+            scheme.clear();
+        }
+        if (scheme != "https" && scheme != "file" && scheme != "dir") {
+            err = "repo '" + alias + "': disallowed mirrorlist scheme: " + scheme;
+            return false;
+        }
+    }
+
+    // GPG 鍵 URL を全件検証 (スキームのみ記録し完全な URL は出さない)
+    for (const auto &u : repo.gpgKeyUrls()) {
+        const std::string urlStr = u.asString();
+        std::string urlErr;
+        if (!validateUrl(urlStr, urlErr)) {
+            std::string scheme;
+            try {
+                scheme = zypp::Url(urlStr).getScheme();
+            } catch (...) {
+                scheme = "?";
+            }
+            err = "repo '" + alias + "': invalid GPG key URL (" + urlErr
+                + ", scheme: " + scheme + ")";
+            return false;
+        }
+    }
+
+    // サービス由来リポジトリはリモート repoindex が GPG 設定・ミラーリストを
+    // 注入できるため、生の三値設定と明示ミラーリストを検査する。
+    // 非サービス (管理者設定) は現行動作を維持する。
+    if (!repo.service().empty()) {
+        if (zypp::ZConfig::instance().gpgCheck() && rawGpgChecksWeakened(repo)) {
+            err = "repo '" + alias + "': signature checking weakened by remote repoindex";
+            return false;
+        }
+        // サービスが明示ミラーリスト/メタリンクを注入してはならない
+        if (!repo.rawCfgMirrorlistUrl().asString().empty()
+            || !repo.rawCfgMetalinkUrl().asString().empty()) {
+            err = "repo '" + alias + "': mirrorlist configured by remote service";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief リポジトリの生 GPG 設定が弱体化されているか検査する。
+ */
+bool ZyppManager::rawGpgChecksWeakened(const zypp::RepoInfo &repo)
+{
+    zypp::TriBool g, r, p;
+    try {
+        repo.getRawGpgChecks(g, r, p);
+    } catch (...) {
+        // 生値が読めなければ安全側に倒す
+        return true;
+    }
+    // 確定的に false のものが1つでもあれば弱体化
+    // (gpgcheck=1 repo_gpgcheck=0 pkg_gpgcheck=0 等を検出)
+    auto isDeterminatelyFalse = [](const zypp::TriBool &t) {
+        if (boost::logic::indeterminate(t))
+            return false;
+        return !static_cast<bool>(t);
+    };
+    return isDeterminatelyFalse(g) || isDeterminatelyFalse(r) || isDeterminatelyFalse(p);
+}
+
+/**
+ * @brief ミラーリスト由来の全エンドポイント URL を検証する。
+ */
+bool ZyppManager::checkRepoOrigins(const zypp::RepoInfo &repo, std::string &err)
+{
+    const std::string alias = repo.alias();
+    try {
+        // 同一 RepoInfo オブジェクト上で取得する。libzypp は取得済みミラー
+        // リストを共有 pimpl に約1時間キャッシュするため、検査対象と
+        // libzypp 使用分がその範囲で一致する。
+        const zypp::MirroredOriginSet origins = repo.repoOrigins();
+        for (const auto &origin : origins) {
+            for (const auto &endpoint : origin) {
+                std::string urlStr;
+                try {
+                    urlStr = endpoint.url().asString();
+                } catch (const std::exception &e) {
+                    err = "repo '" + alias + "': unreadable mirror endpoint: " + e.what();
+                    return false;
+                }
+                std::string urlErr;
+                if (!validateUrl(urlStr, urlErr)) {
+                    std::string scheme;
+                    try {
+                        scheme = endpoint.url().getScheme();
+                    } catch (...) {
+                        scheme = "?";
+                    }
+                    err = "repo '" + alias + "': invalid mirror endpoint ("
+                        + urlErr + ", scheme: " + scheme + ")";
+                    qCWarning(lcZypp) << "Mirror endpoint violates policy for repo"
+                                      << QString::fromStdString(alias)
+                                      << ": scheme=" << QString::fromStdString(scheme);
+                    return false;
+                }
+            }
+        }
+    } catch (const zypp::Exception &e) {
+        err = "repo '" + alias + "': cannot verify mirror endpoints: " + e.msg();
+        return false;
+    } catch (const std::exception &e) {
+        err = "repo '" + alias + "': cannot verify mirror endpoints: " + e.what();
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief サービス情報を検査する。
+ */
+bool ZyppManager::checkServicePolicy(const zypp::ServiceInfo &svc, std::string &err)
+{
+    const std::string alias = svc.alias();
+
+    std::string fieldErr;
+    if (!validateAlias(alias, fieldErr)) {
+        err = "service '" + alias + "': invalid alias: " + fieldErr;
+        return false;
+    }
+    if (!validateName(svc.name(), fieldErr)) {
+        err = "service '" + alias + "': invalid name: " + fieldErr;
+        return false;
+    }
+    if (!validateUrl(svc.url().asString(), fieldErr)) {
+        err = "service '" + alias + "': invalid URL: " + fieldErr;
+        return false;
+    }
+
+    // qZypper はプラグインサービスを更新しない。zypper の利用を促す。
+    if (svc.type() == zypp::repo::ServiceType::PLUGIN) {
+        err = "service '" + alias + "': plugin services are not supported, use zypper";
+        return false;
+    }
+
+    // repoStates キーは .service ファイルに素通しされるため INI 注入対策
+    for (const auto &kv : svc.repoStates()) {
+        if (!validateAlias(kv.first, fieldErr)) {
+            err = "service '" + alias + "': invalid repository state entry";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief on-disk の .service ファイルがメモリ上のサービスと一致するか検査する。
+ */
+bool ZyppManager::serviceFileMatches(const zypp::Pathname &path, const zypp::ServiceInfo &svc)
+{
+    // zypp::parser::ServiceFileReader は libzypp 17.38.16 で export されて
+    // いないため、単一セクション・alias/type/url 一致の最小 INI 照合を行う。
+    if (path.empty())
+        return false;
+    std::ifstream in(path.asString());
+    if (!in)
+        return false;
+
+    auto trim = [](std::string s) {
+        const char *ws = " \t\r";
+        const auto b = s.find_first_not_of(ws);
+        if (b == std::string::npos)
+            return std::string();
+        return s.substr(b, s.find_last_not_of(ws) - b + 1);
+    };
+
+    unsigned sections = 0;
+    std::string sectionName;
+    bool inTarget = false;
+    bool urlSeen = false;
+    bool ok = true;
+    // libzypp はファイルへ rawUrl (変数未展開・資格情報込み) を書くため、
+    // 双方を解析して完全形式で比較する (展開済み url() と比べると正規サービスを誤隔離する)
+    const std::string wantUrl = svc.rawUrl().asCompleteString();
+    const std::string wantType = svc.type().asString();
+
+    std::string line;
+    while (std::getline(in, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#' || line[0] == ';')
+            continue;
+        if (line.front() == '[') {
+            if (line.back() != ']')
+                return false;
+            ++sections;
+            sectionName = trim(line.substr(1, line.size() - 2));
+            inTarget = (sectionName == svc.alias());
+            continue;
+        }
+        if (!inTarget)
+            continue;
+        const auto eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = trim(line.substr(0, eq));
+        for (char &c : key)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const std::string value = trim(line.substr(eq + 1));
+        // 差し込まれた複数行も検出するため全出現を照合する
+        if (key == "url") {
+            urlSeen = true;
+            try {
+                if (zypp::Url(value).asCompleteString() != wantUrl)
+                    ok = false;
+            } catch (...) {
+                ok = false;
+            }
+        } else if (key == "type") {
+            if (value != wantType)
+                ok = false;
+        }
+    }
+
+    return sections == 1 && sectionName == svc.alias() && urlSeen && ok;
+}
+
+/**
+ * @brief サービス由来のリポジトリを浄化する。
+ *
+ * 指定サービスの全リポジトリを検査し、ポリシー違反や署名検査弱体化が
+ * あるものを削除する。残留 .repo ファイルも削除する
+ * (サービス生成 .repo は単一リポジトリであり、残留内容は INI 注入の可能性があるため)。
+ * @param serviceAlias 対象サービスエイリアス
+ * @param report 削除内容の報告 (エイリアスと理由のみ、URL なし)
+ * @return 違反がなく全て健全時 true
+ * @note 呼び出し側の m_mutex 配下で呼ぶこと (非再帰 mutex のため内部でロックしない)。
+ */
+bool ZyppManager::sanitizeServiceRepos(const std::string &serviceAlias, std::string &report,
+                                        const std::set<std::string> &preexistingRepoFiles)
+{
+    // NOTE: m_mutex は取得しない。呼び出し側 (addService/refreshService) が保持している。
+    if (!m_repoManager)
+        return false;
+
+    const bool gpgRequired = zypp::ZConfig::instance().gpgCheck();
+    const zypp::Pathname reposDir = zypp::ZConfig::instance().knownReposPath();
+    bool clean = true;
+    std::string removed;
+
+    for (const auto &repo : m_repoManager->knownRepositories()) {
+        if (repo.service() != serviceAlias)
+            continue;
+
+        const std::string alias = repo.alias();
+        std::string reason;
+
+        std::string policyErr;
+        if (!checkRepoPolicy(repo, policyErr)) {
+            reason = policyErr;
+        } else if (gpgRequired && rawGpgChecksWeakened(repo)) {
+            reason = "repo '" + alias + "': signature checking weakened by remote repoindex";
+        }
+
+        if (reason.empty())
+            continue;
+
+        // 違反リポジトリを削除する
+        const zypp::Pathname fpath = repo.filepath();
+        try {
+            m_repoManager->removeRepository(repo);
+        } catch (const zypp::Exception &e) {
+            qCWarning(lcZypp) << "sanitizeServiceRepos: remove failed for"
+                              << QString::fromStdString(alias) << ":"
+                              << QString::fromStdString(e.msg());
+        }
+        // 残留 .repo は共有ファイル削除を避けるためガード付きでのみ消す:
+        // knownReposPath 直下の通常ファイルで、サービス追加/更新前から存在せず、
+        // 残存リポジトリのいずれにも所有されていない場合のみ unlink する。
+        if (!fpath.empty() && zypp::PathInfo(fpath).isExist()) {
+            bool owned = false;
+            for (const auto &remaining : m_repoManager->knownRepositories()) {
+                if (remaining.filepath() == fpath) {
+                    owned = true;
+                    break;
+                }
+            }
+            if (!owned && fpath.dirname() == reposDir
+                && zypp::PathInfo(fpath).isFile()
+                && preexistingRepoFiles.count(fpath.asString()) == 0) {
+                if (zypp::filesystem::unlink(fpath) != 0) {
+                    qCWarning(lcZypp) << "sanitizeServiceRepos: unlink failed for"
+                                      << QString::fromStdString(fpath.asString());
+                }
+            } else {
+                qCWarning(lcZypp) << "sanitizeServiceRepos: keeping unexpected file"
+                                  << QString::fromStdString(fpath.asString());
+            }
+        }
+
+        if (!removed.empty())
+            removed += "; ";
+        removed += reason;
+        clean = false;
+    }
+
+    if (!clean)
+        report = removed;
+    return clean;
+}
+
+/**
+ * @brief 既知リポジトリパス直下の通常ファイルを列挙する。
+ */
+std::set<std::string> ZyppManager::snapshotRepoFiles()
+{
+    std::set<std::string> files;
+    const zypp::Pathname dir = zypp::ZConfig::instance().knownReposPath();
+    std::error_code ec;
+    for (const auto &entry : std::filesystem::directory_iterator(dir.asString(), ec)) {
+        if (ec)
+            break;
+        std::error_code ec2;
+        if (entry.is_regular_file(ec2) && !ec2)
+            files.insert(entry.path().string());
+    }
+    return files;
+}
+
+/**
+ * @brief サービスの .service ファイル汚染を検証し必要なら隔離する。
+ */
+bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
+{
+    // NOTE: m_mutex は取得しない。呼び出し側が保持している。
+    if (!m_repoManager)
+        return true;
+
+    zypp::ServiceInfo info;
+    try {
+        info = m_repoManager->getService(serviceAlias);
+    } catch (...) {
+        return true;  // 検証対象なし (既に削除済み等)
+    }
+
+    bool tainted = false;
+    std::string detail;
+    if (!checkServicePolicy(info, detail)) {
+        qCWarning(lcZypp) << "quarantineServiceIfTainted: policy violation for service"
+                          << QString::fromStdString(serviceAlias)
+                          << ":" << QString::fromStdString(detail);
+        tainted = true;
+    } else {
+        // on-disk の .service ファイルを解析し、単一セクションかつ
+        // alias/type/url の一致を要求する (INI 注入検出)。
+        try {
+            if (!serviceFileMatches(info.filepath(), info))
+                tainted = true;
+        } catch (const std::exception &e) {
+            qCWarning(lcZypp) << "quarantineServiceIfTainted: service file unreadable for"
+                              << QString::fromStdString(serviceAlias) << ":" << e.what();
+            tainted = true;
+        } catch (...) {
+            tainted = true;
+        }
+    }
+
+    if (!tainted)
+        return true;
+
+    // 隔離: サービス (配下リポジトリと .service ファイル) を削除する
+    zypp::Pathname fpath;
+    try {
+        fpath = info.filepath();
+    } catch (...) {
+    }
+    bool removed = true;
+    try {
+        m_repoManager->removeService(serviceAlias);
+    } catch (const zypp::Exception &e) {
+        removed = false;
+        qCWarning(lcZypp) << "quarantineServiceIfTainted: removeService failed for"
+                          << QString::fromStdString(serviceAlias) << ":"
+                          << QString::fromStdString(e.msg());
+    }
+    // removeService 後に残存し、かつ既知サービスパス直下の通常ファイルなら unlink
+    const zypp::Pathname svcDir = zypp::ZConfig::instance().knownServicesPath();
+    if (!fpath.empty() && fpath.dirname() == svcDir
+        && zypp::PathInfo(fpath).isFile()) {
+        if (zypp::filesystem::unlink(fpath) != 0) {
+            qCWarning(lcZypp) << "quarantineServiceIfTainted: unlink failed for"
+                              << QString::fromStdString(fpath.asString());
+        }
+    }
+    // 削除が拒否された場合 (SELinux 等) は汚染ファイルが残るため、成功と報告しない
+    if (!fpath.empty() && zypp::PathInfo(fpath).isExist())
+        removed = false;
+
+    m_lastError = removed
+        ? "Service " + serviceAlias + " removed: index contained invalid data"
+        : "Service " + serviceAlias + " contains invalid data but could not be removed;"
+          " remove it manually with zypper";
+    qCWarning(lcZypp) << QString::fromStdString(m_lastError);
+    return false;
+}
+
+/**
+ * @brief GPG鍵フィンガープリントを承認する (ワンショット)。
+ * @param fingerprint フィンガープリント (正規化前の生文字列も可)
+ * @return 正規化成功時 true。不正な場合は false を返し m_lastError を設定する。
+ * @note m_mutex は取得しない (receiver が独自 mutex を持つ)。
+ */
+bool ZyppManager::approveKeyFingerprint(const std::string &fingerprint)
+{
+    // NOTE: m_mutex は取得しない。リフレッシュ/コミット実行中の
+    // ワーカースレッドからコールバックが発火する可能性があるため。
+    const std::string fp = KeyRingReceiver::normalizeFingerprint(fingerprint);
+    if (fp.empty()) {
+        m_lastError = "Invalid key fingerprint";
+        return false;
+    }
+    m_keyRingReceiver.approveFingerprint(fp);
+    return true;
+}
+
+/**
+ * @brief 未信頼鍵通知コールバックを設定する。
+ * @param cb 通知コールバック
+ * @note m_mutex は取得しない。initialize() 前の呼び出しも可能。
+ */
+void ZyppManager::setUntrustedKeyCallback(UntrustedKeyCallbackFn cb)
+{
+    // NOTE: m_mutex は取得しない (上記と同理由)。receiver が独自 mutex で保護する。
+    m_keyRingReceiver.setUntrustedKeyCallback(std::move(cb));
 }
 
 // -- リポジトリ管理 --
@@ -161,6 +798,8 @@ std::vector<RepoInfo> ZyppManager::getRepos() const
  */
 bool ZyppManager::addRepo(const std::string& url, const std::string& name)
 {
+    // NOTE: ロックは委譲先 addRepo(const RepoInfo&) が取得する。
+    // ここでロックすると非再帰 mutex の二重取得でデッドロックするため取得しない。
     RepoInfo info;
     info.url         = QString::fromStdString(url);
     info.name        = QString::fromStdString(name);
@@ -181,11 +820,36 @@ bool ZyppManager::addRepo(const RepoInfo& info)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
+    const std::string alias = info.alias.isEmpty() ? info.name.toStdString()
+                                                   : info.alias.toStdString();
+    const std::string name = info.name.toStdString();
+    const std::string url = info.url.toStdString();
+
+    std::string validationErr;
+    if (!validateAlias(alias, validationErr)) {
+        m_lastError = "Invalid alias: " + validationErr;
+        return false;
+    }
+    if (!validateName(name, validationErr)) {
+        m_lastError = "Invalid repository name: " + validationErr;
+        return false;
+    }
+    if (!validateUrl(url, validationErr)) {
+        m_lastError = "Invalid repository URL: " + validationErr;
+        return false;
+    }
+
+    bool added = false;
+    zypp::RepoInfo repo;
     try {
-        zypp::RepoInfo repo;
-        repo.addBaseUrl(zypp::Url(info.url.toStdString()));
-        repo.setName(info.name.toStdString());
-        repo.setAlias(info.alias.isEmpty() ? info.name.toStdString() : info.alias.toStdString());
+        repo.addBaseUrl(zypp::Url(url));
+        repo.setName(name);
+        repo.setAlias(alias);
         repo.setEnabled(info.enabled);
         repo.setAutorefresh(info.autoRefresh);
         repo.setPriority(info.priority);
@@ -194,14 +858,42 @@ bool ZyppManager::addRepo(const RepoInfo& info)
         if (!info.type.isEmpty())
             repo.setType(zypp::repo::RepoType(info.type.toStdString()));
 
+        // 追加前にポリシー検査 (メディアに触れる前の最終ゲート)
+        std::string policyErr;
+        if (!checkRepoPolicy(repo, policyErr)) {
+            m_lastError = "Repository violates policy: " + policyErr;
+            return false;
+        }
+
         m_repoManager->addRepository(repo);
+        added = true;
+        // ミラー端点はリフレッシュ直前に検査する (offline の initialize とは別扱い)
+        std::string originsErr;
+        if (!checkRepoOrigins(repo, originsErr)) {
+            m_lastError = "Repository violates policy: " + originsErr;
+            try {
+                m_repoManager->removeRepository(repo);
+                added = false;
+            } catch (...) {
+            }
+            return false;
+        }
         m_repoManager->refreshMetadata(repo);
         m_repoManager->buildCache(repo);
         m_repoManager->loadFromCache(repo);
 
         return true;
     } catch (const zypp::Exception& e) {
-        m_lastError = "Failed to add repository: " + e.msg();
+        std::string failure = "Failed to add repository: " + e.msg();
+        if (added) {
+            // 部分的に追加されたリポジトリをロールバックする (best-effort)
+            try {
+                m_repoManager->removeRepository(repo);
+            } catch (const zypp::Exception& rollbackErr) {
+                failure += " (rollback failed: " + rollbackErr.msg() + ")";
+            }
+        }
+        m_lastError = failure;
         return false;
     }
 }
@@ -214,6 +906,11 @@ bool ZyppManager::addRepo(const RepoInfo& info)
 bool ZyppManager::removeRepo(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
 
     try {
         zypp::RepoInfo repo = m_repoManager->getRepositoryInfo(alias);
@@ -235,6 +932,11 @@ bool ZyppManager::setRepoEnabled(const std::string& alias, bool enabled)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
     try {
         zypp::RepoInfo repo = m_repoManager->getRepositoryInfo(alias);
         repo.setEnabled(enabled);
@@ -255,6 +957,21 @@ bool ZyppManager::setRepoEnabled(const std::string& alias, bool enabled)
 bool ZyppManager::modifyRepo(const std::string& alias, const RepoInfo& newInfo)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
+    std::string validationErr;
+    if (!newInfo.name.isEmpty() && !validateName(newInfo.name.toStdString(), validationErr)) {
+        m_lastError = "Invalid repository name: " + validationErr;
+        return false;
+    }
+    if (!newInfo.url.isEmpty() && !validateUrl(newInfo.url.toStdString(), validationErr)) {
+        m_lastError = "Invalid repository URL: " + validationErr;
+        return false;
+    }
 
     try {
         zypp::RepoInfo repo = m_repoManager->getRepositoryInfo(alias);
@@ -291,6 +1008,11 @@ bool ZyppManager::refreshRepo(const std::string& alias,
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
     m_cancelRequested = false;
 
     // libzypp操作中にキャンセル要求を検出するコールバック
@@ -301,6 +1023,19 @@ bool ZyppManager::refreshRepo(const std::string& alias,
 
     try {
         zypp::RepoInfo repo = m_repoManager->getRepositoryInfo(alias);
+
+        // メディア/キャッシュに触れる前にポリシー検査
+        std::string policyErr;
+        if (!checkRepoPolicy(repo, policyErr)) {
+            m_lastError = "Repository violates policy: " + policyErr;
+            return false;
+        }
+        // ミラー端点検査はリフレッシュ直前に行う (取得リストと使用分を束ねる)
+        std::string originsErr;
+        if (!checkRepoOrigins(repo, originsErr)) {
+            m_lastError = "Repository violates policy: " + originsErr;
+            return false;
+        }
 
         if (progressCallback)
             progressCallback(alias, 0);
@@ -333,6 +1068,11 @@ std::string ZyppManager::probeRepoType(const std::string& url)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return "";
+    }
+
     try {
         zypp::repo::RepoType type = m_repoManager->probe(zypp::Url(url));
         return type.asString();
@@ -354,6 +1094,11 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
     m_cancelRequested = false;
 
     // libzypp操作中にキャンセル要求を検出するコールバック
@@ -366,6 +1111,8 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
         auto repos = m_repoManager->knownRepositories();
         int total = static_cast<int>(repos.size());
         int current = 0;
+        bool skippedViolation = false;
+        std::string skippedDetail;
 
         for (const auto& repo : repos) {
             if (m_cancelRequested) {
@@ -374,6 +1121,29 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
             }
 
             if (!repo.enabled()) {
+                ++current;
+                continue;
+            }
+
+            // ポリシー違反リポジトリは飛ばして他を続行する
+            std::string policyErr;
+            if (!checkRepoPolicy(repo, policyErr)) {
+                skippedViolation = true;
+                if (!skippedDetail.empty())
+                    skippedDetail += "; ";
+                skippedDetail += policyErr;
+                qCWarning(lcZypp) << "Skipping repo during refreshRepos:"
+                                  << QString::fromStdString(policyErr);
+                ++current;
+                continue;
+            }
+            // ミラー端点違反も同様に飛ばす (ネットワーク取得を伴うため直前検査)
+            std::string originsErr;
+            if (!checkRepoOrigins(repo, originsErr)) {
+                skippedViolation = true;
+                if (!skippedDetail.empty())
+                    skippedDetail += "; ";
+                skippedDetail += originsErr;
                 ++current;
                 continue;
             }
@@ -389,6 +1159,11 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
 
         if (progressCallback)
             progressCallback("", 100);
+
+        if (skippedViolation) {
+            m_lastError = "Skipped repositories with policy violations: " + skippedDetail;
+            return false;
+        }
 
         return true;
     } catch (const zypp::AbortRequestException&) {
@@ -438,18 +1213,63 @@ bool ZyppManager::addService(const std::string& url, const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
+    std::string validationErr;
+    if (!validateAlias(alias, validationErr)) {
+        m_lastError = "Invalid alias: " + validationErr;
+        return false;
+    }
+    if (!validateUrl(url, validationErr)) {
+        m_lastError = "Invalid service URL: " + validationErr;
+        return false;
+    }
+
+    bool added = false;
+    zypp::ServiceInfo svc;
     try {
-        zypp::ServiceInfo svc;
         svc.setAlias(alias);
         svc.setUrl(zypp::Url(url));
         svc.setEnabled(true);
         svc.setAutorefresh(true);
 
+        // unlink ガード用のスナップショットを libzypp 追加前に取得する
+        const std::set<std::string> preexistingRepoFiles = snapshotRepoFiles();
+
         m_repoManager->addService(svc);
-        m_repoManager->refreshService(svc);
+        added = true;
+        try {
+            m_repoManager->refreshService(svc);
+        } catch (...) {
+            // 部分追加後に例外が出ても浄化と隔離は実行する
+            std::string report;
+            sanitizeServiceRepos(alias, report, preexistingRepoFiles);
+            quarantineServiceIfTainted(alias);
+            throw;
+        }
+        std::string report;
+        const bool reposClean = sanitizeServiceRepos(alias, report, preexistingRepoFiles);
+        if (!quarantineServiceIfTainted(alias))
+            return false;
+        if (!reposClean) {
+            m_lastError = "Service added with violating repositories removed: " + report;
+            return false;
+        }
         return true;
     } catch (const zypp::Exception& e) {
-        m_lastError = "Failed to add service: " + e.msg();
+        std::string failure = "Failed to add service: " + e.msg();
+        if (added) {
+            // 部分的に追加されたサービスをロールバックする (best-effort)
+            try {
+                m_repoManager->removeService(svc);
+            } catch (const zypp::Exception& rollbackErr) {
+                failure += " (rollback failed: " + rollbackErr.msg() + ")";
+            }
+        }
+        m_lastError = failure;
         return false;
     }
 }
@@ -462,6 +1282,11 @@ bool ZyppManager::addService(const std::string& url, const std::string& alias)
 bool ZyppManager::removeService(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
 
     try {
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
@@ -482,6 +1307,21 @@ bool ZyppManager::removeService(const std::string& alias)
 bool ZyppManager::modifyService(const std::string& alias, const ServiceInfo& newInfo)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
+    std::string validationErr;
+    if (!newInfo.name.isEmpty() && !validateName(newInfo.name.toStdString(), validationErr)) {
+        m_lastError = "Invalid service name: " + validationErr;
+        return false;
+    }
+    if (!newInfo.url.isEmpty() && !validateUrl(newInfo.url.toStdString(), validationErr)) {
+        m_lastError = "Invalid service URL: " + validationErr;
+        return false;
+    }
 
     try {
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
@@ -511,9 +1351,50 @@ bool ZyppManager::refreshService(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
     try {
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
-        m_repoManager->refreshService(svc);
+        // libzypp リフレッシュ前にサービス自体のポリシー検査を行う
+        std::string svcErr;
+        if (!checkServicePolicy(svc, svcErr)) {
+            m_lastError = "Service violates policy: " + svcErr;
+            qCWarning(lcZypp) << "refreshService refused for"
+                              << QString::fromStdString(alias) << ":"
+                              << QString::fromStdString(svcErr);
+            return false;
+        }
+        // 隔離時の .service unlink はファイルがこのサービス専有であることが前提。
+        // 複数サービスを定義した共有ファイル (libzypp 正式サポート) や既に不一致の
+        // ファイルは、他サービスの誤削除を避けるため更新前に非破壊で拒否する。
+        if (!serviceFileMatches(svc.filepath(), svc)) {
+            m_lastError = "Service " + alias
+                + " is defined in a shared or modified service file; refresh it with zypper";
+            qCWarning(lcZypp) << "refreshService refused (non-exclusive service file) for"
+                              << QString::fromStdString(alias);
+            return false;
+        }
+        // unlink ガード用のスナップショットを libzypp 更新前に取得する
+        const std::set<std::string> preexistingRepoFiles = snapshotRepoFiles();
+        try {
+            m_repoManager->refreshService(svc);
+        } catch (...) {
+            std::string report;
+            sanitizeServiceRepos(alias, report, preexistingRepoFiles);
+            quarantineServiceIfTainted(alias);
+            throw;
+        }
+        std::string report;
+        const bool reposClean = sanitizeServiceRepos(alias, report, preexistingRepoFiles);
+        if (!quarantineServiceIfTainted(alias))
+            return false;
+        if (!reposClean) {
+            m_lastError = "Service refreshed with violating repositories removed: " + report;
+            return false;
+        }
         return true;
     } catch (const zypp::Exception& e) {
         m_lastError = "Failed to refresh service: " + e.msg();
@@ -530,6 +1411,11 @@ std::string ZyppManager::probeServiceType(const std::string& url)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (!m_repoManager) {
+        m_lastError = "Backend not initialized";
+        return "";
+    }
+
     try {
         zypp::repo::ServiceType type = m_repoManager->probeService(zypp::Url(url));
         return type.asString();
@@ -544,8 +1430,9 @@ std::string ZyppManager::probeServiceType(const std::string& url)
 /**
  * @brief パッケージを検索する。
  *
- * 名前、概要、説明から正規表現で検索する。無効な正規表現は部分一致にフォールバック。
- * @param query 検索クエリ文字列
+ * 名前、概要、説明からリテラル部分一致 (ASCII 大文字小文字不問) で検索する。
+ * 正規表現は使わない (ReDoS 防止)。
+ * @param query 検索クエリ文字列 (256 バイト超は拒否)
  * @param flags 検索フラグ (SearchFlag のビットマスク)
  * @return 一致したパッケージ情報のベクタ
  */
@@ -557,22 +1444,24 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, i
     if (!m_initialized)
         return result;
 
-    auto pool = m_zypp->poolProxy();
-
-    // 検索パターンをコンパイル
-    std::regex searchRegex;
-    try {
-        searchRegex = std::regex(query, std::regex_constants::icase);
-    } catch (const std::regex_error&) {
-        // 無効な正規表現の場合は部分一致検索にフォールバック
-        std::string escaped;
-        for (char c : query) {
-            if (std::string(".[{()\\*+?|^$").find(c) != std::string::npos)
-                escaped += '\\';
-            escaped += c;
-        }
-        searchRegex = std::regex(escaped, std::regex_constants::icase);
+    if (query.size() > 256) {
+        m_lastError = "Search query too long";
+        return result;
     }
+
+    auto toAsciiLower = [](const std::string &s) {
+        std::string out(s);
+        for (char &ch : out)
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return out;
+    };
+    const std::string loweredQuery = toAsciiLower(query);
+
+    auto containsLiteral = [&loweredQuery, &toAsciiLower](const std::string &text) {
+        return toAsciiLower(text).find(loweredQuery) != std::string::npos;
+    };
+
+    auto pool = m_zypp->poolProxy();
 
     for (auto it = pool.byKindBegin<zypp::Package>();
          it != pool.byKindEnd<zypp::Package>(); ++it) {
@@ -585,15 +1474,15 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, i
             continue;
 
         if ((flags & static_cast<int>(SearchFlag::Name)) &&
-            std::regex_search(sel->name(), searchRegex))
+            containsLiteral(sel->name()))
             match = true;
 
         if (!match && (flags & static_cast<int>(SearchFlag::Summary)) &&
-            std::regex_search(obj->summary(), searchRegex))
+            containsLiteral(obj->summary()))
             match = true;
 
         if (!match && (flags & static_cast<int>(SearchFlag::Description)) &&
-            std::regex_search(obj->description(), searchRegex))
+            containsLiteral(obj->description()))
             match = true;
 
         if (match)
@@ -1270,6 +2159,25 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         result.success = false;
         result.errorMessage = "Backend not initialized";
         return result;
+    }
+
+    // コミット前にプール既知の全リポジトリをポリシー検査。不適合があれば拒否する。
+    // NOTE: m_mutex 保持中のため checkRepoPolicy (static、ロックなし) を直接呼ぶ。
+    for (const auto &known : m_zypp->pool().knownRepositories()) {
+        std::string policyErr;
+        if (!checkRepoPolicy(known.info(), policyErr)) {
+            result.success = false;
+            result.errorMessage = "Commit refused, repository violates policy: " + policyErr;
+            m_lastError = result.errorMessage;
+            return result;
+        }
+        std::string originsErr;
+        if (!checkRepoOrigins(known.info(), originsErr)) {
+            result.success = false;
+            result.errorMessage = "Commit refused, repository violates policy: " + originsErr;
+            m_lastError = result.errorMessage;
+            return result;
+        }
     }
 
     try {

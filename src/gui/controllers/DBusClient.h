@@ -71,8 +71,12 @@ public:
     bool applySolution(int problemIndex, int solutionIndex);        // 解決策適用
 
     // コミット (特権)
-    QVariantMap commit();                                           // 変更をコミット (同期)
-    void commitAsync();                                             // 変更をコミット (非同期)
+    quint64 getSelectionRevision(bool *ok = nullptr);           // 選択リビジョン取得
+    QVariantMap commit(quint64 expectedRevision);                // 変更をコミット (同期)
+    void commitAsync(quint64 expectedRevision);                  // 変更をコミット (非同期)
+
+    // GPG鍵信頼 (特権、Polkit認証あり)
+    bool trustKey(const QString &fingerprint);                   // 署名鍵を信頼
 
     // 読み取り操作 (D-Bus経由)
     QVariantList getRepos();                                        // リポジトリ一覧取得
@@ -114,6 +118,7 @@ signals:
     void errorOccurred(const QString &errorMessage);    // エラー通知
     void packageStateChanged(const QString &packageName,  // パッケージ状態遷移
                              const QString &event);
+    void untrustedKeyDetected(const QVariantMap &keyInfo);  // 未信頼鍵検出
 
 private:
     static constexpr const char* SERVICE_NAME = "org.presire.qzypper";

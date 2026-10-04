@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <set>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -124,6 +125,21 @@ public:
     // エラー情報
     std::string lastError() const { return m_lastError; }  // 最新エラーメッセージ
 
+    /**
+     * @brief GPG鍵フィンガープリントを承認する (ワンショット)。
+     * @param fingerprint フィンガープリント (正規化前の生文字列も可)
+     * @return 正規化成功時 true。不正な場合は false を返し m_lastError を設定する。
+     * @note m_mutex は取得しない (receiver が独自 mutex を持つ)。
+     */
+    bool approveKeyFingerprint(const std::string &fingerprint);
+
+    /**
+     * @brief 未信頼鍵通知コールバックを設定する。
+     * @param cb 通知コールバック
+     * @note m_mutex は取得しない。initialize() 前の呼び出しも可能。
+     */
+    void setUntrustedKeyCallback(UntrustedKeyCallbackFn cb);
+
 private:
     ZyppManager() = default;                                                  // コンストラクタ (private)
     ~ZyppManager() = default;                                                 // デストラクタ (private)
@@ -132,6 +148,114 @@ private:
     PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;  // PackageInfo生成
     static int fromZyppStatus(zypp::ui::Status status);                       // zypp --> qZypperステータス変換
     static zypp::ui::Status toZyppStatus(int status);                         // qZypper --> zyppステータス変換
+    /**
+     * @brief リポジトリ/サービスURLを検証する。
+     * @param url 検証対象URL
+     * @param err 失敗時のエラー詳細 (呼び出し側が m_lastError 用に利用)
+     * @param allowIsoNesting iso スキームの url クエリパラメータ再帰検証を許可するか
+     * @return 有効時 true
+     */
+    static bool validateUrl(const std::string &url, std::string &err,
+                            bool allowIsoNesting = true);
+    /**
+     * @brief リポジトリ/サービスエイリアスを検証する。
+     * @param alias 検証対象エイリアス
+     * @param err 失敗時のエラー詳細
+     * @return 有効時 true
+     */
+    static bool validateAlias(const std::string &alias, std::string &err);
+    /**
+     * @brief リポジトリポリシーを検査する。
+     *
+     * サービスやミラーリスト由来のリポジトリデータが URL/INI/GPG 検証を
+     * 迂回するのを防ぐ。制御文字・不正 URL・不審なミラーリスト/GPG 鍵 URL を拒否する。
+     * エラー文にはエイリアス・理由・スキームのみを含め、完全な URL は含めない。
+     * @param repo 検査対象リポジトリ
+     * @param err 失敗時のエラー詳細
+     * @return ポリシー準拠時 true
+     */
+    static bool checkRepoPolicy(const zypp::RepoInfo &repo, std::string &err);
+    /**
+     * @brief リポジトリの生 GPG 設定が弱体化されているか検査する。
+     *
+     * getRawGpgChecks の三値 (g, r, p) のいずれかが確定的に false の場合
+     * (例: gpgcheck=1 repo_gpgcheck=0 pkg_gpgcheck=0) true を返す。
+     * 実効ブール値では AllowUnsigned を検出できないため生値を見る。
+     * @param repo 検査対象リポジトリ
+     * @return 弱体化あり時 true
+     */
+    static bool rawGpgChecksWeakened(const zypp::RepoInfo &repo);
+    /**
+     * @brief ミラーリスト由来の全エンドポイント URL を検証する。
+     *
+     * repoOrigins() (MirroredOriginSet) を走査し validateUrl で検査する。
+     * ネットワーク I/O を伴う場合があるためオフライン必須箇所では呼ばない。
+     * @param repo 検査対象リポジトリ
+     * @param err 失敗時のエラー詳細 (エイリアスとスキームのみ)
+     * @return 全端点が有効時 true
+     */
+    static bool checkRepoOrigins(const zypp::RepoInfo &repo, std::string &err);
+    /**
+     * @brief サービス情報を検査する。
+     *
+     * リモート repoindex 由来のエイリアス/名前に含まれる制御文字、
+     * 不正 URL、PLUGIN 型、repoStates キーの INI メタ文字を拒否する。
+     * @param svc 検査対象サービス
+     * @param err 失敗時のエラー詳細
+     * @return ポリシー準拠時 true
+     */
+    static bool checkServicePolicy(const zypp::ServiceInfo &svc, std::string &err);
+    /**
+     * @brief on-disk の .service ファイルがメモリ上のサービスと一致するか検査する。
+     *
+     * 単一セクション・セクション名=alias・全 url/type 値の一致を要求する
+     * (改行注入による type=plugin / url= 行の差し込みを検出)。
+     * @param path .service ファイルパス
+     * @param svc メモリ上のサービス
+     * @return 一致時 true
+     */
+    static bool serviceFileMatches(const zypp::Pathname &path, const zypp::ServiceInfo &svc);
+    /**
+     * @brief サービス由来のリポジトリを浄化する。
+     *
+     * 指定サービスの全リポジトリを検査し、ポリシー違反や署名検査弱体化が
+     * あるものを削除する。残留 .repo ファイルは共有ファイル削除を避けるため
+     * ガード付きでのみ削除する。
+     * @param serviceAlias 対象サービスエイリアス
+     * @param report 削除内容の報告 (エイリアスと理由のみ、URL なし)
+     * @param preexistingRepoFiles サービス追加/更新前に存在した .repo ファイル
+     * @return 違反がなく全て健全時 true
+     * @note 呼び出し側の m_mutex 配下で呼ぶこと (内部でロックしない)。
+     */
+    bool sanitizeServiceRepos(const std::string &serviceAlias, std::string &report,
+                              const std::set<std::string> &preexistingRepoFiles);
+    /**
+     * @brief 既知リポジトリパス直下の通常ファイルを列挙する。
+     * @return フルパス文字列の集合
+     */
+    static std::set<std::string> snapshotRepoFiles();
+    /**
+     * @brief サービスの .service ファイル汚染を検証し必要なら隔離する。
+     *
+     * メモリ上のサービスに checkServicePolicy を適用し、さらに on-disk の
+     * .service ファイルを ServiceFileReader で解析して一致を要求する。
+     * 不一致時はサービスを削除し残留ファイルを除去する。
+     * 残留ファイル除去は操作前にファイルがこのサービス専有であったことが前提
+     * (addService は libzypp が新規ファイルを生成、refreshService は事前に
+     * serviceFileMatches で共有ファイルを拒否している)。
+     * @param serviceAlias 対象サービスエイリアス
+     * @return 健全時 true。隔離時は m_lastError を設定し false を返す
+     *         (削除できず残存した場合はその旨を m_lastError に設定する)。
+     * @note 呼び出し側の m_mutex 配下で呼ぶこと (内部でロックしない)。
+     */
+    bool quarantineServiceIfTainted(const std::string &serviceAlias);
+    /**
+     * @brief リポジトリ/サービス表示名を検証する。
+     * @param name 検証対象名 (API が空を許す箇所では空も有効)
+     * @param err 失敗時のエラー詳細
+     * @return 有効時 true
+     */
+    static bool validateName(const std::string &name, std::string &err);
     zypp::ZYpp::Ptr m_zypp;                                                   // ZYppシングルトン
     std::unique_ptr<zypp::RepoManager> m_repoManager;                         // リポジトリマネージャ
     bool m_initialized = false;                                               // 初期化済みフラグ

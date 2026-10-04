@@ -7,6 +7,19 @@
   <vendor>qZypper</vendor>
   <vendor_url>https://github.com/user/qzypper</vendor_url>
 
+  <!-- セッションの開始 (所有権の確立) -->
+  <action id="org.presire.qzypper.initialize">
+    <description>Open a package management session</description>
+    <description xml:lang="ja">パッケージ管理セッションを開く</description>
+    <message>Authentication is required to load the package management system.</message>
+    <message xml:lang="ja">パッケージ管理システムを読み込むには認証が必要です。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <!-- リポジトリのリフレッシュ -->
   <action id="org.presire.qzypper.refresh-repos">
     <description>Refresh package repositories</description>
@@ -43,6 +56,19 @@
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- リポジトリ署名鍵の信頼 (認証を保持しない) -->
+  <action id="org.presire.qzypper.trust-key">
+    <description>Trust a repository signing key</description>
+    <description xml:lang="ja">リポジトリ署名鍵の信頼</description>
+    <message>Authentication is required to trust a new repository signing key. Packages signed with this key will be installable with root privileges.</message>
+    <message xml:lang="ja">新しいリポジトリ署名鍵を信頼するには認証が必要です。この鍵で署名されたパッケージは、root権限でインストール可能になります。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 

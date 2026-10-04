@@ -12,7 +12,10 @@ module qzypper 0.3.2;
 #
 # Security Model:
 #   - GUI communicates with backend only via D-Bus system bus
-#   - D-Bus service performs privileged operations with PolicyKit auth
+#   - D-Bus service performs privileged operations with PolicyKit auth.
+#     The backend itself calls PolicyKit CheckAuthorization for every
+#     privileged method (fail-closed), so backend <-> policykit_t D-Bus
+#     messaging is required at runtime (see "Optional blocks" below).
 #   - Network access (package download) is limited to backend domain
 #   - RPM database and zypp cache modifications are limited to backend domain
 ########################################
@@ -40,6 +43,7 @@ require {
     # Configuration types
     type etc_t;
     type etc_runtime_t;
+    type system_conf_t;
     type locale_t;
     type fonts_t;
     type fonts_cache_t;
@@ -519,7 +523,14 @@ optional {
     allow qzypper_t ibus_t:dbus send_msg;
     allow ibus_t qzypper_t:dbus send_msg;
     allow qzypper_t ibus_t:unix_stream_socket connectto;
+    allow qzypper_t ibus_t:process signull;
 }
+
+# Input Method: IBus daemon running in the unconfined user session
+# Qt's IBus input context plugin reads ~/.config/ibus/bus/<machine-id>-<display>
+# and probes IBUS_DAEMON_PID with kill(pid, 0) before connecting. Without
+# signull the plugin assumes IBus is not running and IME input is unavailable.
+allow qzypper_t unconfined_t:process signull;
 
 # Input Method: Fcitx/Fcitx5 (when fcitx_t is defined)
 optional {
@@ -698,17 +709,29 @@ allow qzypper_dbus_t fs_t:filesystem getattr;
 # /etc/passwd, /etc/group (NSS user/group lookups for uid/gid resolution)
 allow qzypper_dbus_t passwd_file_t:file { getattr open read };
 
-# /etc files - includes /etc/zypp configuration
-# SECURITY NOTE: Write access to etc_t is required because /etc/zypp/ is labeled
-# etc_t on current openSUSE systems. libzypp modifies /etc/zypp/repos.d/,
-# /etc/zypp/services.d/, and /etc/zypp/zypp.conf during repository management.
-# When openSUSE introduces dedicated zypp_conf_t labels (see optional block below),
-# etc_t write access can be removed. Until then, this grants broader write access
-# to /etc than strictly necessary.
+# /etc files (generic etc_t)
+# NOTE: /etc/zypp is NOT etc_t. It is labeled system_conf_t by the base policy
+# (file_contexts: /etc/zypp(/.*)?), see the rules below. The etc_t write access
+# here is pre-existing broad access to other /etc files and should be reduced
+# separately.
 allow qzypper_dbus_t etc_t:dir { getattr setattr open read search write add_name remove_name create rmdir watch relabelfrom relabelto };
 allow qzypper_dbus_t etc_t:file { getattr setattr open read write append create unlink rename link lock map relabelfrom relabelto };
 allow qzypper_dbus_t etc_t:lnk_file { getattr read create unlink };
 allow qzypper_dbus_t etc_runtime_t:file { getattr open read write };
+
+# /etc/zypp (repos.d, services.d, zypp.conf) - labeled system_conf_t by the base policy.
+# libzypp writes .repo/.service files when repositories/services are added,
+# modified or refreshed, and qZypper's rollback/quarantine removes them again.
+# Create/write and remove/unlink MUST be granted together: write-only access would
+# let a repository/service be written while its rollback/quarantine is denied,
+# leaving tainted files behind.
+# SECURITY NOTE: system_conf_t is not specific to /etc/zypp. It also covers e.g.
+# /etc/sysctl.d, /etc/sysctl.conf, /etc/sysconfig/ip6?tables*, /etc/yum.repos.d,
+# so a compromised backend could modify those as well. Relabeling /etc/zypp to a
+# module-private type would narrow this, but needs file_contexts/migration design
+# against the base /etc/zypp(/.*)? rule and is intentionally not done here.
+allow qzypper_dbus_t system_conf_t:dir { getattr open read search write add_name remove_name create };
+allow qzypper_dbus_t system_conf_t:file { getattr setattr open read write create unlink rename lock };
 
 # /etc/passwd, /etc/group write access (RPM scriptlets: useradd, groupadd, etc.)
 allow qzypper_dbus_t passwd_file_t:file { getattr setattr open read write create rename link lock };
@@ -901,14 +924,6 @@ allow qzypper_dbus_t tmpfs_t:filesystem getattr;
 allow qzypper_dbus_t system_dbusd_t:fd use;
 allow qzypper_dbus_t init_t:fd use;
 
-# Access to qzypper_t process info in /proc (for D-Bus authentication)
-allow qzypper_dbus_t qzypper_t:dir { getattr open read search };
-allow qzypper_dbus_t qzypper_t:file { getattr open read };
-allow qzypper_dbus_t qzypper_t:lnk_file { getattr read };
-
-# Allow D-Bus service to read GUI executable (for process verification)
-allow qzypper_dbus_t qzypper_exec_t:file { getattr open read };
-
 # Default type for unlabeled/custom-path files - RPM may install files to non-standard paths
 allow qzypper_dbus_t default_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
 allow qzypper_dbus_t default_t:file { getattr setattr open read write create unlink rename link lock map relabelfrom relabelto };
@@ -919,7 +934,13 @@ allow qzypper_dbus_t default_t:lnk_file { getattr read create unlink };
 ########################################
 
 # PolicyKit authorization D-Bus communication
-# Required for PolicyKit to respond to authorization requests
+# REQUIRED AT RUNTIME: the backend itself calls
+# org.freedesktop.PolicyKit1.Authority.CheckAuthorization (subject = caller's
+# unique bus name) before every privileged operation and denies when no valid
+# reply arrives (fail-closed). Without these rules all privileged operations
+# (Initialize, refresh, repository/service management, key trust, commit) are
+# denied. Kept in an optional block for portability only: if policykit_t is
+# missing, authorization fails closed instead of being bypassed.
 optional {
     require {
         type policykit_t;
@@ -931,14 +952,20 @@ optional {
 # RPM-specific types (when rpm policy module is installed)
 # On systems with RPM SELinux policy, /var/lib/rpm is labeled rpm_var_lib_t
 #
-# CRITICAL: qzypper-backend は libzypp 経由で /usr/lib/zypp/zypp-rpm ヘルパ
-# (rpm_exec_t) を fork+exec してトランザクションを実行する。
-# さらにその子として RPM の %post/%postun スクリプトレット内で
-# systemctl / systemd-sysctl / systemd-hwdb / udevadm 等が実行される。
+# CRITICAL: libzypp のトランザクション実行方式によりドメインが異なる。
+#   - classic_rpmtrans (SUSE ビルドの既定): libzypp が /usr/bin/rpm
+#     (rpm_exec_t) を fork+exec する。下記 type_transition で rpm_t へ遷移し、
+#     %pre/%post 等のスクリプトレットは基本ポリシーの rpm_t -> rpm_script_t
+#     遷移で実行される。
+#   - single_rpmtrans (ZYPP_SINGLE_RPMTRANS 等で有効化): libzypp は
+#     /usr/libexec/zypp/zypp-rpm を実行するが、このファイルは基本ポリシーで
+#     bin_t にラベル付けされるため遷移せず、ヘルパ自体は qzypper_dbus_t の
+#     まま実行される。スクリプトレットのドメインは RPM SELinux プラグイン
+#     (setexecfilecon による rpm_script_t 選択) とポリシーに依存する。
+#     本ポリシーには qzypper_dbus_t の process setexec / rpm_script_t への
+#     遷移許可が無いため、このモードは未検証 (スクリプトレットが拒否され得る)。
 #
-# これらを qzypper_dbus_t のまま動かすと大量の denial が発生するため、
-# rpm_exec_t 実行時に rpm_t へドメイン遷移する。rpm_t は既存の RPM SELinux
-# ポリシーで %post スクリプトレット (rpm_script_t) への遷移が正しく定義済み。
+# rpm_exec_t 実行時は execute_no_trans を付与せず、必ず rpm_t へ遷移させる。
 optional {
     require {
         type rpm_var_lib_t;
@@ -953,7 +980,7 @@ optional {
     allow qzypper_dbus_t rpm_var_lib_t:file { getattr open read write create unlink rename lock map };
     allow qzypper_dbus_t rpm_var_lib_t:lnk_file { getattr read };
 
-    # RPM 実行可能ファイル (/usr/lib/zypp/zypp-rpm も rpm_exec_t にラベル付与)
+    # RPM 実行可能ファイル (/usr/bin/rpm 等。zypp-rpm は bin_t で対象外)
     # execute_no_trans は付与せず、必ず rpm_t へ遷移させる
     allow qzypper_dbus_t rpm_exec_t:file { getattr open read execute map };
 
@@ -1251,6 +1278,12 @@ optional {
     allow qzypper_dbus_t systemd_logind_exec_t:file { getattr open read execute execute_no_trans map };
 }
 
+# librpm probes root's optional per-user configuration
+# ($HOME/.config/rpm/rpmrc and macros; the systemd unit sets HOME=/root and
+# /root/.config is labeled config_home_t). The files are optional for librpm,
+# so silence the probe instead of granting access to every user's ~/.config.
+dontaudit qzypper_dbus_t config_home_t:dir search;
+
 # libcurl/zypp access to user cache directory (~/.cache) when running as root
 optional {
     require {
@@ -1262,8 +1295,13 @@ optional {
 
 ########################################
 # RPM scriptlet support (optional types)
-# RPM %pre/%post/%preun/%postun scripts run in qzypper_dbus_t domain
-# and may access a wide variety of system resources.
+# With libzypp's default classic_rpmtrans mode, /usr/bin/rpm (rpm_exec_t)
+# transitions to rpm_t and %pre/%post/%preun/%postun scripts run in
+# rpm_t/rpm_script_t (see the RPM block above). These rules cover work done
+# directly by the backend and the helper process of the single_rpmtrans mode
+# (/usr/libexec/zypp/zypp-rpm, bin_t, runs in qzypper_dbus_t). Scriptlet
+# domains in single_rpmtrans mode depend on the RPM SELinux plugin and are
+# untested (see the RPM block above).
 ########################################
 
 # /etc/shadow, /etc/gshadow - user/group management (useradd, groupadd, etc.)

@@ -64,6 +64,8 @@ PackageController::PackageController(QObject *parent)
             this, &PackageController::transactionFinished);
     connect(m_dbus, &DBusClient::errorOccurred,
             this, &PackageController::errorOccurred);
+    connect(m_dbus, &DBusClient::untrustedKeyDetected,
+            this, &PackageController::untrustedKeyDetected);
 
     // バックエンドが再起動した場合、接続状態と一覧を復元する
     connect(m_dbus, &DBusClient::backendReconnected,
@@ -618,16 +620,29 @@ bool PackageController::applySolution(int problemIndex, int solutionIndex)
 
 /**
  * @brief パッケージの変更をコミットする。
+ *
+ * m_commitRevision に束縛してバックエンドの Commit を呼ぶ。
+ * 呼び出し後はリビジョンを0に戻す。
  * @return コミット結果 (success 等)
  */
 QVariantMap PackageController::commit()
 {
     if (!m_connected) return {};
 
+    if (m_commitRevision == 0) {
+        const QString msg = tr("Changes must be confirmed before applying");
+        emit errorOccurred(msg);
+        QVariantMap result;
+        result["success"] = false;
+        result["errorMessage"] = msg;
+        return result;
+    }
+
     setBusy(true);
     setStatusMessage(tr("Applying changes..."));
 
-    QVariantMap result = m_dbus->commit();
+    QVariantMap result = m_dbus->commit(m_commitRevision);
+    m_commitRevision = 0;
 
     if (result["success"].toBool())
         setStatusMessage(tr("Changes applied successfully"));
@@ -639,18 +654,73 @@ QVariantMap PackageController::commit()
 }
 
 /**
+ * @brief 確認済み選択に Commit を束縛するためのリビジョンを取得する。
+ *
+ * resolveDependencies() 成功直後、確認サマリ構築の前に呼ぶこと。
+ * 取得したリビジョンは commit()/commitAsync() で消費される。
+ * @return 取得成功時 true
+ */
+bool PackageController::prepareCommit()
+{
+    if (!m_connected) {
+        m_commitRevision = 0;
+        return false;
+    }
+
+    bool ok = false;
+    const quint64 rev = m_dbus->getSelectionRevision(&ok);
+    m_commitRevision = ok ? rev : 0;
+    if (!ok)
+        emit errorOccurred(m_dbus->lastError());
+    return ok;
+}
+
+/**
  * @brief パッケージの変更を非同期でコミットする。
  *
  * GUIスレッドをブロックしないため、進捗シグナルをリアルタイムで受信できる。
+ * m_commitRevision に束縛して Commit を呼び、呼び出し後は0に戻す。
+ * リビジョン未確定時は進捗ダイアログ整合のため失敗結果を設定して終了する。
  * 結果は commitResultChanged シグナルと transactionFinished シグナルで通知される。
  */
 void PackageController::commitAsync()
 {
     if (!m_connected) return;
 
+    if (m_commitRevision == 0) {
+        const QString msg = tr("Changes must be confirmed before applying");
+        emit errorOccurred(msg);
+        m_commitResult = QVariantMap{
+            {QStringLiteral("success"), false},
+            {QStringLiteral("errorMessage"), msg},
+        };
+        emit commitResultChanged();
+        setBusy(false);
+        return;
+    }
+
     setBusy(true);
     setStatusMessage(tr("Applying changes..."));
-    m_dbus->commitAsync();
+    const quint64 rev = m_commitRevision;
+    m_commitRevision = 0;
+    m_dbus->commitAsync(rev);
+}
+
+/**
+ * @brief GPG署名鍵を信頼する。
+ * @param fingerprint 鍵フィンガープリント
+ * @return 信頼成功時 true
+ */
+bool PackageController::trustKey(const QString &fingerprint)
+{
+    if (!m_connected) return false;
+
+    if (!m_dbus->trustKey(fingerprint)) {
+        emit errorOccurred(m_dbus->lastError());
+        return false;
+    }
+    setStatusMessage(tr("Signing key trusted. Please retry the operation."));
+    return true;
 }
 
 /**
@@ -739,7 +809,11 @@ bool PackageController::setRepoEnabled(const QString &alias, bool enabled)
     if (!m_connected) return false;
 
     bool ok = m_dbus->setRepoEnabled(alias, enabled);
-    if (ok) loadRepos();
+    if (ok) {
+        loadRepos();
+    } else {
+        emit errorOccurred(m_dbus->lastError());
+    }
     return ok;
 }
 
@@ -984,10 +1058,11 @@ bool PackageController::hasPendingChanges()
 }
 
 /**
- * @brief Polkit 認証を実行する。
+ * @brief Polkit 認証のUX事前チェックを実行する。
  *
- * PolkitQt6-1 が利用可能な場合は同期認証を実行し、
- * 利用不可の場合は常に true を返す。
+ * 認証ダイアログを早期に表示するためのUX目的のみであり、
+ * セキュリティ境界ではない。バックエンドが呼び出し元のバス名に対して
+ * Polkit認可を強制するため、クライアント側の結果は認可判断に使わないこと。
  * @param actionId Polkit アクションID
  * @return 認証成功時 true
  */

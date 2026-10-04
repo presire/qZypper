@@ -337,6 +337,84 @@
     </message>
 </context>
 <context>
+    <name>KeyTrustDialog</name>
+    <message>
+        <location filename="../src/gui/qml/dialogs/KeyTrustDialog.qml" line="+12"/>
+        <source>Untrusted Repository Signing Key</source>
+        <translation>未信頼のリポジトリ署名鍵</translation>
+    </message>
+    <message>
+        <location line="+30"/>
+        <source>Repository:</source>
+        <translation>リポジトリ:</translation>
+    </message>
+    <message>
+        <location line="+11"/>
+        <source>Key name:</source>
+        <translation>鍵の名前:</translation>
+    </message>
+    <message>
+        <location line="+11"/>
+        <source>Key ID:</source>
+        <translation>鍵 ID:</translation>
+    </message>
+    <message>
+        <location line="+11"/>
+        <source>Fingerprint:</source>
+        <translation>フィンガープリント:</translation>
+    </message>
+    <message>
+        <location line="+16"/>
+        <source>Created:</source>
+        <translation>作成日:</translation>
+    </message>
+    <message>
+        <location line="+10"/>
+        <source>Expires:</source>
+        <translation>有効期限:</translation>
+    </message>
+    <message>
+        <location line="+21"/>
+        <source>Only trust this key if you have verified its fingerprint from a trustworthy source (for example the repository provider&apos;s official website). Packages signed with a trusted key can be installed with administrator (root) privileges.</source>
+        <translation>信頼できる情報源 (リポジトリ提供元の公式 Web サイト等) でフィンガープリントを確認した場合にのみ、この鍵を信頼してください。信頼した鍵で署名されたパッケージは管理者 (root) 権限でインストールされます。</translation>
+    </message>
+    <message>
+        <location line="+39"/>
+        <source>Close</source>
+        <translation>閉じる</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Reject</source>
+        <translation>拒否</translation>
+    </message>
+    <message>
+        <location line="+5"/>
+        <source>Trust and Import</source>
+        <translation>信頼してインポート</translation>
+    </message>
+    <message>
+        <location line="+9"/>
+        <source>The key has been trusted. Please retry the previous operation (refresh or add repository).</source>
+        <translation>鍵を信頼しました。直前の操作 (リフレッシュまたはリポジトリ追加) を再実行してください。</translation>
+    </message>
+    <message>
+        <location line="+3"/>
+        <source>The key could not be trusted. Wait until the current operation has finished and try again, or reject the key.</source>
+        <translation>鍵を信頼できませんでした。実行中の操作が完了するのを待って再試行するか、鍵を拒否してください。</translation>
+    </message>
+    <message>
+        <location line="+74"/>
+        <source>Unknown</source>
+        <translation>不明</translation>
+    </message>
+    <message>
+        <location line="+6"/>
+        <source>Never</source>
+        <translation>無期限</translation>
+    </message>
+</context>
+<context>
     <name>Main</name>
     <message>
         <location filename="../src/gui/qml/Main.qml" line="+15"/>
@@ -345,19 +423,19 @@
     </message>
     <message>
         <location line="+79"/>
-        <location line="+753"/>
-        <location line="+1082"/>
+        <location line="+759"/>
+        <location line="+1091"/>
         <source>Packages</source>
         <translation>パッケージ</translation>
     </message>
     <message>
-        <location line="-1824"/>
-        <location line="+2155"/>
+        <location line="-1839"/>
+        <location line="+2170"/>
         <source>Update All Packages</source>
         <translation>すべてのパッケージを更新</translation>
     </message>
     <message>
-        <location line="-2142"/>
+        <location line="-2157"/>
         <source>Apply Changes</source>
         <translation>変更を適用</translation>
     </message>
@@ -408,12 +486,12 @@
     </message>
     <message>
         <location line="+7"/>
-        <location line="+1479"/>
+        <location line="+1494"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location line="-1444"/>
+        <location line="-1459"/>
         <source>Menu</source>
         <translation>メニュー</translation>
     </message>
@@ -424,23 +502,23 @@
     </message>
     <message>
         <location line="+8"/>
-        <location line="+149"/>
+        <location line="+155"/>
         <source>Search</source>
         <translation>検索</translation>
     </message>
     <message>
-        <location line="-148"/>
+        <location line="-154"/>
         <source>Installation Summary</source>
         <translation>インストールの概要</translation>
     </message>
     <message>
         <location line="+1"/>
-        <location line="+1191"/>
+        <location line="+1206"/>
         <source>Repository</source>
         <translation>リポジトリ</translation>
     </message>
     <message>
-        <location line="-1190"/>
+        <location line="-1205"/>
         <source>Patterns</source>
         <translation>パターン</translation>
     </message>
@@ -455,7 +533,7 @@
         <translation>ライトモード</translation>
     </message>
     <message>
-        <location line="+124"/>
+        <location line="+130"/>
         <source>Search packages...</source>
         <translation>パッケージを検索...</translation>
     </message>
@@ -496,24 +574,24 @@
     </message>
     <message>
         <location line="+32"/>
-        <location line="+717"/>
+        <location line="+726"/>
         <source>Install</source>
         <translation>インストール</translation>
     </message>
     <message>
-        <location line="-716"/>
-        <location line="+729"/>
+        <location line="-725"/>
+        <location line="+738"/>
         <source>Update</source>
         <translation>更新</translation>
     </message>
     <message>
-        <location line="-728"/>
-        <location line="+721"/>
+        <location line="-737"/>
+        <location line="+730"/>
         <source>Delete</source>
         <translation>削除</translation>
     </message>
     <message>
-        <location line="-688"/>
+        <location line="-697"/>
         <source>No pending package changes</source>
         <translation>変更予定のパッケージはありません</translation>
     </message>
@@ -529,12 +607,12 @@
     </message>
     <message>
         <location line="+27"/>
-        <location line="+831"/>
+        <location line="+840"/>
         <source>Installed</source>
         <translation>インストール済み</translation>
     </message>
     <message>
-        <location line="-801"/>
+        <location line="-810"/>
         <source>Available</source>
         <translation>利用可能</translation>
     </message>
@@ -544,7 +622,7 @@
         <translation>サイズ</translation>
     </message>
     <message>
-        <location line="+305"/>
+        <location line="+314"/>
         <source>Search: </source>
         <translation>検索: </translation>
     </message>
@@ -581,12 +659,12 @@
     <message>
         <location line="+1"/>
         <location line="+117"/>
-        <location line="+1017"/>
+        <location line="+1031"/>
         <source>Version</source>
         <translation>バージョン</translation>
     </message>
     <message>
-        <location line="-1133"/>
+        <location line="-1147"/>
         <source>File List</source>
         <translation>ファイル一覧</translation>
     </message>
@@ -597,12 +675,12 @@
     </message>
     <message>
         <location line="+155"/>
-        <location line="+978"/>
+        <location line="+992"/>
         <source>Architecture</source>
         <translation>アーキテクチャ</translation>
     </message>
     <message>
-        <location line="-929"/>
+        <location line="-943"/>
         <source>Status</source>
         <translation>状態</translation>
     </message>
@@ -679,7 +757,7 @@ Please wait.</source>
         <translation>合計ダウンロードサイズ:</translation>
     </message>
     <message>
-        <location line="+317"/>
+        <location line="+330"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -691,7 +769,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
 「変更を適用」をクリックして続行してください。</translation>
     </message>
     <message>
-        <location line="-305"/>
+        <location line="-318"/>
         <source>Warning</source>
         <translation>警告</translation>
     </message>
@@ -711,7 +789,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>キャンセル (C)</translation>
     </message>
     <message>
-        <location line="+63"/>
+        <location line="+68"/>
         <source>Starting</source>
         <translation>起動中</translation>
     </message>
@@ -721,7 +799,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>初期化しています。しばらくお待ちください...</translation>
     </message>
     <message>
-        <location line="+185"/>
+        <location line="+194"/>
         <source>License</source>
         <translation>ライセンス</translation>
     </message>
@@ -1011,7 +1089,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location line="+35"/>
+        <location line="+37"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
@@ -1130,25 +1208,36 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>更新確認が完了しました</translation>
     </message>
     <message>
-        <location line="+76"/>
-        <location line="+24"/>
+        <location line="+79"/>
+        <location line="+58"/>
+        <source>Changes must be confirmed before applying</source>
+        <translation>変更を適用する前に確認が必要です</translation>
+    </message>
+    <message>
+        <location line="-49"/>
+        <location line="+61"/>
         <source>Applying changes...</source>
         <translation>変更を適用中...</translation>
     </message>
     <message>
-        <location line="-597"/>
-        <location line="+578"/>
+        <location line="-648"/>
+        <location line="+593"/>
         <source>Changes applied successfully</source>
         <translation>変更が正常に適用されました</translation>
     </message>
     <message>
-        <location line="-576"/>
-        <location line="+578"/>
+        <location line="-591"/>
+        <location line="+593"/>
         <source>Some operations encountered errors</source>
         <translation>一部の操作でエラーが発生しました</translation>
     </message>
     <message>
-        <location line="+28"/>
+        <location line="+72"/>
+        <source>Signing key trusted. Please retry the operation.</source>
+        <translation>署名鍵を信頼しました。操作を再実行してください。</translation>
+    </message>
+    <message>
+        <location line="+11"/>
         <source>Cancelling...</source>
         <translation>キャンセル中...</translation>
     </message>
@@ -1168,7 +1257,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>リポジトリの追加に失敗しました</translation>
     </message>
     <message>
-        <location line="+67"/>
+        <location line="+71"/>
         <location line="+26"/>
         <source>Refreshing repositories...</source>
         <translation>リポジトリをリフレッシュ中...</translation>

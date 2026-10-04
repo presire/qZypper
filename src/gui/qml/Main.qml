@@ -1854,12 +1854,13 @@ ApplicationWindow {
         }
 
         // PackageController.busyに連動して自動開閉
-        // ただし、commitProgressDialog / conflictDialog / refreshOverlay表示中は開かない
+        // ただし、startupDialog / commitProgressDialog / conflictDialog / refreshOverlay表示中は開かない
         Connections {
             target: PackageController
             function onBusyChanged() {
                 if (PackageController.busy) {
-                    if (!commitProgressDialog.visible && !conflictDialog.visible && !refreshOverlay.visible)
+                    if (!startupDialog.visible && !commitProgressDialog.visible
+                            && !conflictDialog.visible && !refreshOverlay.visible)
                         solverWaitDialog.open()
                 } else {
                     solverWaitDialog.close()
@@ -2304,6 +2305,11 @@ ApplicationWindow {
         }
     }
 
+    // 未信頼リポジトリ署名鍵の確認ダイアログ
+    Dialogs.KeyTrustDialog {
+        id: keyTrustDialog
+    }
+
     AboutqZypperDialog {
         id: aboutqZypperDialog
     }
@@ -2350,6 +2356,14 @@ ApplicationWindow {
             conflictDialog.fromApply = false
             conflictDialog.problems = problems
             conflictDialog.open()
+        }
+    }
+
+    // バックエンドが未信頼の署名鍵を検出 → 確認ダイアログへキュー投入
+    Connections {
+        target: PackageController
+        function onUntrustedKeyDetected(keyInfo) {
+            keyTrustDialog.enqueue(keyInfo)
         }
     }
 
@@ -2429,6 +2443,7 @@ ApplicationWindow {
 
         if (result.success) {
             // コミット確認ダイアログを表示
+            if (!PackageController.prepareCommit()) return   // コミットを確認済みの選択状態 (リビジョン) に束縛する
             commitConfirmDialog.summaryModel = buildSummaryModel()
             commitConfirmDialog.diskUsageModel = PackageController.getDiskUsage()
             commitConfirmDialog.open()

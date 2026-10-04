@@ -30,6 +30,7 @@ qt_add_qml_module(qzypper
         qml/dialogs/AddServiceDialog.qml
         qml/dialogs/AboutQtDialog.qml
         qml/dialogs/CommitConfirmDialog.qml
+        qml/dialogs/KeyTrustDialog.qml
         qml/dialogs/CommitProgressDialog.qml
         qml/dialogs/AboutqZypperDialog.qml
         qml/components/RepoTable.qml

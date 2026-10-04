@@ -2,8 +2,12 @@
 #
 # This file defines SELinux security contexts for qZypper executable files.
 #
-# Note: System directories (/var/lib/rpm, /var/cache/zypp, /etc/zypp, etc.)
-# use existing system labels (rpm_var_lib_t, var_cache_t, etc_t, var_lib_t).
+# Note: System directories keep the labels of the base policy, e.g. on
+# openSUSE Leap 16:
+#   /etc/zypp(/.*)?          system_conf_t
+#   /var/cache/zypp          rpm_var_cache_t
+#   /usr/lib/sysimage/rpm    rpm_var_lib_t
+#   /var/lib/zypp            var_lib_t
 # Access to these directories is granted in the .te policy file.
 #
 # This approach avoids conflicts with openSUSE's existing file context rules.

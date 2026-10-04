@@ -3,9 +3,11 @@
 <node name="/org/presire/qzypper">
   <interface name="org.presire.qzypper.PackageManager">
 
-    <!-- 初期化 -->
+    <!-- 初期化 (org.presire.qzypper.initializeの認可が必要。成功した呼出元が所有者になる) -->
     <method name="Initialize">
       <arg direction="out" type="b" name="success"/>
+      <!-- 考えられるエラー: org.presire.qzypper.Error.Busy, org.presire.qzypper.Error.Cancelled,
+           org.freedesktop.DBus.Error.AccessDenied -->
     </method>
 
     <!-- リポジトリ操作 -->
@@ -150,9 +152,20 @@
       <arg direction="out" type="b" name="success"/>
     </method>
 
-    <!-- コミット -->
+    <!-- 選択改訂番号と確認済み選択のコミット -->
+    <method name="GetSelectionRevision">
+      <arg direction="out" type="t" name="revision"/>
+    </method>
+
     <method name="Commit">
+      <arg direction="in"  type="t" name="expectedRevision"/>
       <arg direction="out" type="a{sv}" name="result"/>
+    </method>
+
+    <!-- リポジトリ署名鍵の明示承認 -->
+    <method name="TrustKey">
+      <arg direction="in"  type="s" name="fingerprint"/>
+      <arg direction="out" type="b" name="success"/>
     </method>
 
     <method name="SaveState"/>
@@ -163,8 +176,11 @@
       <arg direction="out" type="aa{sv}" name="diskUsage"/>
     </method>
 
-    <!-- キャンセル -->
-    <method name="CancelOperation"/>
+    <!-- キャンセル (所有者のみ。認可待ち・実行中の操作を取り消す) -->
+    <method name="CancelOperation">
+      <!-- 考えられるエラー: org.presire.qzypper.Error.Cancelled,
+           org.freedesktop.DBus.Error.AccessDenied -->
+    </method>
 
     <!-- シグナル -->
     <signal name="ProgressChanged">
@@ -185,6 +201,16 @@
     <signal name="TransactionFinished">
       <arg type="b" name="success"/>
       <arg type="s" name="summary"/>
+    </signal>
+
+    <!-- パッケージ状態遷移と未承認署名鍵の通知 -->
+    <signal name="PackageStateChanged">
+      <arg type="s" name="packageName"/>
+      <arg type="s" name="event"/>
+    </signal>
+
+    <signal name="UntrustedKeyDetected">
+      <arg type="a{sv}" name="keyInfo"/>
     </signal>
 
     <signal name="RepoRefreshProgress">
