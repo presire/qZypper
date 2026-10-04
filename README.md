@@ -39,7 +39,7 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 ### Repository Management
 
 - List, add, remove, and modify repositories
-- 2-step wizard for adding repositories with automatic type detection (rpm-md, yast2, etc.)
+- 2-step wizard for adding repositories (URL, then properties) with URL scheme validation
 - Refresh individual or all repositories with progress indication
 - Configure priority, auto-refresh, and package caching per repository
 
@@ -285,59 +285,49 @@ The backend therefore starts with a deterministic environment rather than inheri
 
 ### Backend (`qzypper-backend`) Lifetime
 
-The backend is auto-started via systemd-managed D-Bus activation and terminates according to the following rules:  
+The backend is auto-started by D-Bus activation. It has no explicit shutdown method; its lifetime is governed by an idle timer and by the session owner's connection:  
 
-**1. Normal mode — Idle auto-exit (5 minutes)**  
+- A single-shot 5-minute idle timer starts when the backend starts.  
+- The timer is stopped while a worker operation runs and restarted when the operation finishes.  
+- Calls from the session owner restart the timer.  
+- When the timer fires, the backend exits if no operation is running and no `Initialize` authorization is pending. Otherwise it re-arms and waits again.  
 
-While only lightweight read-only operations (`GetRepos`, `SearchPackages`, `GetPackageDetails`, etc.) are issued (e.g. just after GUI startup), the backend auto-exits 5 minutes after the last D-Bus method call. This is a security measure to avoid leaving an unused root-privileged process running.
+When the session owner's D-Bus connection disappears (GUI exit or crash), the backend does not hand the session to another client. It exits immediately if idle, or right after the currently running operation completes.  
 
-**2. After long-running operations — Idle timer permanently stopped**  
+There is no "idle timer permanently stopped after long-running operations" mode.  
 
-Once **any** of the following methods is invoked even once, the idle timer is stopped and the backend keeps running until the GUI explicitly asks it to quit (unlimited lifetime).
+On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection closes, which triggers the rule above. If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the service re-registration and reconnects automatically: the `backendReconnected` signal triggers `Initialize()` and a repository reload. The user's session is not interrupted.
 
-| Method | Corresponding GUI action |
-|---|---|
-| `Commit` | Applying package install / uninstall / update |
-| `RefreshRepos` | Refresh all repositories |
-| `RefreshSingleRepo` | Refresh a single repository |
-| `RefreshService` | Refresh a service |
+### Authorization and Ownership
 
-Rationale: after these operations, the user is likely to spend time reviewing the result dialog or the updated repository list. If the backend died during that time, the next interaction would trigger a costly re-initialization (libzypp pool rebuild: seconds to tens of seconds), hurting UX. It also avoids losing in-memory libzypp state and debug logs mid-session.
-
-**3. Temporary timer stop (during execution only)**
-
-The following methods stop the idle timer only while executing and restart the 5-minute timer on completion. These may take tens of seconds to minutes, but are expected to be followed by lightweight reads:
-
-- `AddRepo` / `AddRepoFull` (add repo + refreshMetadata + buildCache)
-- `AddService` (add + refresh service)
-- `UpdateAllPackages` (doUpdate + solver)
-- `ResolveDependencies` (solver)
-
-**4. On GUI exit — Explicit Quit**
-
-When the qzypper GUI exits (`QCoreApplication::aboutToQuit`), `DBusClient::quit()` calls the backend's `Quit` D-Bus method, which cleanly terminates the backend process. `Ctrl+C` (SIGINT) and SIGTERM are handled via a self-pipe signal handler that routes through the same path, so the backend is always taken down together with the GUI.
-
-**5. On backend crash — Auto-reconnect**  
-
-If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the service re-registration and automatically reconnects via the `backendReconnected` signal, which triggers `Initialize()` + `loadRepos()`. The user's session is not interrupted.
-
+- On startup the GUI calls `Initialize()`. The backend asks Polkit (action `org.presire.qzypper.initialize`, admin authentication) for the caller's unique bus name (subject kind `system-bus-name`). Only if that authorization succeeds does the connection become the session **owner**, and libzypp is initialized.  
+- Other clients receive `org.freedesktop.DBus.Error.AccessDenied` with the message "Another client owns the qZypper session".  
+- Pending `Initialize` authorizations are bounded: one per connection, at most 2 per Unix user (UID, resolved via `org.freedesktop.DBus.GetConnectionUnixUser`), and at most 8 overall. Excess requests receive `org.freedesktop.DBus.Error.LimitsExceeded`.  
+- Every privileged method is authorized server-side again with Polkit for the caller's bus name: `org.presire.qzypper.refresh-repos`, `org.presire.qzypper.manage-repos`, `org.presire.qzypper.install-packages`, and `org.presire.qzypper.trust-key`.  
+- Mutating methods are owner-only. Only one operation runs at a time: a single worker thread executes it and the D-Bus reply is delayed until it finishes. Concurrent calls fail with `org.presire.qzypper.Error.Busy`. `CancelOperation()` (owner only) requests cooperative cancellation through a cancellation token.  
+- `Commit(t expectedRevision)`: the GUI reads the current selection revision with `GetSelectionRevision()` and passes it back. Dependencies must have been resolved for that exact revision, otherwise the call is rejected with `org.presire.qzypper.Error.SelectionChanged`.  
+- When a new GPG key is needed, the backend emits `UntrustedKeyDetected(a{sv})` carrying the fingerprint. Signature and digest problems are always rejected. The user approves the exact fingerprint in the GUI, which calls `TrustKey(s fingerprint)` (Polkit `trust-key`). This records a one-shot approval: the key is imported only when the user retries the operation (for example, refresh again).  
+- Progress and state signals (`ProgressChanged`, `CommitProgressChanged`, `RepoRefreshProgress`, `TransactionFinished`, `ErrorOccurred`, `PackageStateChanged`, `UntrustedKeyDetected`) are unicast: they are sent only to the session owner, not broadcast to the bus.  
 
 ### Polkit Actions
 
 | Action ID | Operation | Default |
 |---|---|---|
+| `org.presire.qzypper.initialize` | Open a package management session (become session owner) | auth_admin (active: auth_admin_keep) |
 | `org.presire.qzypper.refresh-repos` | Refresh repositories | auth_admin_keep |
 | `org.presire.qzypper.manage-repos` | Add / remove / modify repos and services | auth_admin_keep |
 | `org.presire.qzypper.install-packages` | Install / remove / update packages | auth_admin_keep |
+| `org.presire.qzypper.trust-key` | Trust a new repository signing key | auth_admin |
 
 ### Methods
 
 | Category | Method | Description |
 |---|---|---|
-| Initialization | `Initialize()` | Initialize libzypp |
+| Initialization | `Initialize()` | Open the session (owner only) and initialize libzypp |
 | Repository | `GetRepos()` | Get repository list |
 | | `RefreshRepos()` | Refresh all repositories |
 | | `RefreshSingleRepo(alias)` | Refresh a single repository |
+| | `TrustKey(fingerprint)` | Approve a repository signing key (one-shot) |
 | | `AddRepo(url, name)` | Add repository (simple) |
 | | `AddRepoFull(properties)` | Add repository (full properties) |
 | | `RemoveRepo(alias)` | Remove repository |
@@ -348,25 +338,47 @@ If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the
 | | `RemoveService(alias)` | Remove service |
 | | `ModifyService(alias, properties)` | Modify service properties |
 | | `RefreshService(alias)` | Refresh service |
-| Package | `SearchPackages(query, flags)` | Search packages |
+| Package | `SearchPackages(query, flags)` | Literal, case-insensitive substring search (see below) |
 | | `GetPackageDetails(name)` | Get package details |
 | | `GetPackagesByRepo(repoAlias)` | Get packages by repository |
 | | `GetPatterns()` | Get pattern list |
-| | `GetPackagesByPattern(name)` | Get packages by pattern |
+| | `GetPackagesByPattern(patternName)` | Get packages by pattern |
 | | `GetPatches(category)` | Get patch list |
 | | `GetPendingChanges()` | Get pending changes |
 | Status | `SetPackageStatus(name, status)` | Change package status |
-| | `SetPackageVersion(name, ver, arch, repo)` | Select specific package version |
+| | `SetPackageVersion(name, version, arch, repoAlias)` | Select specific package version |
 | | `SetPatternStatus(name, status)` | Change pattern status |
 | Update | `UpdateAllPackages()` | Update all packages (doUpdate) |
 | Solver | `ResolveDependencies()` | Run dependency resolver |
-| | `ApplySolution(problemIdx, solutionIdx)` | Apply conflict resolution |
-| Commit | `Commit()` | Commit pending changes |
+| | `ApplySolution(problemIndex, solutionIndex)` | Apply conflict resolution |
+| Commit | `GetSelectionRevision()` | Get the current selection revision |
+| | `Commit(expectedRevision)` | Commit the confirmed selection revision |
 | State | `SaveState()` | Save selection state |
 | | `RestoreState()` | Restore selection state |
 | Other | `GetDiskUsage()` | Get disk usage info |
-| | `CancelOperation()` | Cancel current operation |
-| | `Quit()` | Shut down backend |
+| | `CancelOperation()` | Request cooperative cancellation (owner only) |
+
+Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are not owner-gated.
+
+### Package Search
+
+`SearchPackages(query, flags)` performs literal (not regular-expression) matching: it returns packages whose text contains the query as an ASCII-case-insensitive substring. A query longer than 256 bytes is rejected with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+The `flags` bitmask (`SearchFlag`) selects which fields are searched; all flags are honoured:
+
+| Flag | Value | Field |
+|---|---|---|
+| `Name` | 1 | Package name |
+| `Keywords` | 2 | Package keywords |
+| `Summary` | 4 | Summary |
+| `Description` | 8 | Description |
+| `Requires` | 16 | Requires dependencies |
+| `Provides` | 32 | Provides dependencies |
+| `FileList` | 64 | File list (only files available in the loaded metadata / installed packages) |
+
+### Repository URL Validation
+
+Repository URLs are validated before use. The scheme must be one of `http`, `https`, `ftp`, `tftp`, `file`, `dir`, `hd`, `iso`, `cd`, `dvd`, `nfs`, `nfs4`, `smb`, or `cifs` (`plugin` and other schemes are rejected). For `iso` URLs, a nested `url` query parameter is validated recursively. Repository aliases allow at most 200 bytes, must not start with `.`, and must not contain `/`, `\`, `[`, `]`, or control characters. Display names allow at most 1024 bytes and must not contain control characters.
 
 ### Signals
 
@@ -377,6 +389,10 @@ If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the
 | `TransactionFinished(success, summary)` | Transaction completed |
 | `RepoRefreshProgress(repoAlias, percentage)` | Repository refresh progress |
 | `ErrorOccurred(errorMessage)` | Error notification |
+| `PackageStateChanged(packageName, event)` | Package state transition during commit |
+| `UntrustedKeyDetected(keyInfo)` | Untrusted signing key detected (`a{sv}` including the fingerprint) |
+
+These signals are unicast: they are sent only to the session owner, not broadcast to all bus clients.
 
 ## Configuration File
 

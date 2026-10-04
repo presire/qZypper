@@ -213,8 +213,24 @@ role system_r types qzypper_dbus_t;
 # qzypper_t (GUI application) policy
 ########################################
 
-# Process operations (including execmem/execstack for Qt QML JIT)
-allow qzypper_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched execmem execstack };
+# Process operations.
+# AUDIT(qzypper_t execmem): no longer unconditional; granted only while the
+# boolean qzypper_gui_execmem (default: true) is on.
+#  - Qt QML (QV4) does not need execmem on Linux: its JIT allocates code
+#    pages from a memfd (tmpfs), and OSAllocator::canAllocateExecutableMemory()
+#    probes that path first and silently falls back to the bytecode
+#    interpreter when PROT_EXEC is refused (see the tmpfs rules below).
+#  - Mesa llvmpipe (software rendering on hosts without a usable GPU, e.g.
+#    VMs) JIT-compiles shaders into anonymous memory and has no fallback, so
+#    removing execmem by default would leave the GUI unable to render there.
+# Admins on hosts with hardware GL can run
+# `setsebool -P qzypper_gui_execmem off` to drop it.
+# execstack is retained (out of audit scope, needed for normal thread stacks).
+allow qzypper_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched execstack };
+bool qzypper_gui_execmem true;
+if (qzypper_gui_execmem) {
+    allow qzypper_t self:process execmem;
+}
 allow qzypper_t self:fifo_file { getattr open read write ioctl };
 allow qzypper_t self:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown };
 allow qzypper_t self:unix_dgram_socket { create bind connect read write sendto getattr setattr };
@@ -300,11 +316,23 @@ allow qzypper_t random_device_t:chr_file { getattr open read };
 allow qzypper_t urandom_device_t:chr_file { getattr open read };
 allow qzypper_t dri_device_t:chr_file { getattr open read write ioctl map };
 
-# tmpfs for shared memory (including execmod for Qt QML JIT code)
+# tmpfs for shared memory (Qt QML memfd heaps, Mesa, PulseAudio memfd).
+# AUDIT(qzypper_t tmpfs execute): REMOVED 'execute' and 'execmod' from both
+# tmpfs file rules below. Their only user was the QV4 JIT, which writes code
+# into a private memfd mapping and then mprotect()s it PROT_EXEC (execute +
+# execmod). Qt probes exactly that sequence at engine start
+# (OSAllocator::canAllocateExecutableMemory) and, when it is refused, runs
+# QML in the bytecode interpreter instead -- functionally identical, only
+# slower for script-heavy code, which this GUI is not. Executable,
+# writable-then-executable tmpfs pages are a classic code-injection vector,
+# so they are not worth keeping. The probe denial is expected on every
+# start, hence the dontaudit (it does not grant anything).
 # ioctl: PulseAudio memfd operations when child processes (browser) initialize audio
 allow qzypper_t tmpfs_t:dir { getattr open read search write add_name remove_name };
-allow qzypper_t tmpfs_t:file { getattr open read write create unlink map execute execmod ioctl };
-allow qzypper_t qzypper_tmpfs_t:file { getattr open read write create unlink map execute execmod ioctl };
+allow qzypper_t tmpfs_t:file { getattr open read write create unlink map ioctl };
+allow qzypper_t qzypper_tmpfs_t:file { getattr open read write create unlink map ioctl };
+dontaudit qzypper_t tmpfs_t:file { execute execmod };
+dontaudit qzypper_t qzypper_tmpfs_t:file { execute execmod };
 
 # User home directory - read/write for application settings
 allow qzypper_t user_home_dir_t:dir { getattr open read search };
@@ -563,10 +591,25 @@ optional {
     allow qzypper_t pulseaudio_home_t:file { getattr open read map };
 }
 
-# Browser domain transition (Qt.openUrlExternally → kde-open/xdg-open → browser)
-# On SUSE 16, mozilla_t/chromium_t process domains do not exist — browsers
-# normally run as unconfined_t. Transition to unconfined_t to match that behavior
-# and avoid inheriting qzypper_t's restricted permissions (no network etc.).
+# Browser domain transition (Qt.openUrlExternally -> xdg-open -> browser).
+# On SUSE 16, mozilla_t/chromium_t process domains are not used -- browsers
+# normally run as unconfined_t. Outside Flatpak/Snap, Qt does not use the
+# xdg-desktop-portal OpenURI API; it execs xdg-open/kde-open, which execs
+# the browser as our child, so a transition is required for links (package
+# URL, About dialogs) to open in a working browser (qzypper_t has no
+# network access).
+# AUDIT(qzypper_t -> unconfined_t transition): kept, but narrowed:
+#  - The transition can only be taken through the type_transition rules
+#    below (browser executables). qzypper_t has neither process setexec nor
+#    dyntransition, so it cannot pick unconfined_t for any other program.
+#  - unconfined_t is the invoking user's own login domain; the transition
+#    gives no privileges beyond those of the user who started the GUI.
+#  - siginh and rlimitinh are no longer granted (dontaudit only), so the
+#    kernel resets signal state and resource limits at the transition and a
+#    compromised GUI cannot pass tampered ones to the browser.
+#  - noatsecure is kept: with AT_SECURE set, glibc and libraries using
+#    secure_getenv() (e.g. libdbus) ignore the session environment, which
+#    breaks session-bus integration of the launched browser.
 optional {
     require {
         type mozilla_exec_t;
@@ -581,8 +624,8 @@ optional {
     allow qzypper_t chromium_exec_t:file { getattr open read execute map };
     type_transition qzypper_t chromium_exec_t:process unconfined_t;
 }
-# Permit qzypper_t → unconfined_t process transition (browser child processes)
-allow qzypper_t unconfined_t:process { transition siginh rlimitinh noatsecure };
+allow qzypper_t unconfined_t:process { transition noatsecure };
+dontaudit qzypper_t unconfined_t:process { siginh rlimitinh };
 
 # Home bin directory (~/bin, ~/.local/bin) - search for path resolution
 optional {
@@ -665,12 +708,35 @@ allow qzypper_t unconfined_t:unix_stream_socket { read write };
 # kill: RPM scriptlets may signal services during install/remove
 # sys_nice: RPM scriptlets may adjust process priority
 # sys_resource: set resource limits
-# sys_admin: btrfs ioctl, mount operations, chroot
 # sys_chroot: RPM may chroot during scriptlet execution
-# sys_ptrace: some scriptlets inspect running processes
+# sys_admin: libzypp runs btrfs in this domain (see AUDIT(sys_admin) below)
+# (sys_ptrace was removed here -- see AUDIT note below)
 # net_admin: network configuration scriptlets
 # mknod: device node creation by some packages
-allow qzypper_dbus_t self:capability { dac_override dac_read_search fowner chown fsetid setuid setgid kill sys_nice sys_resource sys_admin sys_chroot sys_ptrace net_admin mknod };
+# AUDIT(sys_admin): kept (removing it on the assumption that all btrfs work
+# goes through snapperd was wrong). libzypp itself needs
+# it: DiskUsageCounter::detectMountPoints() (GetDiskUsage and the commit
+# disk-space check) runs `btrfs subvolume list <mountpoint>` for every btrfs
+# mount point when euid == 0 to detect snapshots. /usr/sbin/btrfs is bin_t, so
+# it runs here without a domain transition, and its BTRFS_IOC_TREE_SEARCH
+# ioctl requires CAP_SYS_ADMIN. Without it every call is denied (one AVC per
+# btrfs mount point, observed on Leap 16 with snapper) and libzypp treats
+# snapshot-backed filesystems as freeing space on removal, so the disk usage
+# estimate is too optimistic. No narrower rule exists: capabilities are
+# per-domain, and bin_t binaries cannot get a dedicated transition without
+# relabeling system files. Note that mount(2) is still not reachable here:
+# libzypp mounts media by exec'ing /usr/bin/mount and this module grants no
+# execute on mount_exec_t. The directory and filesystem permissions btrfs
+# needs on mount points of other layouts are in the "Btrfs mount points of
+# any layout" block below.
+# AUDIT(sys_ptrace): REMOVED from allow; kept as dontaudit below. libzypp's
+# "zypper ps" style check (finding processes using deleted files) and RPM
+# scriptlets only read /proc, which needs no ptrace capability; the
+# capability was only tripped by benign probes, so denials are silenced
+# instead of allowed. If a real ptrace need ever appears it will surface in
+# the audit log after `semodule -DB`.
+allow qzypper_dbus_t self:capability { dac_override dac_read_search fowner chown fsetid setuid setgid kill sys_nice sys_resource sys_admin sys_chroot net_admin mknod };
+dontaudit qzypper_dbus_t self:capability sys_ptrace;
 allow qzypper_dbus_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched setrlimit execmem };
 allow qzypper_dbus_t self:fifo_file { getattr open read write ioctl };
 allow qzypper_dbus_t self:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown connectto };
@@ -1213,8 +1279,10 @@ optional {
     allow qzypper_dbus_t cupsd_etc_t:dir { getattr search };
 }
 
-# /home directory traversal (for btrfs subvolume detection)
-# ioctl: BTRFS_IOC_SUBVOL_GETFLAGS used by zypp DiskUsageCounter
+# /home and /root btrfs mount points (default Leap/Tumbleweed subvolumes).
+# ioctl: BTRFS_IOC_INO_LOOKUP / BTRFS_IOC_TREE_SEARCH from `btrfs subvolume
+# list`. Subsumed by the generic block below; kept as a fallback for base
+# policies that lack the non_security_file_type attribute.
 optional {
     require {
         type home_root_t;
@@ -1222,13 +1290,72 @@ optional {
     allow qzypper_dbus_t home_root_t:dir { getattr open read search ioctl };
 }
 
-# /root directory traversal (for btrfs subvolume detection)
-# ioctl: BTRFS_IOC_SUBVOL_GETFLAGS used by zypp DiskUsageCounter
 optional {
     require {
         type admin_home_t;
     }
     allow qzypper_dbus_t admin_home_t:dir { getattr open read search ioctl };
+}
+
+# Btrfs mount points of any layout
+# DiskUsageCounter::detectMountPoints() looks at every rw mount whose device
+# contains '/', except iso9660/vfat/fat/ntfs/ntfs-3g and mounts under /mnt,
+# /media, /mounts, /floppy, /cdrom, /suse, /tmp, /var/tmp, /var/adm/mount and
+# /var/adm/YaST (so /run/media/<user>/... USB drives ARE included). It calls
+# statvfs() on each, and for btrfs it also runs `btrfs subvolume list -s
+# <mountpoint>`, which open()s the mount root as a directory and issues
+# BTRFS_IOC_INO_LOOKUP / BTRFS_IOC_TREE_SEARCH on it.
+# A mount root carries the label of its path (or unlabeled_t on a filesystem
+# that was never relabeled), so the set of types is open-ended. Examples
+# (checked against the targeted file_contexts):
+#   default Leap/TW subvolumes: root_t, home_root_t, snapperd_data_t, boot_t
+#     (/boot/grub2/<arch>), usr_t (/opt, /usr/local), admin_home_t, var_t
+#   older SLE/Leap layouts: var_log_t, var_spool_t, kdump_crash_t,
+#     mysqld_db_t, postgresql_db_t, named_zone_t, mailman_data_t,
+#     virt_image_t, var_lib_t (/var/lib/mariadb, /var/lib/flatpak)
+#   container/VM hosts: container_var_lib_t (/var/lib/docker, containers,
+#     kubelet, lxc), systemd_machined_var_lib_t, systemd_importd_var_lib_t
+#   custom mounts: default_t (/data, /swap), user_home_dir_t (per-user
+#     subvolumes), httpd_sys_content_t (/srv/www), public_content_t,
+#     mail_spool_t, etc_t (/etc subvolume on transactional systems), ...
+#   external drives: unlabeled_t or labels from another system
+# Hence the rule is attribute based. Security file types (shadow_t,
+# selinux_config_t, semanage_store_t, krb5_keytab_t, ...) are excluded because
+# a mount root does not carry them; the one realistic exception, auditd_log_t,
+# gets its own block below.
+# Only read-side directory access is granted (no write/add_name/rmdir), so
+# subvolume create/delete stays impossible here; snapperd_t holds the broader
+# file_type:dir { ... write rmdir } for the same kind of work. ioctl is not
+# narrowed with allowxperm: filesystem-wide btrfs ioctls are already reachable
+# through "/" (the base policy grants root_t:dir ioctl to every domain), and an
+# xperm rule would also cut ioctls this domain already performs on existing
+# types.
+optional {
+    require {
+        attribute non_security_file_type;
+    }
+    allow qzypper_dbus_t non_security_file_type:dir { getattr search open read ioctl };
+}
+
+# /var/log/audit as its own btrfs subvolume (CIS-style hardened layouts put it
+# on a separate filesystem). auditd_log_t is a security file type, so the
+# generic rule above does not cover it. Directory access only, like the dir
+# part of logging_read_audit_log(); the audit log files stay unreadable.
+optional {
+    require {
+        type auditd_log_t;
+    }
+    allow qzypper_dbus_t auditd_log_t:dir { getattr search open read ioctl };
+}
+
+# statvfs() on every mount point considered above checks filesystem getattr on
+# the superblock label: fs_t for btrfs/ext4/xfs, but also nfs_t, cifs_t,
+# fusefs_t, ecryptfs_t and context= mounts. Read-only metadata.
+optional {
+    require {
+        attribute filesystem_type;
+    }
+    allow qzypper_dbus_t filesystem_type:filesystem getattr;
 }
 
 # Kernel modules directory (/lib/modules - depmod writes modules.dep etc.)
@@ -1305,12 +1432,17 @@ optional {
 ########################################
 
 # /etc/shadow, /etc/gshadow - user/group management (useradd, groupadd, etc.)
-optional {
-    require {
-        type shadow_t;
-    }
-    allow qzypper_dbus_t shadow_t:file { getattr setattr open read write create rename link lock };
-}
+# AUDIT(shadow_t write): REMOVED the allow rule that was here. Packages that
+# touch /etc/shadow or /etc/gshadow (useradd/groupadd in %pre/%post) run
+# under libzypp's default classic_rpmtrans mode, where /usr/bin/rpm
+# (rpm_exec_t) transitions to rpm_t and scriptlets run as rpm_t/rpm_script_t
+# per the base policy (see the RPM block above) -- the backend process itself
+# never needs to write shadow files. NOTE: single_rpmtrans mode (the zypp-rpm
+# helper stays in qzypper_dbus_t) is unverified for scriptlet domains; if it
+# ever runs useradd in this domain the denial will appear in the audit log
+# and this decision must be revisited -- do NOT silently re-add write,
+# investigate first. No dontaudit here on purpose, so a real need stays
+# visible. NSS lookups via passwd_file_t:file read are unaffected.
 
 # /boot - kernel package installation (vmlinuz, initrd, grub configs)
 optional {

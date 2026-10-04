@@ -17,13 +17,9 @@ Dialog {
     signal repoAdded()
 
     property int currentStep: 0
-    property string detectedType: ""
-    property bool probing: false
 
     onOpened: {
         currentStep = 0
-        detectedType = ""
-        probing = false
         urlSelector.clear()
         nameField.text = ""
         aliasField.text = ""
@@ -59,15 +55,6 @@ Dialog {
 
             Item { Layout.fillHeight: true }
 
-            // プロービング中インジケーター
-            RowLayout {
-                visible: root.probing
-                Layout.alignment: Qt.AlignHCenter
-                spacing: 8
-                BusyIndicator { running: root.probing; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
-                Label { text: qsTr("Detecting repository type...") }
-            }
-
             RowLayout {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
@@ -77,13 +64,9 @@ Dialog {
                 }
                 Button {
                     text: qsTr("Next")
-                    enabled: urlSelector.isValid() && !root.probing
+                    enabled: urlSelector.isValid()
                     highlighted: true
                     onClicked: {
-                        root.probing = true
-                        root.detectedType = PackageController.probeRepoType(urlSelector.url)
-                        root.probing = false
-
                         // 名前のデフォルト生成
                         if (nameField.text === "") {
                             try {
@@ -113,16 +96,6 @@ Dialog {
                 font.bold: true
             }
 
-            // 検出結果
-            RowLayout {
-                spacing: 8
-                Label { text: qsTr("Detected type:"); font.bold: true }
-                Label {
-                    text: root.detectedType || qsTr("Unknown (detection failed) ")
-                    color: root.detectedType ? palette.text : "#e74c3c"
-                }
-            }
-
             GridLayout {
                 columns: 2
                 columnSpacing: 12
@@ -132,6 +105,7 @@ Dialog {
                 Label { text: qsTr("URL:") }
                 Label {
                     text: urlSelector.url
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     elide: Text.ElideMiddle
                     color: palette.link
@@ -154,12 +128,12 @@ Dialog {
                 Label { text: qsTr("Priority:") }
                 SpinBox {
                     id: prioritySpin
-                    from: 0; to: 200; value: 99
+                    from: 1; to: 200; value: 99
                 }
 
                 Item { width: 1 }
                 Label {
-                    text: qsTr("Lower values have higher priority (0=highest, 99=default, 200=lowest)")
+                    text: qsTr("Lower values have higher priority (1=highest, 99=default, 200=lowest)")
                     font.pixelSize: 11
                     color: palette.placeholderText
                 }
@@ -201,7 +175,8 @@ Dialog {
                             "autoRefresh":  autoRefreshCheck.checked,
                             "keepPackages": keepPkgCheck.checked,
                             "priority":     prioritySpin.value,
-                            "type":         root.detectedType
+                            // 型自動検出は未実装のため削除 (バックエンド側で決定)
+                            "type":         ""
                         }
 
                         var ok = PackageController.addRepoFull(props)

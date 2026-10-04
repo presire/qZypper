@@ -21,6 +21,12 @@ Dialog {
     anchors.centerIn: Overlay.overlay
     standardButtons: Dialog.Close
 
+    // http/https スキームのリンクのみ外部開きする (javascript:, file: 等は無視)
+    function openSafeUrl(link) {
+        if (/^https?:\/\/\S/i.test(String(link).trim()))
+            Qt.openUrlExternally(link)
+    }
+
     ScrollView {
         anchors.fill: parent
         clip: true
@@ -95,7 +101,7 @@ Dialog {
                     Layout.fillWidth: true
 
                     onLinkActivated: function(link) {
-                        Qt.openUrlExternally(link)
+                        root.openSafeUrl(link)
                     }
 
                     HoverHandler {
@@ -112,7 +118,7 @@ Dialog {
                     Layout.topMargin: 10
 
                     onLinkActivated: function(link) {
-                        Qt.openUrlExternally(link)
+                        root.openSafeUrl(link)
                     }
 
                     HoverHandler {
@@ -128,7 +134,7 @@ Dialog {
                     Layout.fillWidth: true
 
                     onLinkActivated: function(link) {
-                        Qt.openUrlExternally(link)
+                        root.openSafeUrl(link)
                     }
 
                     HoverHandler {

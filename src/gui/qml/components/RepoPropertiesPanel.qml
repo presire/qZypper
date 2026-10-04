@@ -101,7 +101,7 @@ Pane {
             Label { text: qsTr("Priority:") }
             SpinBox {
                 id: prioritySpin
-                from: 0; to: 200
+                from: 1; to: 200
                 value: root.repo ? (root.repo.priority ?? 99) : 99
                 onValueChanged: root.checkChanges()
             }
@@ -110,6 +110,7 @@ Pane {
             Label { text: qsTr("Type:") }
             Label {
                 text: root.repo ? (root.repo.type || qsTr("Unknown")) : ""
+                textFormat: Text.PlainText
                 color: palette.placeholderText
             }
         }
@@ -119,6 +120,7 @@ Pane {
             visible: root.repo !== null && (root.repo.service || "") !== ""
             text: qsTr("This repository is managed by service \"%1\". Some properties may be overwritten during service refresh.")
                 .arg(root.repo ? (root.repo.service || "") : "")
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
             color: "#d35400"

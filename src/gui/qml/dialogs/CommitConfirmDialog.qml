@@ -65,12 +65,14 @@ Dialog {
 
                 Label {
                     text: modelData.name
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }
 
                 Label {
                     text: modelData.version || ""
+                    textFormat: Text.PlainText
                     color: palette.placeholderText
                     Layout.preferredWidth: 160
                     elide: Text.ElideRight
@@ -151,6 +153,7 @@ Dialog {
 
                 Label {
                     text: modelData.mountPoint || ""
+                    textFormat: Text.PlainText
                     Layout.preferredWidth: 150
                     elide: Text.ElideRight
                 }

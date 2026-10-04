@@ -351,6 +351,7 @@ Item {
                         Label {
                             width: root.colName; height: parent.height
                             text: del.modelData.name || del.modelData.alias || ""
+                            textFormat: Text.PlainText
                             elide: Text.ElideRight; leftPadding: 6
                             verticalAlignment: Text.AlignVCenter
                             font.pixelSize: 14
@@ -363,6 +364,7 @@ Item {
                         Label {
                             width: root.colService; height: parent.height
                             text: del.modelData.service || "-"
+                            textFormat: Text.PlainText
                             elide: Text.ElideRight; leftPadding: 6
                             verticalAlignment: Text.AlignVCenter
                             font.pixelSize: 14
@@ -376,6 +378,7 @@ Item {
                             width: Math.max(150, listFlick.width - root.colPriority - root.colEnabled - root.colAutoRefresh - root.colName - root.colService - 5)
                             height: parent.height
                             text: del.modelData.url || ""
+                            textFormat: Text.PlainText
                             elide: Text.ElideMiddle; leftPadding: 6
                             verticalAlignment: Text.AlignVCenter
                             font.pixelSize: 14

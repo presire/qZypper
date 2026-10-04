@@ -206,6 +206,7 @@ Dialog {
                                ? ("- " + commitProgressDialog.currentPackage)
                                : commitProgressDialog.currentPackage)
                             : qsTr("Preparing...")
+                        textFormat: Text.PlainText
                         font.bold: true
                         font.pixelSize: 15
                         elide: Text.ElideRight
@@ -295,6 +296,7 @@ Dialog {
                             }
                             Label {
                                 text: model.isRemoval ? ("- " + model.name) : model.name
+                                textFormat: Text.PlainText
                                 elide: Text.ElideRight
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 12
@@ -352,6 +354,7 @@ Dialog {
                             }
                             Label {
                                 text: model.isRemoval ? ("- " + model.name) : model.name
+                                textFormat: Text.PlainText
                                 elide: Text.ElideRight
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 12

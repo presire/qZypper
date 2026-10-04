@@ -271,6 +271,12 @@ void DBusClient::onServiceRegistered(const QString &serviceName)
 {
     Q_UNUSED(serviceName)
     qDebug() << "DBusClient: backend service registered";
+    if (m_initializing) {
+        // initializeBackend() の BlockWithGui 待機中にバス名が再登録された場合、
+        // ここで connectToBackend() すると m_iface を削除して待機中の呼び出しを壊すため何もしない。
+        qDebug() << "DBusClient: initialization in progress, skip reconnect";
+        return;
+    }
     // 再起動後のバックエンドは未初期化。接続→Initialize→再ロードを促す
     if (connectToBackend()) {
         if (initializeBackend()) {
@@ -298,19 +304,31 @@ void DBusClient::onServiceUnregistered(const QString &serviceName)
 
 /**
  * @brief バックエンドの初期化を要求する。
+ *
+ * BlockWithGui で待機するため入れ子イベントループが回り、再入が起こり得る。
+ * m_initializing で保護し、再入時は要求を開始せず失敗を返す。
+ * Polkit認証ダイアログが数分開かれ得るため、GUI描画を維持する目的で
+ * BlockWithGui + kNoTimeout (無限) を使う。バックエンドは必ず応答し、
+ * プロセスが終了した場合はバスがエラーを返す。
  * @return 初期化成功時: true
  */
 bool DBusClient::initializeBackend()
 {
+    if (m_initializing) {
+        m_lastError = QStringLiteral("Initialization already in progress");
+        return false;
+    }
     if (!isConnected()) {
         m_lastError = "Not connected to backend";
         return false;
     }
 
+    m_initializing = true;
     // バックエンドはPolkit認証で最大300秒待機し得るためタイムアウト無制限で同期呼び出しする。
     // バックエンドは必ず応答し、プロセスが終了した場合はバスがエラーを返す。
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "Initialize");
     QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::BlockWithGui, kNoTimeout);
+    m_initializing = false;
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         if (reply.error().name() == QLatin1String("org.freedesktop.DBus.Error.AccessDenied")) {
@@ -331,56 +349,41 @@ bool DBusClient::initializeBackend()
 // -- リポジトリ操作 --
 
 /**
- * @brief 全リポジトリの同期リフレッシュを実行する。
- * @return リフレッシュ成功時: true
- */
-bool DBusClient::refreshRepos()
-{
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // リフレッシュは時間がかかるためタイムアウトを長めに設定 (5分)
-    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshRepos");
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::BlockWithGui, 600000);
-    QDBusReply<bool> reply(replyMsg);
-
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        qWarning() << "DBusClient::refreshRepos:" << m_lastError;
-        return false;
-    }
-    return reply.value();
-}
-
-/**
- * @brief 指定リポジトリの同期リフレッシュを実行する。
+ * @brief 指定リポジトリの非同期リフレッシュを実行する。
+ *
+ * 完了時に refreshSingleRepoFinished シグナルを発行する。
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param alias リフレッシュ対象のリポジトリエイリアス
- * @return リフレッシュ成功時: true
+ * @return 要求開始時: true
  */
-bool DBusClient::refreshSingleRepo(const QString &alias)
+void DBusClient::refreshSingleRepoAsync(const QString &alias)
 {
     if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
+        m_lastError = QStringLiteral("Not connected to backend");
+        emit refreshSingleRepoFinished(false);
+        return;
     }
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshSingleRepo");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::BlockWithGui, 600000);
-    QDBusReply<bool> reply(replyMsg);
-
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        qWarning() << "DBusClient::refreshSingleRepo:" << m_lastError;
-        return false;
-    }
-    return reply.value();
+    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
+    auto *watcher = new QDBusPendingCallWatcher(pending, this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        QDBusPendingReply<bool> reply = *w;
+        bool success = !reply.isError() && reply.value();
+        if (reply.isError())
+            m_lastError = reply.error().message();
+        emit refreshSingleRepoFinished(success);
+        w->deleteLater();
+    });
 }
 
 /**
  * @brief リポジトリを追加する。
+ *
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param url リポジトリURL
  * @param name リポジトリ名
  * @return 結果を格納したQVariantMap (success, errorMessage)
@@ -397,7 +400,7 @@ QVariantMap DBusClient::addRepo(const QString &url, const QString &name)
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddRepo");
     msg << url << name;
-    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     if (reply.type() == QDBusMessage::ErrorMessage) {
         m_lastError = reply.errorMessage();
         result["success"] = false;
@@ -409,6 +412,9 @@ QVariantMap DBusClient::addRepo(const QString &url, const QString &name)
 
 /**
  * @brief 全プロパティを指定してリポジトリを追加する。
+ *
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param properties リポジトリプロパティ (url, name, alias, enabled等)
  * @return 結果を格納したQVariantMap (success, errorMessage)
  */
@@ -424,7 +430,7 @@ QVariantMap DBusClient::addRepoFull(const QVariantMap &properties)
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddRepoFull");
     msg << properties;
-    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     if (reply.type() == QDBusMessage::ErrorMessage) {
         m_lastError = reply.errorMessage();
         result["success"] = false;
@@ -446,10 +452,10 @@ bool DBusClient::removeRepo(const QString &alias)
         return false;
     }
 
-    // Polkit認証待ち(最大300秒)に耐えるためインターフェースの120秒タイムアウトではなく明示600秒で同期呼び出しする
+    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RemoveRepo");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -471,10 +477,10 @@ bool DBusClient::setRepoEnabled(const QString &alias, bool enabled)
         return false;
     }
 
-    // Polkit認証待ち(最大300秒)に耐えるため明示600秒で同期呼び出しする
+    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetRepoEnabled");
     msg << alias << enabled;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -496,10 +502,10 @@ bool DBusClient::modifyRepo(const QString &alias, const QVariantMap &properties)
         return false;
     }
 
-    // Polkit認証待ち(最大300秒)に耐えるため明示600秒で同期呼び出しする
+    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ModifyRepo");
     msg << alias << properties;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -512,6 +518,9 @@ bool DBusClient::modifyRepo(const QString &alias, const QVariantMap &properties)
 
 /**
  * @brief サービスを追加する。
+ *
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param url サービスURL
  * @param alias サービスエイリアス
  * @return 追加成功時: true
@@ -525,7 +534,7 @@ bool DBusClient::addService(const QString &url, const QString &alias)
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddService");
     msg << url << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -546,10 +555,10 @@ bool DBusClient::removeService(const QString &alias)
         return false;
     }
 
-    // Polkit認証待ち(最大300秒)に耐えるため明示600秒で同期呼び出しする
+    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RemoveService");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -571,10 +580,10 @@ bool DBusClient::modifyService(const QString &alias, const QVariantMap &properti
         return false;
     }
 
-    // Polkit認証待ち(最大300秒)に耐えるため明示600秒で同期呼び出しする
+    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ModifyService");
     msg << alias << properties;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -584,27 +593,34 @@ bool DBusClient::modifyService(const QString &alias, const QVariantMap &properti
 }
 
 /**
- * @brief サービスをリフレッシュする。
+ * @brief サービスを非同期でリフレッシュする。
+ *
+ * 完了時に refreshServiceFinished シグナルを発行する。
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param alias リフレッシュ対象のサービスエイリアス
- * @return リフレッシュ成功時: true
+ * @return 要求開始時: true
  */
-bool DBusClient::refreshService(const QString &alias)
+bool DBusClient::refreshServiceAsync(const QString &alias)
 {
     if (!isConnected()) {
-        m_lastError = "Not connected to backend";
+        m_lastError = QStringLiteral("Not connected to backend");
         return false;
     }
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshService");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::BlockWithGui, 600000);
-    QDBusReply<bool> reply(replyMsg);
-
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
+    auto *watcher = new QDBusPendingCallWatcher(pending, this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        QDBusPendingReply<bool> reply = *w;
+        bool success = !reply.isError() && reply.value();
+        if (reply.isError())
+            m_lastError = reply.error().message();
+        emit refreshServiceFinished(success);
+        w->deleteLater();
+    });
+    return true;
 }
 
 // -- パッケージ状態変更 --
@@ -888,6 +904,9 @@ void DBusClient::commitAsync(quint64 expectedRevision)
 
 /**
  * @brief GPG署名鍵を信頼する。
+ *
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param fingerprint 鍵フィンガープリント
  * @return 信頼成功時 true
  */
@@ -901,7 +920,7 @@ bool DBusClient::trustKey(const QString &fingerprint)
     QDBusMessage msg = QDBusMessage::createMethodCall(
         SERVICE_NAME, OBJECT_PATH, INTERFACE, "TrustKey");
     msg << fingerprint;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, 600000);
+    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
     QDBusReply<bool> reply(replyMsg);
     if (!reply.isValid()) {
         m_lastError = reply.error().message();
@@ -919,23 +938,27 @@ bool DBusClient::trustKey(const QString &fingerprint)
  * @brief 全リポジトリの非同期リフレッシュを実行する。
  *
  * 完了時にrefreshReposFinishedシグナルを発行する。
+ * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
+ * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  */
 void DBusClient::refreshReposAsync()
 {
     if (!isConnected()) {
-        emit refreshReposFinished(false);
+        emit refreshReposFinished(false, false);
         return;
     }
 
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshRepos");
-    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, 600000);
+    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
     auto *watcher = new QDBusPendingCallWatcher(pending, this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         QDBusPendingReply<bool> reply = *w;
         bool success = !reply.isError() && reply.value();
+        const bool cancelled = reply.isError()
+            && reply.error().name() == QLatin1String("org.presire.qzypper.Error.Cancelled");
         if (reply.isError())
             m_lastError = reply.error().message();
-        emit refreshReposFinished(success);
+        emit refreshReposFinished(success, cancelled);
         w->deleteLater();
     });
 }

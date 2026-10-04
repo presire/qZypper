@@ -30,12 +30,40 @@ PackageController::PackageController(QObject *parent)
             setStatusMessage(tr("Refreshing: %1 (%2%)").arg(alias).arg(pct));
     });
     connect(m_dbus, &DBusClient::refreshReposFinished,
+            this, [this](bool success, bool cancelled) {
+        if (success) {
+            setStatusMessage(tr("Repository refresh completed"));
+            loadRepos();
+        } else if (cancelled) {
+            setStatusMessage(tr("Refresh cancelled"));
+        } else {
+            setStatusMessage(tr("Refresh failed"));
+            emit errorOccurred(m_dbus->lastError());
+        }
+        setBusy(false);
+        emit refreshFinished(success);
+    });
+    connect(m_dbus, &DBusClient::refreshSingleRepoFinished,
             this, [this](bool success) {
         if (success) {
             setStatusMessage(tr("Repository refresh completed"));
             loadRepos();
         } else {
-            setStatusMessage(tr("Refresh cancelled"));
+            setStatusMessage(tr("Refresh failed"));
+            emit errorOccurred(m_dbus->lastError());
+        }
+        setBusy(false);
+        emit refreshFinished(success);
+    });
+    connect(m_dbus, &DBusClient::refreshServiceFinished,
+            this, [this](bool success) {
+        if (success) {
+            loadServices();
+            loadRepos();
+            setStatusMessage(tr("Service refreshed"));
+        } else {
+            setStatusMessage(tr("Failed to refresh service"));
+            emit errorOccurred(m_dbus->lastError());
         }
         setBusy(false);
         emit refreshFinished(success);
@@ -131,6 +159,8 @@ void PackageController::setStatusMessage(const QString &msg)
  */
 bool PackageController::initialize()
 {
+    if (m_busy)
+        return false;
     setBusy(true);
     setStatusMessage(tr("Initializing package manager..."));
 
@@ -177,6 +207,7 @@ void PackageController::searchPackages(const QString &query, int flags)
         emit errorOccurred(tr("Package manager is not initialized"));
         return;
     }
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Searching packages..."));
@@ -209,6 +240,7 @@ void PackageController::loadRepos()
 void PackageController::loadPackagesByRepo(const QString &repoAlias)
 {
     if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Loading packages..."));
@@ -253,6 +285,7 @@ void PackageController::loadPatterns()
 void PackageController::loadPackagesByPattern(const QString &patternName)
 {
     if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Loading pattern packages..."));
@@ -295,6 +328,7 @@ void PackageController::loadPatches(int category)
 bool PackageController::setPackageStatus(const QString &name, int status)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Resolving dependencies..."));
@@ -354,9 +388,10 @@ bool PackageController::setPackageStatus(const QString &name, int status)
  * @return 変更成功時 true
  */
 bool PackageController::setPackageVersion(const QString &name, const QString &version,
-                                          const QString &arch, const QString &repoAlias)
+                                           const QString &arch, const QString &repoAlias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Changing version..."));
@@ -431,6 +466,7 @@ void PackageController::refreshPackageStatuses()
 bool PackageController::togglePatternStatus(const QString &patternName)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     // 現在のパターンステータスを取得
     int currentStatus = 0;
@@ -523,6 +559,7 @@ bool PackageController::togglePatternStatus(const QString &patternName)
 QVariantMap PackageController::updateAllPackages()
 {
     if (!m_connected) return {};
+    if (m_busy) return {};
 
     setBusy(true);
     setStatusMessage(tr("Updating all packages..."));
@@ -569,6 +606,7 @@ QVariantMap PackageController::updateAllPackages()
 QVariantMap PackageController::resolveDependencies()
 {
     if (!m_connected) return {};
+    if (m_busy) return {};
 
     setBusy(true);
     setStatusMessage(tr("Resolving dependencies..."));
@@ -615,6 +653,7 @@ QVariantMap PackageController::resolveDependencies()
 bool PackageController::applySolution(int problemIndex, int solutionIndex)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
     return m_dbus->applySolution(problemIndex, solutionIndex);
 }
 
@@ -628,6 +667,7 @@ bool PackageController::applySolution(int problemIndex, int solutionIndex)
 QVariantMap PackageController::commit()
 {
     if (!m_connected) return {};
+    if (m_busy) return {};
 
     if (m_commitRevision == 0) {
         const QString msg = tr("Changes must be confirmed before applying");
@@ -686,6 +726,7 @@ bool PackageController::prepareCommit()
 void PackageController::commitAsync()
 {
     if (!m_connected) return;
+    if (m_busy) return;
 
     if (m_commitRevision == 0) {
         const QString msg = tr("Changes must be confirmed before applying");
@@ -707,19 +748,20 @@ void PackageController::commitAsync()
 }
 
 /**
- * @brief GPG署名鍵を信頼する。
+ * @brief GPG署名鍵の指紋を承認する (鍵の取込は操作の再試行時)。
  * @param fingerprint 鍵フィンガープリント
- * @return 信頼成功時 true
+ * @return 承認成功時 true
  */
 bool PackageController::trustKey(const QString &fingerprint)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     if (!m_dbus->trustKey(fingerprint)) {
         emit errorOccurred(m_dbus->lastError());
         return false;
     }
-    setStatusMessage(tr("Signing key trusted. Please retry the operation."));
+    setStatusMessage(tr("Signing key approved. It will be imported when you retry the operation."));
     return true;
 }
 
@@ -744,6 +786,7 @@ void PackageController::cancelOperation()
 bool PackageController::addRepo(const QString &url, const QString &name)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     auto result = m_dbus->addRepo(url, name);
     bool ok = result["success"].toBool();
@@ -762,6 +805,7 @@ bool PackageController::addRepo(const QString &url, const QString &name)
 bool PackageController::addRepoFull(const QVariantMap &properties)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Adding repository..."));
@@ -789,6 +833,7 @@ bool PackageController::addRepoFull(const QVariantMap &properties)
 bool PackageController::removeRepo(const QString &alias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     bool ok = m_dbus->removeRepo(alias);
     if (ok)
@@ -807,6 +852,7 @@ bool PackageController::removeRepo(const QString &alias)
 bool PackageController::setRepoEnabled(const QString &alias, bool enabled)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     bool ok = m_dbus->setRepoEnabled(alias, enabled);
     if (ok) {
@@ -826,37 +872,13 @@ bool PackageController::setRepoEnabled(const QString &alias, bool enabled)
 bool PackageController::modifyRepo(const QString &alias, const QVariantMap &properties)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     bool ok = m_dbus->modifyRepo(alias, properties);
     if (ok)
         loadRepos();
     else
         emit errorOccurred(m_dbus->lastError());
-    return ok;
-}
-
-/**
- * @brief 全リポジトリの同期リフレッシュを実行する。
- * @return リフレッシュ成功時 true
- */
-bool PackageController::refreshRepos()
-{
-    if (!m_connected) return false;
-
-    setBusy(true);
-    setStatusMessage(tr("Refreshing repositories..."));
-
-    bool ok = m_dbus->refreshRepos();
-
-    if (ok) {
-        setStatusMessage(tr("Repositories refreshed"));
-        loadRepos();
-    } else {
-        setStatusMessage(tr("Refresh failed"));
-        emit errorOccurred(m_dbus->lastError());
-    }
-
-    setBusy(false);
     return ok;
 }
 
@@ -868,6 +890,7 @@ bool PackageController::refreshRepos()
 void PackageController::refreshReposAsync()
 {
     if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Refreshing repositories..."));
@@ -884,42 +907,23 @@ void PackageController::cancelRefresh()
 }
 
 /**
- * @brief 指定リポジトリを個別にリフレッシュする。
+ * @brief 指定リポジトリを非同期でリフレッシュする。
+ *
+ * 完了時の後処理 (ステータス表示・一覧再読込・エラー通知) は
+ * refreshSingleRepoFinished シグナルのハンドラが行う。
  * @param alias リフレッシュ対象のリポジトリエイリアス
- * @return リフレッシュ成功時 true
+ * @return 要求開始時 true (実行中の場合は false)
  */
 bool PackageController::refreshSingleRepo(const QString &alias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Refreshing repository: %1").arg(alias));
 
-    bool ok = m_dbus->refreshSingleRepo(alias);
-
-    if (ok) {
-        setStatusMessage(tr("Refresh completed: %1").arg(alias));
-        loadRepos();
-    } else {
-        setStatusMessage(tr("Refresh failed"));
-        emit errorOccurred(m_dbus->lastError());
-    }
-
-    setBusy(false);
-    return ok;
-}
-
-/**
- * @brief URL からリポジトリタイプを検出する (未実装)。
- * @param url 検出対象のURL
- * @return リポジトリタイプ文字列 (現在は空)
- */
-QString PackageController::probeRepoType(const QString &url)
-{
-    if (!m_connected) return {};
-    // TODO: バックエンドにProbeRepoTypeメソッドを追加
-    Q_UNUSED(url)
-    return {};
+    m_dbus->refreshSingleRepoAsync(alias);
+    return true;
 }
 
 // -- サービス管理 --
@@ -942,6 +946,7 @@ void PackageController::loadServices()
 bool PackageController::addService(const QString &url, const QString &alias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Adding service..."));
@@ -969,6 +974,7 @@ bool PackageController::addService(const QString &url, const QString &alias)
 bool PackageController::removeService(const QString &alias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     bool ok = m_dbus->removeService(alias);
     if (ok) {
@@ -989,6 +995,7 @@ bool PackageController::removeService(const QString &alias)
 bool PackageController::modifyService(const QString &alias, const QVariantMap &properties)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     bool ok = m_dbus->modifyService(alias, properties);
     if (ok)
@@ -999,30 +1006,28 @@ bool PackageController::modifyService(const QString &alias, const QVariantMap &p
 }
 
 /**
- * @brief サービスをリフレッシュする。
+ * @brief サービスを非同期でリフレッシュする。
+ *
+ * 完了時の後処理 (ステータス表示・一覧再読込・エラー通知) は
+ * refreshServiceFinished シグナルのハンドラが行う。
  * @param alias リフレッシュ対象のサービスエイリアス
- * @return リフレッシュ成功時 true
+ * @return 要求開始時 true (実行中の場合は false)
  */
 bool PackageController::refreshService(const QString &alias)
 {
     if (!m_connected) return false;
+    if (m_busy) return false;
 
     setBusy(true);
     setStatusMessage(tr("Refreshing service: %1").arg(alias));
 
-    bool ok = m_dbus->refreshService(alias);
-
-    if (ok) {
-        loadServices();
-        loadRepos();
-        setStatusMessage(tr("Service refreshed"));
-    } else {
+    if (!m_dbus->refreshServiceAsync(alias)) {
         setStatusMessage(tr("Failed to refresh service"));
         emit errorOccurred(m_dbus->lastError());
+        setBusy(false);
+        return false;
     }
-
-    setBusy(false);
-    return ok;
+    return true;
 }
 
 // -- 状態保存・復元 --
@@ -1082,6 +1087,7 @@ bool PackageController::checkAuth(const QString &actionId)
  */
 void PackageController::saveState()
 {
+    if (m_busy) return;
     m_dbus->saveState();
 }
 
@@ -1090,6 +1096,7 @@ void PackageController::saveState()
  */
 void PackageController::restoreState()
 {
+    if (m_busy) return;
     m_dbus->restoreState();
     refreshPackageStatuses();
 }

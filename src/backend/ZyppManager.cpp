@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <sys/stat.h>
 #include <boost/logic/tribool.hpp>
 #include <QLoggingCategory>
 #include <zypp/base/Logger.h>
@@ -67,6 +70,11 @@ bool ZyppManager::initialize(const std::string& root)
     if (m_initialized)
         return true;
 
+    // 前回の操作のエラーを持ち越さない。リポジトリ単位の失敗は致命的ではない
+    // (オフライン等) ため初期化自体は成功させ、警告として m_lastError に集約する。
+    m_lastError.clear();
+    std::vector<std::string> repoWarnings;
+
     try {
         m_zypp = zypp::getZYpp();
 
@@ -93,7 +101,7 @@ bool ZyppManager::initialize(const std::string& root)
             // メディア/キャッシュに触れる前にポリシー検査。不適合は読み込まない。
             std::string policyErr;
             if (!checkRepoPolicy(repo, policyErr)) {
-                m_lastError = "Skipping repository with policy violation: " + policyErr;
+                repoWarnings.push_back("skipped (policy violation): " + policyErr);
                 qCWarning(lcZypp) << "Skipping repo during initialize:"
                                   << QString::fromStdString(policyErr);
                 continue;
@@ -103,7 +111,7 @@ bool ZyppManager::initialize(const std::string& root)
                 // raw metadata が無い場合 buildCache は内部で refreshMetadata を行い
                 // ミラー端点を開くため、端点検査を先に行う
                 if (!checkRepoOrigins(repo, policyErr)) {
-                    m_lastError = "Skipping repository with policy violation: " + policyErr;
+                    repoWarnings.push_back("skipped (policy violation): " + policyErr);
                     qCWarning(lcZypp) << "Skipping repo during initialize:"
                                       << QString::fromStdString(policyErr);
                     continue;
@@ -112,7 +120,7 @@ bool ZyppManager::initialize(const std::string& root)
                     m_repoManager->buildCache(repo);
                 } catch (const zypp::Exception& e) {
                     // キャッシュ構築失敗は警告として続行
-                    m_lastError = "Cache build failed for " + repo.alias() + ": " + e.msg();
+                    repoWarnings.push_back("cache build failed for " + repo.alias() + ": " + e.msg());
                     continue;
                 }
             }
@@ -120,7 +128,7 @@ bool ZyppManager::initialize(const std::string& root)
             try {
                 m_repoManager->loadFromCache(repo);
             } catch (const zypp::Exception& e) {
-                m_lastError = "Failed to load cache for " + repo.alias() + ": " + e.msg();
+                repoWarnings.push_back("failed to load cache for " + repo.alias() + ": " + e.msg());
                 continue;
             }
         }
@@ -133,6 +141,14 @@ bool ZyppManager::initialize(const std::string& root)
 
         // ディスク使用量計算用のマウントポイントを設定
         m_zypp->setPartitions(zypp::DiskUsageCounter::detectMountPoints());
+
+        if (!repoWarnings.empty()) {
+            std::string joined;
+            for (const auto &w : repoWarnings)
+                joined += (joined.empty() ? "" : "; ") + w;
+            m_lastError = "Some repositories could not be loaded: " + joined;
+            qCWarning(lcZypp) << "initialize:" << QString::fromStdString(m_lastError);
+        }
 
         m_initialized = true;
         return true;
@@ -272,6 +288,24 @@ bool ZyppManager::validateName(const std::string &name, std::string &err)
             err = "name contains control characters";
             return false;
         }
+    }
+    return true;
+}
+
+/**
+ * @brief リポジトリ優先度を検証する。
+ *
+ * zypp::RepoInfo::setPriority は unsigned を受け取るため、負値は巨大値に化ける。
+ * また 0 は「既定値 (99)」の意味になるため受け付けない。GUI と同じ 1-200 に制限する。
+ * @param priority 検証対象の優先度
+ * @param err 失敗時のエラー詳細
+ * @return 有効時 true
+ */
+bool ZyppManager::validatePriority(long long priority, std::string &err)
+{
+    if (priority < 1 || priority > 200) {
+        err = "priority must be between 1 and 200";
+        return false;
     }
     return true;
 }
@@ -712,9 +746,21 @@ bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
                               << QString::fromStdString(fpath.asString());
         }
     }
-    // 削除が拒否された場合 (SELinux 等) は汚染ファイルが残るため、成功と報告しない
-    if (!fpath.empty() && zypp::PathInfo(fpath).isExist())
-        removed = false;
+    // 削除が拒否された場合 (SELinux 等) は汚染ファイルが残るため、成功と報告しない。
+    // PathInfo::isExist は stat の失敗理由を区別せず (EACCES 等も「存在しない」扱い)、
+    // シンボリックリンクも辿るため、lstat で ENOENT/ENOTDIR のときだけ削除済みとみなす。
+    if (!fpath.empty()) {
+        struct stat st {};
+        if (::lstat(fpath.c_str(), &st) == 0) {
+            removed = false;
+        } else if (errno != ENOENT && errno != ENOTDIR) {
+            const int savedErrno = errno;
+            removed = false;
+            qCWarning(lcZypp) << "quarantineServiceIfTainted: cannot verify removal of"
+                              << QString::fromStdString(fpath.asString()) << ":"
+                              << std::strerror(savedErrno);
+        }
+    }
 
     m_lastError = removed
         ? "Service " + serviceAlias + " removed: index contained invalid data"
@@ -819,6 +865,8 @@ bool ZyppManager::addRepo(const std::string& url, const std::string& name)
 bool ZyppManager::addRepo(const RepoInfo& info)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -841,6 +889,10 @@ bool ZyppManager::addRepo(const RepoInfo& info)
     }
     if (!validateUrl(url, validationErr)) {
         m_lastError = "Invalid repository URL: " + validationErr;
+        return false;
+    }
+    if (!validatePriority(info.priority, validationErr)) {
+        m_lastError = "Invalid repository priority: " + validationErr;
         return false;
     }
 
@@ -906,6 +958,8 @@ bool ZyppManager::addRepo(const RepoInfo& info)
 bool ZyppManager::removeRepo(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -931,6 +985,8 @@ bool ZyppManager::removeRepo(const std::string& alias)
 bool ZyppManager::setRepoEnabled(const std::string& alias, bool enabled)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -954,37 +1010,51 @@ bool ZyppManager::setRepoEnabled(const std::string& alias, bool enabled)
  * @param newInfo 新しいリポジトリ情報
  * @return 変更成功時 true
  */
-bool ZyppManager::modifyRepo(const std::string& alias, const RepoInfo& newInfo)
+bool ZyppManager::modifyRepo(const std::string& alias, const RepoChanges& changes)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
         return false;
     }
 
+    // 空文字の name / url は従来どおり「現状維持」として扱う
+    const bool hasName = changes.name && !changes.name->isEmpty();
+    const bool hasUrl = changes.url && !changes.url->isEmpty();
+
     std::string validationErr;
-    if (!newInfo.name.isEmpty() && !validateName(newInfo.name.toStdString(), validationErr)) {
+    if (hasName && !validateName(changes.name->toStdString(), validationErr)) {
         m_lastError = "Invalid repository name: " + validationErr;
         return false;
     }
-    if (!newInfo.url.isEmpty() && !validateUrl(newInfo.url.toStdString(), validationErr)) {
+    if (hasUrl && !validateUrl(changes.url->toStdString(), validationErr)) {
         m_lastError = "Invalid repository URL: " + validationErr;
+        return false;
+    }
+    if (changes.priority && !validatePriority(*changes.priority, validationErr)) {
+        m_lastError = "Invalid repository priority: " + validationErr;
         return false;
     }
 
     try {
         zypp::RepoInfo repo = m_repoManager->getRepositoryInfo(alias);
 
-        if (!newInfo.name.isEmpty())
-            repo.setName(newInfo.name.toStdString());
-        if (!newInfo.url.isEmpty())
-            repo.setBaseUrl(zypp::Url(newInfo.url.toStdString()));
-
-        repo.setEnabled(newInfo.enabled);
-        repo.setAutorefresh(newInfo.autoRefresh);
-        repo.setPriority(newInfo.priority);
-        repo.setKeepPackages(newInfo.keepPackages);
+        // 渡された項目だけを適用し、それ以外は現在値を維持する
+        if (hasName)
+            repo.setName(changes.name->toStdString());
+        if (hasUrl)
+            repo.setBaseUrl(zypp::Url(changes.url->toStdString()));
+        if (changes.enabled)
+            repo.setEnabled(*changes.enabled);
+        if (changes.autoRefresh)
+            repo.setAutorefresh(*changes.autoRefresh);
+        if (changes.priority)
+            repo.setPriority(static_cast<unsigned>(*changes.priority));
+        if (changes.keepPackages)
+            repo.setKeepPackages(*changes.keepPackages);
 
         m_repoManager->modifyRepository(alias, repo);
         return true;
@@ -1007,13 +1077,13 @@ bool ZyppManager::refreshRepo(const std::string& alias,
     std::function<void(const std::string&, int)> progressCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
         return false;
     }
-
-    m_cancelRequested = false;
 
     // libzypp操作中にキャンセル要求を検出するコールバック
     // false を返すと refreshMetadata/buildCache/loadFromCache が中断される
@@ -1050,35 +1120,16 @@ bool ZyppManager::refreshRepo(const std::string& alias,
             progressCallback(alias, 100);
 
         return true;
-    } catch (const zypp::AbortRequestException&) {
-        m_lastError = "Operation cancelled";
+    } catch (const zypp::AbortRequestException& e) {
+        // 取消し要求による中断だけを取消しとして扱う (他の ABORT は失敗)
+        if (m_cancelRequested.load())
+            markCancelled();
+        else
+            m_lastError = "Operation aborted: " + e.msg();
         return false;
     } catch (const zypp::Exception& e) {
         m_lastError = "Failed to refresh repository: " + e.msg();
         return false;
-    }
-}
-
-/**
- * @brief URL からリポジトリタイプを検出する。
- * @param url 検出対象のURL
- * @return リポジトリタイプ文字列 ("rpm-md", "yast2" 等)
- */
-std::string ZyppManager::probeRepoType(const std::string& url)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if (!m_repoManager) {
-        m_lastError = "Backend not initialized";
-        return "";
-    }
-
-    try {
-        zypp::repo::RepoType type = m_repoManager->probe(zypp::Url(url));
-        return type.asString();
-    } catch (const zypp::Exception& e) {
-        m_lastError = "Failed to probe repository type: " + e.msg();
-        return "";
     }
 }
 
@@ -1093,13 +1144,13 @@ std::string ZyppManager::probeRepoType(const std::string& url)
 bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> progressCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
         return false;
     }
-
-    m_cancelRequested = false;
 
     // libzypp操作中にキャンセル要求を検出するコールバック
     // false を返すと refreshMetadata/buildCache/loadFromCache が中断される
@@ -1116,7 +1167,7 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
 
         for (const auto& repo : repos) {
             if (m_cancelRequested) {
-                m_lastError = "Operation cancelled";
+                markCancelled();
                 return false;
             }
 
@@ -1166,8 +1217,12 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
         }
 
         return true;
-    } catch (const zypp::AbortRequestException&) {
-        m_lastError = "Operation cancelled";
+    } catch (const zypp::AbortRequestException& e) {
+        // 取消し要求による中断だけを取消しとして扱う (他の ABORT は失敗)
+        if (m_cancelRequested.load())
+            markCancelled();
+        else
+            m_lastError = "Operation aborted: " + e.msg();
         return false;
     } catch (const zypp::Exception& e) {
         m_lastError = "Failed to refresh repositories: " + e.msg();
@@ -1212,6 +1267,8 @@ std::vector<ServiceInfo> ZyppManager::getServices() const
 bool ZyppManager::addService(const std::string& url, const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -1282,6 +1339,8 @@ bool ZyppManager::addService(const std::string& url, const std::string& alias)
 bool ZyppManager::removeService(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -1304,21 +1363,27 @@ bool ZyppManager::removeService(const std::string& alias)
  * @param newInfo 新しいサービス情報
  * @return 変更成功時 true
  */
-bool ZyppManager::modifyService(const std::string& alias, const ServiceInfo& newInfo)
+bool ZyppManager::modifyService(const std::string& alias, const ServiceChanges& changes)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
         return false;
     }
 
+    // 空文字の name / url は従来どおり「現状維持」として扱う
+    const bool hasName = changes.name && !changes.name->isEmpty();
+    const bool hasUrl = changes.url && !changes.url->isEmpty();
+
     std::string validationErr;
-    if (!newInfo.name.isEmpty() && !validateName(newInfo.name.toStdString(), validationErr)) {
+    if (hasName && !validateName(changes.name->toStdString(), validationErr)) {
         m_lastError = "Invalid service name: " + validationErr;
         return false;
     }
-    if (!newInfo.url.isEmpty() && !validateUrl(newInfo.url.toStdString(), validationErr)) {
+    if (hasUrl && !validateUrl(changes.url->toStdString(), validationErr)) {
         m_lastError = "Invalid service URL: " + validationErr;
         return false;
     }
@@ -1326,13 +1391,15 @@ bool ZyppManager::modifyService(const std::string& alias, const ServiceInfo& new
     try {
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
 
-        if (!newInfo.name.isEmpty())
-            svc.setName(newInfo.name.toStdString());
-        if (!newInfo.url.isEmpty())
-            svc.setUrl(zypp::Url(newInfo.url.toStdString()));
-
-        svc.setEnabled(newInfo.enabled);
-        svc.setAutorefresh(newInfo.autoRefresh);
+        // 渡された項目だけを適用し、それ以外は現在値を維持する
+        if (hasName)
+            svc.setName(changes.name->toStdString());
+        if (hasUrl)
+            svc.setUrl(zypp::Url(changes.url->toStdString()));
+        if (changes.enabled)
+            svc.setEnabled(*changes.enabled);
+        if (changes.autoRefresh)
+            svc.setAutorefresh(*changes.autoRefresh);
 
         m_repoManager->modifyService(alias, svc);
         return true;
@@ -1350,6 +1417,8 @@ bool ZyppManager::modifyService(const std::string& alias, const ServiceInfo& new
 bool ZyppManager::refreshService(const std::string& alias)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
 
     if (!m_repoManager) {
         m_lastError = "Backend not initialized";
@@ -1402,29 +1471,6 @@ bool ZyppManager::refreshService(const std::string& alias)
     }
 }
 
-/**
- * @brief URL からサービスタイプを検出する。
- * @param url 検出対象のURL
- * @return サービスタイプ文字列
- */
-std::string ZyppManager::probeServiceType(const std::string& url)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-
-    if (!m_repoManager) {
-        m_lastError = "Backend not initialized";
-        return "";
-    }
-
-    try {
-        zypp::repo::ServiceType type = m_repoManager->probeService(zypp::Url(url));
-        return type.asString();
-    } catch (const zypp::Exception& e) {
-        m_lastError = "Failed to probe service type: " + e.msg();
-        return "";
-    }
-}
-
 // -- パッケージ検索・一覧 --
 
 /**
@@ -1449,16 +1495,26 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, i
         return result;
     }
 
-    auto toAsciiLower = [](const std::string &s) {
-        std::string out(s);
-        for (char &ch : out)
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        return out;
+    // リテラル部分一致 (ASCII 大文字小文字無視)。正規表現は使わない (ReDoS 対策)。
+    // 依存関係・ファイル一覧は件数が多いため、文字列のコピーを作らずに比較する。
+    auto asciiLower = [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
     };
-    const std::string loweredQuery = toAsciiLower(query);
+    std::string loweredQuery(query.size(), '\0');
+    std::transform(query.begin(), query.end(), loweredQuery.begin(), asciiLower);
 
-    auto containsLiteral = [&loweredQuery, &toAsciiLower](const std::string &text) {
-        return toAsciiLower(text).find(loweredQuery) != std::string::npos;
+    auto containsLiteral = [&loweredQuery, &asciiLower](const std::string &text) {
+        return std::search(text.begin(), text.end(), loweredQuery.begin(), loweredQuery.end(),
+                           [&asciiLower](char a, char b) {
+                               return asciiLower(static_cast<unsigned char>(a)) == b;
+                           }) != text.end();
+    };
+    auto anyCapabilityMatches = [&containsLiteral](const zypp::Capabilities &caps) {
+        for (const auto &cap : caps) {
+            if (containsLiteral(cap.asString()))
+                return true;
+        }
+        return false;
     };
 
     auto pool = m_zypp->poolProxy();
@@ -1472,10 +1528,20 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, i
         auto obj = sel->candidateObj() ? sel->candidateObj() : sel->installedObj();
         if (!obj)
             continue;
+        const auto pkg = zypp::asKind<zypp::Package>(obj);
 
         if ((flags & static_cast<int>(SearchFlag::Name)) &&
             containsLiteral(sel->name()))
             match = true;
+
+        if (!match && pkg && (flags & static_cast<int>(SearchFlag::Keywords))) {
+            for (const auto &keyword : pkg->keywords()) {
+                if (containsLiteral(keyword.asString())) {
+                    match = true;
+                    break;
+                }
+            }
+        }
 
         if (!match && (flags & static_cast<int>(SearchFlag::Summary)) &&
             containsLiteral(obj->summary()))
@@ -1484,6 +1550,32 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, i
         if (!match && (flags & static_cast<int>(SearchFlag::Description)) &&
             containsLiteral(obj->description()))
             match = true;
+
+        if (!match && (flags & static_cast<int>(SearchFlag::Requires)) &&
+            anyCapabilityMatches(obj->dep(zypp::Dep::REQUIRES)))
+            match = true;
+
+        if (!match && (flags & static_cast<int>(SearchFlag::Provides)) &&
+            anyCapabilityMatches(obj->dep(zypp::Dep::PROVIDES)))
+            match = true;
+
+        // ファイル一覧はリポジトリのメタデータ (通常は主要パスのみ) と
+        // インストール済みパッケージ (rpmdb) に含まれる範囲だけを検索する
+        if (!match && (flags & static_cast<int>(SearchFlag::FileList))) {
+            for (const auto &item : { obj, sel->installedObj() }) {
+                const auto filePkg = zypp::asKind<zypp::Package>(item);
+                if (!filePkg)
+                    continue;
+                for (const auto &file : filePkg->filelist()) {
+                    if (containsLiteral(file)) {
+                        match = true;
+                        break;
+                    }
+                }
+                if (match)
+                    break;
+            }
+        }
 
         if (match)
             result.push_back(makePackageInfo(sel));
@@ -1809,8 +1901,19 @@ bool ZyppManager::setPackageStatus(const std::string& name, int status)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    if (!m_initialized)
+    if (!m_initialized) {
+        m_lastError = "Backend not initialized";
         return false;
+    }
+
+    zypp::ui::Status target;
+    if (!toZyppStatus(status, target)) {
+        m_lastError = "Invalid package status: " + std::to_string(status);
+        return false;
+    }
+
+    // 選択が変わると前回のソルバー問題リストは無効になる
+    m_problems.clear();
 
     auto pool = m_zypp->poolProxy();
     for (auto it = pool.byKindBegin<zypp::Package>();
@@ -1818,7 +1921,6 @@ bool ZyppManager::setPackageStatus(const std::string& name, int status)
 
         const auto& sel = *it;
         if (sel->name() == name) {
-            auto target = toZyppStatus(status);
             if (sel->setStatus(target))
                 return true;
 
@@ -1837,9 +1939,16 @@ bool ZyppManager::setPackageStatus(const std::string& name, int status)
                 return sel->setStatus(zypp::ui::S_KeepInstalled);
             }
             if (cur == zypp::ui::S_Taboo && target == zypp::ui::S_Install) {
-                // Taboo → NoInst → Install
-                sel->setStatus(zypp::ui::S_NoInst);
-                return sel->setStatus(zypp::ui::S_Install);
+                // Taboo → NoInst → Install。途中で失敗したら元の Taboo に戻す。
+                if (!sel->setStatus(zypp::ui::S_NoInst)) {
+                    m_lastError = "Status transition not allowed";
+                    return false;
+                }
+                if (sel->setStatus(zypp::ui::S_Install))
+                    return true;
+                sel->setStatus(zypp::ui::S_Taboo);
+                m_lastError = "Status transition not allowed";
+                return false;
             }
 
             m_lastError = "Status transition not allowed";
@@ -1895,11 +2004,24 @@ bool ZyppManager::setPackageVersion(const std::string& name, const std::string& 
             return false;
         }
 
-        // 候補バージョンを設定
+        // 選択が変わると前回のソルバー問題リストは無効になる
+        m_problems.clear();
+
+        // 候補バージョンを設定 (状態遷移に失敗したら元の候補へ戻す)
+        const zypp::PoolItem previousCandidate = sel->candidateObj();
         sel->setCandidate(matchedItem);
 
-        // インストール済みパッケージのステータスを決定
-        if (!sel->installedEmpty()) {
+        auto rollback = [&]() {
+            sel->setCandidate(previousCandidate);
+            m_lastError = "Status transition not allowed";
+            return false;
+        };
+
+        if (sel->installedEmpty()) {
+            // 未インストール → 選択したバージョンをインストール対象にする (YaST と同じ)
+            if (sel->status() != zypp::ui::S_Install && !sel->setStatus(zypp::ui::S_Install))
+                return rollback();
+        } else {
             auto inst = sel->installedObj();
             bool isSameVersion = (inst.edition().asString() == version &&
                                   inst.arch().asString() == arch);
@@ -1908,19 +2030,19 @@ bool ZyppManager::setPackageVersion(const std::string& name, const std::string& 
                 // インストール済みと同じバージョンを選択 → 変更なし
                 auto cur = sel->status();
                 if (cur != zypp::ui::S_KeepInstalled &&
-                    cur != zypp::ui::S_Protected) {
-                    sel->setStatus(zypp::ui::S_KeepInstalled);
+                    cur != zypp::ui::S_Protected &&
+                    !sel->setStatus(zypp::ui::S_KeepInstalled)) {
+                    return rollback();
                 }
-            } else {
+            } else if (!sel->setStatus(zypp::ui::S_Update)) {
                 // 異なるバージョンを選択 → 更新
-                if (!sel->setStatus(zypp::ui::S_Update)) {
-                    // フォールバック: AutoUpdate → KeepInstalled → Update
-                    auto cur = sel->status();
-                    if (cur == zypp::ui::S_AutoUpdate || cur == zypp::ui::S_AutoDel) {
-                        sel->setStatus(zypp::ui::S_KeepInstalled);
-                        sel->setStatus(zypp::ui::S_Update);
-                    }
-                }
+                // フォールバック: AutoUpdate/AutoDel → KeepInstalled → Update
+                auto cur = sel->status();
+                const bool viaKeep = (cur == zypp::ui::S_AutoUpdate || cur == zypp::ui::S_AutoDel)
+                                     && sel->setStatus(zypp::ui::S_KeepInstalled)
+                                     && sel->setStatus(zypp::ui::S_Update);
+                if (!viaKeep)
+                    return rollback();
             }
         }
 
@@ -1941,8 +2063,19 @@ bool ZyppManager::setPatternStatus(const std::string& name, int status)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    if (!m_initialized)
+    if (!m_initialized) {
+        m_lastError = "Backend not initialized";
         return false;
+    }
+
+    zypp::ui::Status target;
+    if (!toZyppStatus(status, target)) {
+        m_lastError = "Invalid pattern status: " + std::to_string(status);
+        return false;
+    }
+
+    // 選択が変わると前回のソルバー問題リストは無効になる
+    m_problems.clear();
 
     auto pool = m_zypp->poolProxy();
     for (auto it = pool.byKindBegin<zypp::Pattern>();
@@ -1950,7 +2083,10 @@ bool ZyppManager::setPatternStatus(const std::string& name, int status)
 
         const auto& sel = *it;
         if (sel->name() == name) {
-            return sel->setStatus(toZyppStatus(status));
+            if (sel->setStatus(target))
+                return true;
+            m_lastError = "Status transition not allowed";
+            return false;
         }
     }
 
@@ -1978,6 +2114,7 @@ void ZyppManager::restoreState()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_initialized) {
+        m_problems.clear();
         m_zypp->pool().proxy().restoreState<zypp::Package>();
         m_zypp->pool().proxy().restoreState<zypp::Pattern>();
         m_zypp->pool().proxy().restoreState<zypp::Patch>();
@@ -2002,6 +2139,10 @@ ZyppManager::SolverResult ZyppManager::resolveDependencies()
         result.success = false;
         return result;
     }
+
+    // 前回の問題リストは今回の解決結果と無関係。成功時に古い番号で
+    // ApplySolution されないよう、解決前に必ず破棄する。
+    m_problems.clear();
 
     // YaSTと同じ直接呼び出しパターン — fork()はlibzyppの内部状態を破壊するため使用しない
     try {
@@ -2065,6 +2206,10 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
         return result;
     }
 
+    // 前回の問題リストは今回の解決結果と無関係。成功時に古い番号で
+    // ApplySolution されないよう、解決前に必ず破棄する。
+    m_problems.clear();
+
     try {
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
@@ -2120,15 +2265,23 @@ bool ZyppManager::applySolution(int problemIndex, int solutionIndex)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    if (problemIndex < 0 || problemIndex >= static_cast<int>(m_problems.size()))
+    if (!m_initialized) {
+        m_lastError = "Backend not initialized";
         return false;
+    }
+    if (problemIndex < 0 || problemIndex >= static_cast<int>(m_problems.size())) {
+        m_lastError = "No such solver problem; resolve dependencies again";
+        return false;
+    }
 
     auto problemIt = m_problems.begin();
     std::advance(problemIt, problemIndex);
 
     auto solutions = (*problemIt)->solutions();
-    if (solutionIndex < 0 || solutionIndex >= static_cast<int>(solutions.size()))
+    if (solutionIndex < 0 || solutionIndex >= static_cast<int>(solutions.size())) {
+        m_lastError = "No such solution for the solver problem";
         return false;
+    }
 
     auto solutionIt = solutions.begin();
     std::advance(solutionIt, solutionIndex);
@@ -2153,6 +2306,8 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
                                               StateEventCallbackFn stateCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
+    m_problems.clear();
     CommitResult result;
 
     if (!m_initialized) {
@@ -2161,9 +2316,20 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         return result;
     }
 
+    // キャンセル要求は startWorker でのみクリアされるため、事前検査中
+    // (checkRepoOrigins はネットワーク I/O を伴い得る) に届いた要求もここで拾える。
+    auto cancelledResult = [this, &result]() {
+        markCancelled();
+        result.success = false;
+        result.errorMessage = m_lastError;
+        return result;
+    };
+
     // コミット前にプール既知の全リポジトリをポリシー検査。不適合があれば拒否する。
     // NOTE: m_mutex 保持中のため checkRepoPolicy (static、ロックなし) を直接呼ぶ。
     for (const auto &known : m_zypp->pool().knownRepositories()) {
+        if (m_cancelRequested.load())
+            return cancelledResult();
         std::string policyErr;
         if (!checkRepoPolicy(known.info(), policyErr)) {
             result.success = false;
@@ -2179,10 +2345,10 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
             return result;
         }
     }
+    if (m_cancelRequested.load())
+        return cancelledResult();
 
     try {
-        m_cancelRequested = false;
-
         // 経過時間計測開始
         auto startTime = std::chrono::steady_clock::now();
 
@@ -2431,23 +2597,36 @@ int ZyppManager::fromZyppStatus(zypp::ui::Status status)
 /**
  * @brief qZypper::PackageStatus を zypp::ui::Status に変換する。
  * @param status qZypper のステータス値
- * @return zypp のステータス
+ * @param out 変換結果 (成功時のみ設定)
+ * @return status が PackageStatus の範囲内なら true
  */
-zypp::ui::Status ZyppManager::toZyppStatus(int status)
+bool ZyppManager::toZyppStatus(int status, zypp::ui::Status &out)
 {
     switch (static_cast<PackageStatus>(status)) {
-        case PackageStatus::NoInst:        return zypp::ui::S_NoInst;
-        case PackageStatus::Install:       return zypp::ui::S_Install;
-        case PackageStatus::AutoInstall:   return zypp::ui::S_AutoInstall;
-        case PackageStatus::KeepInstalled: return zypp::ui::S_KeepInstalled;
-        case PackageStatus::Update:        return zypp::ui::S_Update;
-        case PackageStatus::AutoUpdate:    return zypp::ui::S_AutoUpdate;
-        case PackageStatus::Del:           return zypp::ui::S_Del;
-        case PackageStatus::AutoDel:       return zypp::ui::S_AutoDel;
-        case PackageStatus::Taboo:         return zypp::ui::S_Taboo;
-        case PackageStatus::Protected:     return zypp::ui::S_Protected;
-        default:                           return zypp::ui::S_NoInst;
+        case PackageStatus::NoInst:        out = zypp::ui::S_NoInst;        return true;
+        case PackageStatus::Install:       out = zypp::ui::S_Install;       return true;
+        case PackageStatus::AutoInstall:   out = zypp::ui::S_AutoInstall;   return true;
+        case PackageStatus::KeepInstalled: out = zypp::ui::S_KeepInstalled; return true;
+        case PackageStatus::Update:        out = zypp::ui::S_Update;        return true;
+        case PackageStatus::AutoUpdate:    out = zypp::ui::S_AutoUpdate;    return true;
+        case PackageStatus::Del:           out = zypp::ui::S_Del;           return true;
+        case PackageStatus::AutoDel:       out = zypp::ui::S_AutoDel;       return true;
+        case PackageStatus::Taboo:         out = zypp::ui::S_Taboo;         return true;
+        case PackageStatus::Protected:     out = zypp::ui::S_Protected;     return true;
     }
+    // 範囲外の値を S_NoInst (削除扱い) に倒さず拒否する
+    return false;
+}
+
+/**
+ * @brief PackageStatus として有効な値か判定する。
+ * @param status 判定する値
+ * @return 有効時 true
+ */
+bool ZyppManager::isValidPackageStatus(int status)
+{
+    zypp::ui::Status unused;
+    return toZyppStatus(status, unused);
 }
 
 } // namespace qZypper

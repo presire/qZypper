@@ -21,9 +21,9 @@ Dialog {
     property var currentKey: null
     // 確認待ちの鍵キュー
     property var keyQueue: []
-    // 信頼インポート成功後に表示するメッセージ
+    // 承認記録成功後に表示するメッセージ (鍵はまだこの時点ではインポートされない)
     property string trustedMessage: ""
-    // 信頼インポート失敗時に表示するメッセージ (バックエンドがビジー等の再試行可能な失敗)
+    // 承認記録失敗時に表示するメッセージ (バックエンドがビジー等の再試行可能な失敗)
     property string trustError: ""
 
     ColumnLayout {
@@ -126,7 +126,7 @@ Dialog {
             color: palette.text
         }
 
-        // ===== 信頼インポート成功メッセージ =====
+        // ===== 承認記録成功メッセージ =====
         Label {
             Layout.fillWidth: true
             visible: root.trustedMessage !== ""
@@ -137,7 +137,7 @@ Dialog {
             color: palette.text
         }
 
-        // ===== 信頼インポート失敗メッセージ =====
+        // ===== 承認記録失敗メッセージ =====
         Label {
             Layout.fillWidth: true
             visible: root.trustError !== ""
@@ -163,7 +163,7 @@ Dialog {
             }
 
             Button {
-                text: qsTr("Trust and Import")
+                text: qsTr("Approve Key")
                 highlighted: true
                 visible: root.trustedMessage === ""
                 enabled: root.currentKey !== null && !PackageController.busy
@@ -172,10 +172,10 @@ Dialog {
                     var fp = root.currentKey ? String(root.currentKey.fingerprint) : ""
                     // ポルキット認証入力中は呼び出しがブロックされることがある
                     if (PackageController.trustKey(fp)) {
-                        root.trustedMessage = qsTr("The key has been trusted. Please retry the previous operation (refresh or add repository).")
+                        root.trustedMessage = qsTr("Key approved. It will be imported when you retry the operation (for example, refresh the repository again).")
                     } else {
                         // 失敗時はダイアログと鍵表示を維持し、ビジー解除後に再試行できるようにする
-                        root.trustError = qsTr("The key could not be trusted. Wait until the current operation has finished and try again, or reject the key.")
+                        root.trustError = qsTr("The key could not be approved. Wait until the current operation has finished and try again, or reject the key.")
                     }
                 }
             }

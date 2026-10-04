@@ -94,6 +94,8 @@ public slots:
     // キャンセル
     void CancelOperation();                             // 操作キャンセル
 
+    // NOTE: 以下のシグナルは D-Bus イントロスペクション用の宣言。実際の送信は
+    //       emitToOwner() による所有者宛て (unicast) で行い、Qt の emit は使わない。
 signals:
     void ProgressChanged(const QString &packageName, int percentage, const QString &stage);  // 操作進捗
     void CommitProgressChanged(const QString &packageName, int percentage,                   // コミット進捗 (詳細版)
@@ -120,6 +122,8 @@ private:
 
     bool checkNotBusy();                               // libzypp呼出の並行実行を拒否
     bool checkRead();                                  // 読取呼出の検査
+    QVariant runRead(const std::function<QVariant()> &job);          // 読取処理を例外から保護して実行
+    void emitToOwner(const QString &member, const QVariantList &args); // 所有者宛てのシグナル送信
     bool checkOwner();                                 // 生存する所有者の呼出か検査
     bool preparePrivileged();                          // 処理中・所有者・初期化を順に検査
     void ownerVanished(const QString &owner);          // 所有者消失時に安全な終了を予約
@@ -174,8 +178,19 @@ private:
     bool m_quitWhenIdle = false;                       // ワーカー完了後に終了するフラグ
     quint64 m_revision = 1;                            // 現在の選択改訂番号
     quint64 m_resolvedRevision = 0;                    // 解決成功時の選択改訂番号
+    /**
+     * @brief Initialize の認可待ち 1 件分。
+     */
+    struct PendingInit {
+        QString caller;                                // 呼出元の一意バス名
+        uint uid = 0;                                  // 呼出元の UID (GetConnectionUnixUser)
+        QDBusMessage msg;                              // 遅延返信する呼出
+    };
+    static constexpr int kMaxPendingInitAuths = 8;        // 認可待ちの全体上限
+    static constexpr int kMaxPendingInitAuthsPerUid = 2;  // 認可待ちの UID ごとの上限
+
     int m_pendingInitAuths = 0;                        // Initialize 認可待ちの件数
-    QMap<QDBusPendingCallWatcher *, QPair<QString, QDBusMessage>> m_pendingInitCalls; // 認可待ちの呼出元と呼出
+    QMap<QDBusPendingCallWatcher *, PendingInit> m_pendingInitCalls; // 認可待ちの呼出元と呼出
     std::shared_ptr<std::atomic<bool>> m_cancelToken;  // 実行中操作の取消要求
 };
 

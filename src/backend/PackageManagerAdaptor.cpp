@@ -97,7 +97,7 @@ PackageManagerAdaptor::PackageManagerAdaptor(QObject *parent)
         info["repoAlias"] = QString::fromStdString(key.repoAlias);
         info["repoName"] = QString::fromStdString(key.repoName);
         QMetaObject::invokeMethod(this, [this, info]() {
-            emit UntrustedKeyDetected(info);
+            emitToOwner(QStringLiteral("UntrustedKeyDetected"), {info});
         }, Qt::QueuedConnection);
     });
 }
@@ -134,6 +134,48 @@ bool PackageManagerAdaptor::checkRead()
         return false;
     resetIdleTimer();
     return true;
+}
+
+/**
+ * @brief 読取処理を例外から保護して実行する。
+ *
+ * libzypp の例外を D-Bus の Failed エラーとして返し、イベントループへ漏らさない。
+ * @param job 主スレッドで実行する読取処理
+ * @return 処理結果 (拒否・例外時は空)
+ */
+QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
+{
+    if (!checkRead())
+        return {};
+    try {
+        return job();
+    }
+    catch (const std::exception &e) {
+        sendErrorReply(QDBusError::Failed, QString::fromUtf8(e.what()));
+    }
+    catch (...) {
+        sendErrorReply(QDBusError::Failed, QStringLiteral("Unknown exception during operation"));
+    }
+    return {};
+}
+
+/**
+ * @brief セッション所有者だけに宛てたシグナルを送る。
+ *
+ * 進捗や鍵情報は所有者以外のユーザーに見せる必要がないため、
+ * ブロードキャストせず宛先付きシグナル (unicast) で送る。所有者が居なければ送らない。
+ * @param member シグナル名 (Qt 側の signals: 宣言と同名・同型)
+ * @param args シグナル引数
+ */
+void PackageManagerAdaptor::emitToOwner(const QString &member, const QVariantList &args)
+{
+    if (m_owner.isEmpty())
+        return;
+    QDBusMessage signal = QDBusMessage::createTargetedSignal(
+        m_owner, QStringLiteral("/org/presire/qzypper"),
+        QStringLiteral("org.presire.qzypper.PackageManager"), member);
+    signal.setArguments(args);
+    QDBusConnection::systemBus().send(signal);
 }
 
 /**
@@ -295,6 +337,8 @@ void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::func
     auto outcome = std::make_shared<AsyncOutcome>();
     auto token = std::make_shared<std::atomic<bool>>(false);
     m_cancelToken = token;
+    // キャンセル要求は操作の開始時にだけ消去する (操作内部では消去しない)
+    ZyppManager::instance().clearCancelRequest();
     m_busy = true;
     m_idleTimer.stop();
 
@@ -367,9 +411,9 @@ void PackageManagerAdaptor::startPrivileged(const QString &actionId, const std::
 void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const AsyncOutcome &outcome)
 {
     if (msg.member() == QStringLiteral("Commit")) {
-        emit TransactionFinished(outcome.transactionFinished && outcome.transactionSuccess,
-                                 outcome.transactionFinished
-                                     ? outcome.transactionSummary : outcome.errorText);
+        emitToOwner(QStringLiteral("TransactionFinished"),
+                    {outcome.transactionFinished && outcome.transactionSuccess,
+                     outcome.transactionFinished ? outcome.transactionSummary : outcome.errorText});
     }
     const QDBusMessage reply = outcome.errorName.isEmpty() ? msg.createReply(QVariant::fromValue(outcome.value))
                                                            : msg.createErrorReply(outcome.errorName, outcome.errorText);
@@ -396,11 +440,14 @@ bool PackageManagerAdaptor::runPrivilegedBool(const QString &actionId,
         return false;
     startPrivileged(actionId, [job]() {
         AsyncOutcome outcome;
+        auto &mgr = ZyppManager::instance();
         if (job()) {
             outcome.value = true;
         } else {
-            outcome.errorName = QDBusError::errorString(QDBusError::Failed);
-            outcome.errorText = QString::fromStdString(ZyppManager::instance().lastError());
+            outcome.errorName = mgr.lastOperationCancelled()
+                ? QStringLiteral("org.presire.qzypper.Error.Cancelled")
+                : QDBusError::errorString(QDBusError::Failed);
+            outcome.errorText = QString::fromStdString(mgr.lastError());
         }
         return outcome;
     });
@@ -449,18 +496,39 @@ bool PackageManagerAdaptor::Initialize()
         return false;
     }
 
-    // 認可待ちの間はワーカーも m_busy も使わず、複数呼出の同時待ちを許す
-    // ただし同一呼出元は1件まで、全呼出元で合計8件までとする
-    if (m_pendingInitAuths >= 8) {
+    // 認可待ちの間はワーカーも m_busy も使わず、複数呼出の同時待ちを許す。
+    // ただし同一呼出元は1件まで、同一 UID は kMaxPendingInitAuthsPerUid 件まで、
+    // 全体で kMaxPendingInitAuths 件までとする。UID 単位の制限が無いと、
+    // 同じユーザーが複数の接続を開くだけで全体の上限を使い切れてしまう。
+    if (m_pendingInitAuths >= kMaxPendingInitAuths) {
         sendErrorReply(QStringLiteral("org.freedesktop.DBus.Error.LimitsExceeded"), QStringLiteral("Too many pending authorization requests"));
         return false;
     }
 
+    // org.freedesktop.DBus.GetConnectionUnixUser で呼出元の UID を得る (取得できなければ拒否)
+    auto *busInterface = QDBusConnection::systemBus().interface();
+    const QDBusReply<uint> uidReply = busInterface ? busInterface->serviceUid(caller)
+                                                   : QDBusReply<uint>();
+    if (!uidReply.isValid()) {
+        sendErrorReply(QDBusError::AccessDenied,
+                       QStringLiteral("Not authorized: %1").arg(actionId));
+        return false;
+    }
+    const uint callerUid = uidReply.value();
+
+    int pendingForUid = 0;
     for (auto it = m_pendingInitCalls.constBegin(); it != m_pendingInitCalls.constEnd(); ++it) {
-        if (it.value().first == caller) {
+        if (it.value().caller == caller) {
             sendErrorReply(QStringLiteral("org.presire.qzypper.Error.Busy"), QStringLiteral("Authorization already pending"));
             return false;
         }
+        if (it.value().uid == callerUid)
+            ++pendingForUid;
+    }
+    if (pendingForUid >= kMaxPendingInitAuthsPerUid) {
+        sendErrorReply(QStringLiteral("org.freedesktop.DBus.Error.LimitsExceeded"),
+                       QStringLiteral("Too many pending authorization requests for this user"));
+        return false;
     }
 
     setDelayedReply(true);
@@ -472,7 +540,7 @@ bool PackageManagerAdaptor::Initialize()
     QDBusPendingCall call = QDBusConnection::systemBus().asyncCall(buildAuthRequest(caller, actionId), 300000);
 
     auto *watcher = new QDBusPendingCallWatcher(call, this);
-    m_pendingInitCalls.insert(watcher, qMakePair(caller, msg));
+    m_pendingInitCalls.insert(watcher, PendingInit{caller, callerUid, msg});
 
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *self) { handleInitializeAuth(self); });
     return false;
@@ -487,16 +555,15 @@ std::function<PackageManagerAdaptor::AsyncOutcome()> PackageManagerAdaptor::make
     return [this]() {
         AsyncOutcome outcome;
         auto &mgr = ZyppManager::instance();
-        if (mgr.initialize()) {
-            outcome.value = true;
-        }
-        else {
-            const QString error = QString::fromStdString(mgr.lastError());
+        const bool ok = mgr.initialize();
+        // 成功時の lastError はリポジトリ単位の警告 (初期化開始時に消去済み)
+        const QString error = QString::fromStdString(mgr.lastError());
+        if (!error.isEmpty()) {
             QMetaObject::invokeMethod(this, [this, error]() {
-                emit ErrorOccurred(error);
+                emitToOwner(QStringLiteral("ErrorOccurred"), {error});
             }, Qt::QueuedConnection);
-            outcome.value = false;
         }
+        outcome.value = ok;
         return outcome;
     };
 }
@@ -529,9 +596,9 @@ bool PackageManagerAdaptor::adoptOwner(const QString &caller)
 void PackageManagerAdaptor::handleInitializeAuth(QDBusPendingCallWatcher *watcher)
 {
     static const QString actionId = QStringLiteral("org.presire.qzypper.initialize");
-    const auto pending = m_pendingInitCalls.take(watcher);
-    const QString caller = pending.first;
-    const QDBusMessage msg = pending.second;
+    const PendingInit pending = m_pendingInitCalls.take(watcher);
+    const QString caller = pending.caller;
+    const QDBusMessage msg = pending.msg;
     --m_pendingInitAuths;
     watcher->deleteLater();
 
@@ -581,12 +648,12 @@ void PackageManagerAdaptor::RestoreState()
  *  @return リポジトリ情報のリスト */
 QVariantList PackageManagerAdaptor::GetRepos()
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &repo : ZyppManager::instance().getRepos())
-        result.append(repo.toVariantMap());
-    return result;
+    return runRead([]() {
+        QVariantList result;
+        for (const auto &repo : ZyppManager::instance().getRepos())
+            result.append(repo.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /** @brief 認可後に全リポジトリを更新する
@@ -598,7 +665,7 @@ bool PackageManagerAdaptor::RefreshRepos()
         return ZyppManager::instance().refreshRepos([this](const std::string &alias, int pct) {
             const QString repoAlias = QString::fromStdString(alias);
             QMetaObject::invokeMethod(this, [this, repoAlias, pct]() {
-                emit RepoRefreshProgress(repoAlias, pct);
+                emitToOwner(QStringLiteral("RepoRefreshProgress"), {repoAlias, pct});
             }, Qt::QueuedConnection);
         });
     });
@@ -616,7 +683,7 @@ bool PackageManagerAdaptor::RefreshSingleRepo(const QString &alias)
             [this](const std::string &name, int pct) {
                 const QString repoAlias = QString::fromStdString(name);
                 QMetaObject::invokeMethod(this, [this, repoAlias, pct]() {
-                    emit RepoRefreshProgress(repoAlias, pct);
+                    emitToOwner(QStringLiteral("RepoRefreshProgress"), {repoAlias, pct});
                 }, Qt::QueuedConnection);
             });
     });
@@ -683,7 +750,32 @@ QVariantMap PackageManagerAdaptor::AddRepoFull(const QVariantMap &properties)
 {
     if (!preparePrivileged())
         return {};
-    const RepoInfo info = RepoInfo::fromVariantMap(properties);
+    // 境界で型を厳密に検査する (toInt()/toBool() の暗黙変換で不正値を受理しない)。
+    // 認可ダイアログを出す前に不正値を拒否し、渡されなかったキーは既定値のままにする。
+    RepoChanges parsed;
+    std::optional<QString> alias;
+    QString parseErr;
+    if (!PartialUpdate::takeString(properties, "alias", alias, parseErr)
+        || !RepoChanges::fromVariantMap(properties, parsed, parseErr)) {
+        sendErrorReply(QDBusError::InvalidArgs, parseErr);
+        return {};
+    }
+    RepoInfo info;
+    if (parsed.priority) {
+        std::string priorityErr;
+        if (!ZyppManager::validatePriority(*parsed.priority, priorityErr)) {
+            sendErrorReply(QDBusError::InvalidArgs,
+                           QStringLiteral("Invalid repository priority: %1").arg(QString::fromStdString(priorityErr)));
+            return {};
+        }
+        info.priority = static_cast<int>(*parsed.priority);
+    }
+    info.alias = alias.value_or(QString());
+    info.name = parsed.name.value_or(QString());
+    info.url = parsed.url.value_or(QString());
+    info.enabled = parsed.enabled.value_or(info.enabled);
+    info.autoRefresh = parsed.autoRefresh.value_or(info.autoRefresh);
+    info.keepPackages = parsed.keepPackages.value_or(info.keepPackages);
     startPrivileged(QStringLiteral("org.presire.qzypper.manage-repos"), [info]() {
         auto &mgr = ZyppManager::instance();
         QVariantMap result;
@@ -731,8 +823,23 @@ bool PackageManagerAdaptor::SetRepoEnabled(const QString &alias, bool enabled)
  */
 bool PackageManagerAdaptor::ModifyRepo(const QString &alias, const QVariantMap &properties)
 {
-    return runPrivilegedBool(QStringLiteral("org.presire.qzypper.manage-repos"), [alias, properties]() {
-        return ZyppManager::instance().modifyRepo(alias.toStdString(), RepoInfo::fromVariantMap(properties));
+    // 渡されたキーだけを適用する。型が違う値や範囲外の優先度は認可前に拒否する。
+    RepoChanges changes;
+    QString error;
+    std::string priorityErr;
+    if (!RepoChanges::fromVariantMap(properties, changes, error)) {
+        if (preparePrivileged())
+            sendErrorReply(QDBusError::InvalidArgs, error);
+        return false;
+    }
+    if (changes.priority && !ZyppManager::validatePriority(*changes.priority, priorityErr)) {
+        if (preparePrivileged())
+            sendErrorReply(QDBusError::InvalidArgs,
+                           QStringLiteral("Invalid repository priority: %1").arg(QString::fromStdString(priorityErr)));
+        return false;
+    }
+    return runPrivilegedBool(QStringLiteral("org.presire.qzypper.manage-repos"), [alias, changes]() {
+        return ZyppManager::instance().modifyRepo(alias.toStdString(), changes);
     });
 }
 
@@ -741,12 +848,12 @@ bool PackageManagerAdaptor::ModifyRepo(const QString &alias, const QVariantMap &
  */
 QVariantList PackageManagerAdaptor::GetServices()
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &service : ZyppManager::instance().getServices())
-        result.append(service.toVariantMap());
-    return result;
+    return runRead([]() {
+        QVariantList result;
+        for (const auto &service : ZyppManager::instance().getServices())
+            result.append(service.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /**
@@ -778,8 +885,16 @@ bool PackageManagerAdaptor::RemoveService(const QString &alias)
  */
 bool PackageManagerAdaptor::ModifyService(const QString &alias, const QVariantMap &properties)
 {
-    return runPrivilegedBool(QStringLiteral("org.presire.qzypper.manage-repos"), [alias, properties]() {
-        return ZyppManager::instance().modifyService(alias.toStdString(), ServiceInfo::fromVariantMap(properties));
+    // 渡されたキーだけを適用する。型が違う値は認可前に拒否する。
+    ServiceChanges changes;
+    QString error;
+    if (!ServiceChanges::fromVariantMap(properties, changes, error)) {
+        if (preparePrivileged())
+            sendErrorReply(QDBusError::InvalidArgs, error);
+        return false;
+    }
+    return runPrivilegedBool(QStringLiteral("org.presire.qzypper.manage-repos"), [alias, changes]() {
+        return ZyppManager::instance().modifyService(alias.toStdString(), changes);
     });
 }
 
@@ -799,17 +914,17 @@ bool PackageManagerAdaptor::RefreshService(const QString &alias)
  */
 QVariantList PackageManagerAdaptor::SearchPackages(const QString &query, int flags)
 {
-    if (!checkRead())
-        return {};
     if (query.toUtf8().size() > 256) {
-        sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Search query too long"));
+        if (checkRead())
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Search query too long"));
         return {};
     }
-    QVariantList result;
-    for (const auto &pkg : ZyppManager::instance().searchPackages(query.toStdString(), flags)) {
-        result.append(pkg.toVariantMap());
-    }
-    return result;
+    return runRead([query, flags]() {
+        QVariantList result;
+        for (const auto &pkg : ZyppManager::instance().searchPackages(query.toStdString(), flags))
+            result.append(pkg.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /** @brief パッケージ詳細を取得する
@@ -818,9 +933,9 @@ QVariantList PackageManagerAdaptor::SearchPackages(const QString &query, int fla
  */
 QVariantMap PackageManagerAdaptor::GetPackageDetails(const QString &name)
 {
-    if (!checkRead())
-        return {};
-    return ZyppManager::instance().getPackageDetails(name.toStdString()).toVariantMap();
+    return runRead([name]() {
+        return QVariant(ZyppManager::instance().getPackageDetails(name.toStdString()).toVariantMap());
+    }).toMap();
 }
 
 /**
@@ -830,12 +945,12 @@ QVariantMap PackageManagerAdaptor::GetPackageDetails(const QString &name)
  */
 QVariantList PackageManagerAdaptor::GetPackagesByRepo(const QString &repoAlias)
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &pkg : ZyppManager::instance().getPackagesByRepo(repoAlias.toStdString()))
-        result.append(pkg.toVariantMap());
-    return result;
+    return runRead([repoAlias]() {
+        QVariantList result;
+        for (const auto &pkg : ZyppManager::instance().getPackagesByRepo(repoAlias.toStdString()))
+            result.append(pkg.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /**
@@ -846,6 +961,11 @@ QVariantList PackageManagerAdaptor::GetPackagesByRepo(const QString &repoAlias)
  */
 bool PackageManagerAdaptor::SetPackageStatus(const QString &name, int status)
 {
+    if (!ZyppManager::isValidPackageStatus(status)) {
+        if (checkNotBusy() && checkOwner())
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid package status"));
+        return false;
+    }
     return runOwnerSync([name, status]() {
         return QVariant(ZyppManager::instance().setPackageStatus(name.toStdString(), status));
     }).toBool();
@@ -872,12 +992,12 @@ bool PackageManagerAdaptor::SetPackageVersion(const QString &name, const QString
  */
 QVariantList PackageManagerAdaptor::GetPatterns()
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &pattern : ZyppManager::instance().getPatterns())
-        result.append(pattern.toVariantMap());
-    return result;
+    return runRead([]() {
+        QVariantList result;
+        for (const auto &pattern : ZyppManager::instance().getPatterns())
+            result.append(pattern.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /**
@@ -887,12 +1007,12 @@ QVariantList PackageManagerAdaptor::GetPatterns()
  */
 QVariantList PackageManagerAdaptor::GetPackagesByPattern(const QString &patternName)
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &pkg : ZyppManager::instance().getPackagesByPattern(patternName.toStdString()))
-        result.append(pkg.toVariantMap());
-    return result;
+    return runRead([patternName]() {
+        QVariantList result;
+        for (const auto &pkg : ZyppManager::instance().getPackagesByPattern(patternName.toStdString()))
+            result.append(pkg.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /**
@@ -903,6 +1023,11 @@ QVariantList PackageManagerAdaptor::GetPackagesByPattern(const QString &patternN
  */
 bool PackageManagerAdaptor::SetPatternStatus(const QString &patternName, int status)
 {
+    if (!ZyppManager::isValidPackageStatus(status)) {
+        if (checkNotBusy() && checkOwner())
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid pattern status"));
+        return false;
+    }
     return runOwnerSync([patternName, status]() {
         return QVariant(ZyppManager::instance().setPatternStatus(patternName.toStdString(), status));
     }).toBool();
@@ -914,12 +1039,12 @@ bool PackageManagerAdaptor::SetPatternStatus(const QString &patternName, int sta
  */
 QVariantList PackageManagerAdaptor::GetPatches(int category)
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &patch : ZyppManager::instance().getPatches(category))
-        result.append(patch.toVariantMap());
-    return result;
+    return runRead([category]() {
+        QVariantList result;
+        for (const auto &patch : ZyppManager::instance().getPatches(category))
+            result.append(patch.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /** @brief 保留中の変更を取得する
@@ -927,12 +1052,12 @@ QVariantList PackageManagerAdaptor::GetPatches(int category)
  */
 QVariantList PackageManagerAdaptor::GetPendingChanges()
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &pkg : ZyppManager::instance().getPendingChanges())
-        result.append(pkg.toVariantMap());
-    return result;
+    return runRead([]() {
+        QVariantList result;
+        for (const auto &pkg : ZyppManager::instance().getPendingChanges())
+            result.append(pkg.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /** @brief 所有者の選択を全更新して解決済み改訂を記録する
@@ -1016,15 +1141,16 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
                 const int completedSteps = info.completedSteps;
                 const int overallPct = info.overallPercentage;
                 QMetaObject::invokeMethod(this, [this, pkg, pct, stage, totalSteps, completedSteps, overallPct]() {
-                    emit CommitProgressChanged(pkg, pct, stage, totalSteps, completedSteps, overallPct);
-                    emit ProgressChanged(pkg, pct, stage);
+                    emitToOwner(QStringLiteral("CommitProgressChanged"),
+                                {pkg, pct, stage, totalSteps, completedSteps, overallPct});
+                    emitToOwner(QStringLiteral("ProgressChanged"), {pkg, pct, stage});
                 }, Qt::QueuedConnection);
             },
             [this](const std::string &packageName, const std::string &event) {
                 const QString pkg = QString::fromStdString(packageName);
                 const QString evt = QString::fromStdString(event);
                 QMetaObject::invokeMethod(this, [this, pkg, evt]() {
-                    emit PackageStateChanged(pkg, evt);
+                    emitToOwner(QStringLiteral("PackageStateChanged"), {pkg, evt});
                 }, Qt::QueuedConnection);
             });
 
@@ -1074,12 +1200,12 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
  */
 QVariantList PackageManagerAdaptor::GetDiskUsage()
 {
-    if (!checkRead())
-        return {};
-    QVariantList result;
-    for (const auto &du : ZyppManager::instance().getDiskUsage())
-        result.append(du.toVariantMap());
-    return result;
+    return runRead([]() {
+        QVariantList result;
+        for (const auto &du : ZyppManager::instance().getDiskUsage())
+            result.append(du.toVariantMap());
+        return QVariant(result);
+    }).toList();
 }
 
 /** @brief 所有者のみが処理中の操作をキャンセルできる。 */

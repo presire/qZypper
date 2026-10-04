@@ -11,6 +11,7 @@
 #include <zypp/ZYppCallbacks.h>
 #include <zypp/KeyRing.h>
 #include <zypp/Digest.h>
+#include <zypp/sat/Solvable.h>
 
 
 namespace qZypper {
@@ -124,7 +125,7 @@ public:
     void finish(zypp::Resolvable::constPtr resolvable,
                 Error error, const std::string &reason) override;
 
-    static constexpr int kMaxRetries = 3;   // 自動リトライ回数
+    static constexpr int kMaxRetries = 3;   // IO エラー時の自動リトライ回数
 
 private:
     ProgressCallbackFn m_callback;
@@ -135,6 +136,7 @@ private:
     std::string &m_problemDetail;          // エラー詳細を格納する参照
     std::string m_currentPkg;
     int m_retryCount = 0;                  // 現在パッケージのリトライ回数
+    zypp::sat::Solvable m_retrySolvable;   // リトライ回数を数えている対象パッケージ
 };
 
 /**

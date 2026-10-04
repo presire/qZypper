@@ -37,9 +37,8 @@ public:
     bool initializeBackend();
 
     // リポジトリ操作 (特権)
-    bool refreshRepos();                                            // 全リポ同期リフレッシュ
     void refreshReposAsync();                                       // 全リポ非同期リフレッシュ
-    bool refreshSingleRepo(const QString &alias);                   // 個別リポリフレッシュ
+    void refreshSingleRepoAsync(const QString &alias);              // 個別リポ非同期リフレッシュ
     void cancelOperation();                                         // 操作キャンセル
     QVariantMap addRepo(const QString &url, const QString &name);   // リポ追加
     QVariantMap addRepoFull(const QVariantMap &properties);         // リポ追加 (全属性)
@@ -53,7 +52,7 @@ public:
     bool removeService(const QString &alias);                       // サービス削除
     bool modifyService(const QString &alias,                        // サービス変更
                        const QVariantMap &properties);
-    bool refreshService(const QString &alias);                      // サービスリフレッシュ
+    bool refreshServiceAsync(const QString &alias);                 // サービス非同期リフレッシュ (要求開始時 true)
 
     // パッケージ状態変更 (バックエンドのプール操作)
     bool setPackageStatus(const QString &name, int status);         // パッケージ状態変更
@@ -100,7 +99,9 @@ signals:
     void backendConnected();                            // バックエンド接続完了
     void backendDisconnected();                         // バックエンド接続断
     void backendReconnected();                          // バックエンド再接続 (再起動後)
-    void refreshReposFinished(bool success);            // 非同期リフレッシュ完了
+    void refreshReposFinished(bool success, bool cancelled);  // 非同期リフレッシュ完了 (cancelled: バックエンドが取消しで中断)
+    void refreshSingleRepoFinished(bool success);       // 個別リポ非同期リフレッシュ完了
+    void refreshServiceFinished(bool success);          // サービス非同期リフレッシュ完了
     void repoRefreshProgress(const QString &repoAlias,  // リフレッシュ進捗
                              int percentage);
     void progressChanged(const QString &packageName,    // 操作進捗
@@ -128,6 +129,7 @@ private:
     QDBusInterface *m_iface = nullptr;                  // D-Busインターフェース
     QDBusServiceWatcher *m_watcher = nullptr;           // サービスウォッチャー
     bool m_connected = false;                           // 接続状態
+    bool m_initializing = false;                        // 初期化呼び出し中 (再入防止)
     QString m_lastError;                                // 最新エラーメッセージ
 
     void onServiceRegistered(const QString &serviceName);    // サービス登録ハンドラ

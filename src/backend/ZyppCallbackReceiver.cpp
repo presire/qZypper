@@ -237,23 +237,33 @@ DownloadReceiver::DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn s
  *
  * libzypp のデフォルト実装は ABORT を返すため、
  * ネットワーク瞬断やIOエラーで即座にコミット全体が中断されてしまう。
- * パッケージごとに最大 kMaxRetries 回まで自動リトライし、
- * それでも失敗したら ABORT を返してユーザーに通知する。
+ * IO エラー (一時的な障害の可能性がある) に限り、パッケージごとに最大
+ * kMaxRetries 回まで自動リトライする。NOT_FOUND / INVALID は再試行しても
+ * 解消しない (INVALID は改ざんの可能性もある) ため、即座に ABORT を返して通知する。
+ * @param resolvable 対象パッケージ
+ * @param error エラー種別
+ * @param description エラー詳細
+ * @return RETRY または ABORT
  */
 DownloadReceiver::Action DownloadReceiver::problem(
     zypp::Resolvable::constPtr resolvable,
-    Error /*error*/, const std::string &description)
+    Error error, const std::string &description)
 {
     if (m_cancelFlag.load())
         return ABORT;
 
+    // start() を経ずに別パッケージの problem() が届いた場合も回数を引き継がない
+    if (resolvable && resolvable->satSolvable() != m_retrySolvable) {
+        m_retrySolvable = resolvable->satSolvable();
+        m_retryCount = 0;
+    }
+
     std::string pkg = resolvable ? resolvable->name() : m_currentPkg;
-    if (m_retryCount < kMaxRetries) {
+    if (error == IO && m_retryCount < kMaxRetries) {
         ++m_retryCount;
         return RETRY;
     }
     m_problemDetail = "Download failed: " + pkg + ": " + description;
-    m_retryCount = 0;
     return ABORT;
 }
 
@@ -283,7 +293,13 @@ void DownloadReceiver::start(zypp::Resolvable::constPtr resolvable,
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
-    m_retryCount = 0;  // パッケージ切替でリトライ回数をリセット
+    // リトライ回数は対象パッケージが変わったときだけリセットする。
+    // RETRY 後の再ダウンロードで start() が再度呼ばれても回数を保持し、無限リトライを防ぐ。
+    const zypp::sat::Solvable solvable = resolvable ? resolvable->satSolvable() : zypp::sat::Solvable();
+    if (solvable != m_retrySolvable) {
+        m_retrySolvable = solvable;
+        m_retryCount = 0;
+    }
 
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "download_start");

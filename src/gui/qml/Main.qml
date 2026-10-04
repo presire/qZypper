@@ -249,13 +249,13 @@ ApplicationWindow {
     }
 
     // Escキーハンドリング
+    // リフレッシュ中は refreshOverlay 内の Shortcut が取消しを扱い、
+    // オーバーレイは refreshFinished まで閉じない
     Shortcut {
         sequence: "Escape"
+        enabled: !refreshOverlay.visible
         onActivated: {
-            if (refreshOverlay.visible) {
-                PackageController.cancelRefresh()
-                refreshOverlay.close()
-            } else if (repoDrawer.visible) {
+            if (repoDrawer.visible) {
                 repoDrawer.close()
             } else if (navDrawer.visible) {
                 navDrawer.close()
@@ -301,6 +301,7 @@ ApplicationWindow {
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
                     text: PackageController.statusMessage
+                    textFormat: Text.PlainText
                     font.pixelSize: 16
                 }
 
@@ -596,12 +597,14 @@ ApplicationWindow {
 
                                 Label {
                                     text: modelData.name || ""
+                                    textFormat: Text.PlainText
                                     Layout.preferredWidth: 200
                                     elide: Text.ElideRight
                                 }
 
                                 Label {
                                     text: modelData.version || ""
+                                    textFormat: Text.PlainText
                                     Layout.fillWidth: true
                                     color: palette.placeholderText
                                 }
@@ -629,9 +632,21 @@ ApplicationWindow {
                         clip: true
                         model: PackageController.repos
                         delegate: ItemDelegate {
+                            id: repoDelegate
                             width: repoListView.width
                             text: modelData.name || modelData.alias || ""
                             highlighted: ListView.isCurrentItem
+                            // リポジトリ名はメタデータ由来のため PlainText で表示する
+                            // (既定の IconLabel は AutoText で HTML を解釈する)
+                            contentItem: Text {
+                                text: repoDelegate.text
+                                textFormat: Text.PlainText
+                                font: repoDelegate.font
+                                color: repoDelegate.highlighted ? repoDelegate.palette.highlightedText
+                                                                : repoDelegate.palette.text
+                                elide: Text.ElideRight
+                                verticalAlignment: Text.AlignVCenter
+                            }
                             onClicked: {
                                 repoListView.currentIndex = index
                                 PackageController.loadPackagesByRepo(modelData.alias)
@@ -683,6 +698,7 @@ ApplicationWindow {
                                 anchors.leftMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 text: section
+                                textFormat: Text.PlainText
                                 font.bold: true
                                 font.pixelSize: 13
                             }
@@ -738,6 +754,7 @@ ApplicationWindow {
 
                                 Label {
                                     text: modelData.summary || modelData.name || ""
+                                    textFormat: Text.PlainText
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                     color: patternDelegate.highlighted ? palette.highlightedText : palette.text
@@ -1193,6 +1210,7 @@ ApplicationWindow {
                                             anchors.left: parent.left; anchors.right: parent.right
                                             anchors.leftMargin: 4; anchors.rightMargin: 4
                                             text: pkgDelegate.modelData.name || ""
+                                            textFormat: Text.PlainText
                                             elide: Text.ElideRight
                                             color: pkgDelegate.highlighted ? palette.highlightedText : palette.text
                                         }
@@ -1210,6 +1228,7 @@ ApplicationWindow {
                                             anchors.left: parent.left; anchors.right: parent.right
                                             anchors.leftMargin: 4; anchors.rightMargin: 4
                                             text: pkgDelegate.modelData.summary || ""
+                                            textFormat: Text.PlainText
                                             elide: Text.ElideRight
                                             color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
                                         }
@@ -1227,6 +1246,7 @@ ApplicationWindow {
                                             anchors.left: parent.left; anchors.right: parent.right
                                             anchors.leftMargin: 4; anchors.rightMargin: 4
                                             text: pkgDelegate.modelData.installedVersion || ""
+                                            textFormat: Text.PlainText
                                             elide: Text.ElideRight
                                             color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
                                         }
@@ -1245,6 +1265,7 @@ ApplicationWindow {
                                             anchors.left: parent.left; anchors.right: parent.right
                                             anchors.leftMargin: 4; anchors.rightMargin: 4
                                             text: pkgDelegate.modelData.version || ""
+                                            textFormat: Text.PlainText
                                             elide: Text.ElideRight
                                             color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
                                         }
@@ -1395,10 +1416,10 @@ ApplicationWindow {
                                 text: {
                                     var d = PackageController.currentPackageDetails
                                     if (!d || !d.name) return ""
-                                    return "<h3>" + (d.name || "") + "</h3>"
-                                         + "<p>" + (d.summary || "") + "</p>"
+                                    return "<h3>" + escapeHtml(d.name) + "</h3>"
+                                         + "<p>" + escapeHtml(d.summary) + "</p>"
                                          + "<hr/>"
-                                         + "<p>" + (d.description || "").replace(/\n/g, "<br/>") + "</p>"
+                                         + "<p>" + escapeHtml(d.description).replace(/\n/g, "<br/>") + "</p>"
                                 }
                             }
                         }
@@ -1415,7 +1436,7 @@ ApplicationWindow {
                                     return formatTechData(d)
                                 }
                                 onLinkActivated: function(link) {
-                                    Qt.openUrlExternally(link)
+                                    openSafeUrl(link)
                                 }
                                 HoverHandler {
                                     cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
@@ -1699,6 +1720,7 @@ ApplicationWindow {
                                                         anchors.right: parent.right
                                                         anchors.rightMargin: 4
                                                         text: modelData.version || ""
+                                                        textFormat: Text.PlainText
                                                         font.bold: isInstalled
                                                         elide: Text.ElideRight
                                                     }
@@ -1714,6 +1736,7 @@ ApplicationWindow {
                                                         anchors.left: parent.left
                                                         anchors.leftMargin: 4
                                                         text: modelData.arch || ""
+                                                        textFormat: Text.PlainText
                                                         color: palette.placeholderText
                                                     }
                                                 }
@@ -1730,6 +1753,7 @@ ApplicationWindow {
                                                         anchors.right: parent.right
                                                         anchors.rightMargin: 4
                                                         text: modelData.repoName || ""
+                                                        textFormat: Text.PlainText
                                                         elide: Text.ElideRight
                                                         color: palette.placeholderText
                                                     }
@@ -1763,6 +1787,7 @@ ApplicationWindow {
                             TextArea {
                                 readOnly: true
                                 wrapMode: TextArea.NoWrap
+                                textFormat: TextArea.PlainText
                                 font.family: "monospace"
                                 text: {
                                     var d = PackageController.currentPackageDetails
@@ -1776,6 +1801,7 @@ ApplicationWindow {
                             TextArea {
                                 readOnly: true
                                 wrapMode: TextArea.WordWrap
+                                textFormat: TextArea.PlainText
                                 font.family: "monospace"
                                 text: {
                                     var d = PackageController.currentPackageDetails
@@ -1805,6 +1831,7 @@ ApplicationWindow {
 
             Label {
                 text: PackageController.statusMessage
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
             }
 
@@ -1927,6 +1954,7 @@ ApplicationWindow {
             Label {
                 visible: !resultDialog.resultSuccess && (resultDialog.resultData.errorMessage || "") !== ""
                 text: resultDialog.resultData.errorMessage || ""
+                textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
                 color: "#FF9800"
@@ -1961,6 +1989,7 @@ ApplicationWindow {
                 }
                 TextEdit {
                     text: (resultDialog.resultData.installedPackages || []).join("\n")
+                    textFormat: TextEdit.PlainText
                     readOnly: true
                     selectByMouse: true
                     selectByKeyboard: true
@@ -1987,6 +2016,7 @@ ApplicationWindow {
                 }
                 TextEdit {
                     text: (resultDialog.resultData.updatedPackages || []).join("\n")
+                    textFormat: TextEdit.PlainText
                     readOnly: true
                     selectByMouse: true
                     selectByKeyboard: true
@@ -2013,6 +2043,7 @@ ApplicationWindow {
                 }
                 TextEdit {
                     text: (resultDialog.resultData.removedPackages || []).join("\n")
+                    textFormat: TextEdit.PlainText
                     readOnly: true
                     selectByMouse: true
                     selectByKeyboard: true
@@ -2040,6 +2071,7 @@ ApplicationWindow {
                 }
                 TextEdit {
                     text: (resultDialog.resultData.failedPackages || []).join("\n")
+                    textFormat: TextEdit.PlainText
                     readOnly: true
                     selectByMouse: true
                     selectByKeyboard: true
@@ -2152,6 +2184,7 @@ ApplicationWindow {
                     // 問題の説明 (⚠アイコン付き)
                     Label {
                         text: "\u26A0 " + (modelData.description || "")
+                        textFormat: Text.PlainText
                         font.bold: true
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
@@ -2160,6 +2193,7 @@ ApplicationWindow {
                     // 詳細
                     Label {
                         text: modelData.details || ""
+                        textFormat: Text.PlainText
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
@@ -2187,9 +2221,20 @@ ApplicationWindow {
                             spacing: 2
 
                             RadioButton {
+                                id: solutionRadio
                                 text: (parent.index + 1) + ": " + (parent.modelData.description || "")
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 12
+                                // 解決策の説明はソルバー (メタデータ) 由来のため PlainText で表示する
+                                contentItem: Text {
+                                    leftPadding: solutionRadio.indicator.width + solutionRadio.spacing
+                                    text: solutionRadio.text
+                                    textFormat: Text.PlainText
+                                    font: solutionRadio.font
+                                    color: solutionRadio.palette.windowText
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                }
                                 checked: {
                                     var sel = conflictDialog.selectedSolutions
                                     var pi = parent.problemIdx
@@ -2205,6 +2250,7 @@ ApplicationWindow {
                             // 解決策の詳細 (具体的なアクション内容)
                             Label {
                                 text: parent.modelData.details || ""
+                                textFormat: Text.PlainText
                                 wrapMode: Text.WordWrap
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 48
@@ -2525,18 +2571,18 @@ ApplicationWindow {
 
     function formatTechData(d) {
         var html = "<table>"
-        html += "<tr><td><b>" + qsTr("Version") + ":</b></td><td>" + (d.version || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Architecture") + ":</b></td><td>" + (d.arch || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("License") + ":</b></td><td>" + (d.license || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Group") + ":</b></td><td>" + (d.group || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Vendor") + ":</b></td><td>" + (d.vendor || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Build Host") + ":</b></td><td>" + (d.buildHost || "") + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Source RPM") + ":</b></td><td>" + (d.sourceRpm || "") + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Version") + ":</b></td><td>" + escapeHtml(d.version) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Architecture") + ":</b></td><td>" + escapeHtml(d.arch) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("License") + ":</b></td><td>" + escapeHtml(d.license) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Group") + ":</b></td><td>" + escapeHtml(d.group) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Vendor") + ":</b></td><td>" + escapeHtml(d.vendor) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Build Host") + ":</b></td><td>" + escapeHtml(d.buildHost) + "</td></tr>"
+        html += "<tr><td><b>" + qsTr("Source RPM") + ":</b></td><td>" + escapeHtml(d.sourceRpm) + "</td></tr>"
         var urlVal = d.url || ""
-        if (urlVal)
-            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td><a href=\"" + urlVal + "\">" + urlVal + "</a></td></tr>"
+        if (urlVal && isSafeUrl(urlVal))
+            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td><a href=\"" + escapeHtml(urlVal) + "\">" + escapeHtml(urlVal) + "</a></td></tr>"
         else
-            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td></td></tr>"
+            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td>" + escapeHtml(urlVal) + "</td></tr>"
         html += "</table>"
         return html
     }
@@ -2544,17 +2590,42 @@ ApplicationWindow {
     function formatDependencies(d) {
         var html = ""
         if (d.provides && d.provides.length > 0)
-            html += "<h4>" + qsTr("Provides") + "</h4><p>" + d.provides.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Provides") + "</h4><p>" + d.provides.map(escapeHtml).join("<br/>") + "</p>"
         if (d.requires && d.requires.length > 0)
-            html += "<h4>" + qsTr("Requires") + "</h4><p>" + d.requires.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Requires") + "</h4><p>" + d.requires.map(escapeHtml).join("<br/>") + "</p>"
         if (d.conflicts && d.conflicts.length > 0)
-            html += "<h4>" + qsTr("Conflicts") + "</h4><p>" + d.conflicts.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Conflicts") + "</h4><p>" + d.conflicts.map(escapeHtml).join("<br/>") + "</p>"
         if (d.obsoletes && d.obsoletes.length > 0)
-            html += "<h4>" + qsTr("Obsoletes") + "</h4><p>" + d.obsoletes.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Obsoletes") + "</h4><p>" + d.obsoletes.map(escapeHtml).join("<br/>") + "</p>"
         if (d.recommends && d.recommends.length > 0)
-            html += "<h4>" + qsTr("Recommends") + "</h4><p>" + d.recommends.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Recommends") + "</h4><p>" + d.recommends.map(escapeHtml).join("<br/>") + "</p>"
         if (d.suggests && d.suggests.length > 0)
-            html += "<h4>" + qsTr("Suggests") + "</h4><p>" + d.suggests.join("<br/>") + "</p>"
+            html += "<h4>" + qsTr("Suggests") + "</h4><p>" + d.suggests.map(escapeHtml).join("<br/>") + "</p>"
         return html || qsTr("<p>No dependency information</p>")
+    }
+
+    // 信頼できないメタデータを RichText に埋め込む前の HTML エスケープ。
+    // null/undefined は空文字列として扱う。
+    function escapeHtml(s) {
+        if (s === null || s === undefined) return ""
+        return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;")
+    }
+
+    // http/https スキームのみ許可 (大文字小文字は区別しない)。
+    // file:, javascript:, smb:, data: などそれ以外のスキームは false を返す。
+    function isSafeUrl(u) {
+        if (u === null || u === undefined) return false
+        return /^https?:\/\/\S/i.test(String(u).trim())
+    }
+
+    // リンク開きは http/https に限定し、それ以外のスキームは無視する。
+    function openSafeUrl(link) {
+        if (isSafeUrl(link))
+            Qt.openUrlExternally(link)
     }
 }

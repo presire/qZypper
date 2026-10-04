@@ -340,6 +340,7 @@ Pane {
                             Label {
                                 width: serviceListView.colName; height: parent.height
                                 text: svcDel.modelData.name || svcDel.modelData.alias || ""
+                                textFormat: Text.PlainText
                                 elide: Text.ElideRight; leftPadding: 6
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 14
@@ -351,6 +352,7 @@ Pane {
                                 width: Math.max(150, serviceListView.width - serviceListView.colEnabled - serviceListView.colName - serviceListView.colType - 3)
                                 height: parent.height
                                 text: svcDel.modelData.url || ""
+                                textFormat: Text.PlainText
                                 elide: Text.ElideMiddle; leftPadding: 6
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 14
@@ -361,6 +363,7 @@ Pane {
                             Label {
                                 width: serviceListView.colType; height: parent.height
                                 text: svcDel.modelData.type || ""
+                                textFormat: Text.PlainText
                                 horizontalAlignment: Text.AlignHCenter
                                 verticalAlignment: Text.AlignVCenter
                                 font.pixelSize: 14
@@ -463,6 +466,7 @@ Pane {
             text: repoTable.selectedRepo
                 ? qsTr("Remove repository \"%1\"?").arg(repoTable.selectedRepo.name || repoTable.selectedRepo.alias)
                 : ""
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
         }
 
@@ -488,6 +492,7 @@ Pane {
                 var svc = PackageController.services[serviceListView.currentIndex]
                 return qsTr("Remove service \"%1\" and its repositories?").arg(svc ? (svc.name || svc.alias) : "")
             }
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
         }
 

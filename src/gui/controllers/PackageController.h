@@ -81,11 +81,9 @@ public:
     Q_INVOKABLE bool setRepoEnabled(const QString &alias, bool enabled);      // リポ有効/無効
     Q_INVOKABLE bool modifyRepo(const QString &alias,                         // リポ変更
                                 const QVariantMap &properties);
-    Q_INVOKABLE bool refreshRepos();                                          // 全リポ同期リフレッシュ
     Q_INVOKABLE void refreshReposAsync();                                     // 全リポ非同期リフレッシュ
     Q_INVOKABLE void cancelRefresh();                                         // リフレッシュキャンセル
-    Q_INVOKABLE bool refreshSingleRepo(const QString &alias);                 // 個別リポリフレッシュ
-    Q_INVOKABLE QString probeRepoType(const QString &url);                    // リポタイプ検出 (未実装)
+    Q_INVOKABLE bool refreshSingleRepo(const QString &alias);                 // 個別リポ非同期リフレッシュ (要求開始時 true)
 
     // サービス管理
     Q_INVOKABLE void loadServices();                                        // サービス一覧読込
@@ -93,7 +91,7 @@ public:
     Q_INVOKABLE bool removeService(const QString &alias);                   // サービス削除
     Q_INVOKABLE bool modifyService(const QString &alias,                    // サービス変更
                                    const QVariantMap &properties);
-    Q_INVOKABLE bool refreshService(const QString &alias);                  // サービスリフレッシュ
+    Q_INVOKABLE bool refreshService(const QString &alias);                  // サービス非同期リフレッシュ (要求開始時 true)
     Q_INVOKABLE QVariantList getPendingChanges();                           // 変更予定一覧取得
     Q_INVOKABLE QVariantList getDiskUsage();                                // ディスク使用量取得
     Q_INVOKABLE bool checkAuth(const QString &actionId);                    // Polkit認証

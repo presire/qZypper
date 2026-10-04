@@ -48,18 +48,16 @@ public:
     bool addRepo(const RepoInfo& info);                                  // リポ追加 (全属性)
     bool removeRepo(const std::string& alias);                           // リポ削除
     bool setRepoEnabled(const std::string& alias, bool enabled);         // リポ有効 / 無効
-    bool modifyRepo(const std::string& alias, const RepoInfo& newInfo);  // リポ変更
+    bool modifyRepo(const std::string& alias, const RepoChanges& changes);  // リポ変更 (渡された項目のみ)
     bool refreshRepos(std::function<void(const std::string&, int)> progressCallback = nullptr);                           // 全リポリフレッシュ
     bool refreshRepo(const std::string& alias, std::function<void(const std::string&, int)> progressCallback = nullptr);  // 個別リポリフレッシュ
-    std::string probeRepoType(const std::string& url);                   // リポタイプ検出
 
     // サービス管理
     std::vector<ServiceInfo> getServices() const;                              // サービス一覧取得
     bool addService(const std::string& url, const std::string& alias);         // サービス追加
     bool removeService(const std::string& alias);                              // サービス削除
-    bool modifyService(const std::string& alias, const ServiceInfo& newInfo);  // サービス変更
+    bool modifyService(const std::string& alias, const ServiceChanges& changes);  // サービス変更 (渡された項目のみ)
     bool refreshService(const std::string& alias);                             // サービスリフレッシュ
-    std::string probeServiceType(const std::string& url);                      // サービスタイプ検出
 
     // パッケージ検索・一覧
     std::vector<PackageInfo> searchPackages(const std::string& query, int flags) const;  // パッケージ検索
@@ -82,6 +80,8 @@ public:
                            const std::string& repoAlias);
     bool setPatternStatus(const std::string& name, int status);  // パターン状態変更
     void saveState();                                            // 選択状態を保存
+    static bool isValidPackageStatus(int status);                // PackageStatus の範囲内か
+    static bool validatePriority(long long priority, std::string &err);  // リポ優先度の検証 (1-200)
     void restoreState();                                         // 選択状態を復元
 
     // 依存関係解決
@@ -119,11 +119,18 @@ public:
     std::vector<DiskUsageInfo> getDiskUsage() const;       // ディスク使用量取得
 
     // キャンセル
+    // NOTE: 要求フラグは操作の開始時 (アダプタの startWorker) にだけクリアする。
+    //       各操作の内部でクリアすると、事前検査中に届いた要求が失われるため。
     void cancelOperation() { m_cancelRequested = true; }   // 操作キャンセル要求
+    void clearCancelRequest() { m_cancelRequested = false; m_lastOpCancelled = false; }  // 操作開始前にキャンセル要求と取消し結果を消去
     bool isCancelRequested() const { return m_cancelRequested.load(); }  // キャンセル状態取得
+    bool lastOperationCancelled() const { return m_lastOpCancelled.load(); }  // 直前の操作が取消し要求で中断されたか
 
     // エラー情報
-    std::string lastError() const { return m_lastError; }  // 最新エラーメッセージ
+    std::string lastError() const {                        // 最新エラーメッセージ
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_lastError;
+    }
 
     /**
      * @brief GPG鍵フィンガープリントを承認する (ワンショット)。
@@ -147,7 +154,8 @@ private:
     ZyppManager& operator=(const ZyppManager&) = delete;                      // 代入禁止
     PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;  // PackageInfo生成
     static int fromZyppStatus(zypp::ui::Status status);                       // zypp --> qZypperステータス変換
-    static zypp::ui::Status toZyppStatus(int status);                         // qZypper --> zyppステータス変換
+    static bool toZyppStatus(int status, zypp::ui::Status &out);              // qZypper --> zyppステータス変換 (範囲外は false)
+    void markCancelled() { m_lastError = "Operation cancelled"; m_lastOpCancelled = true; }  // 取消し要求による中断を記録 (m_mutex 保持中に呼ぶ)
     /**
      * @brief リポジトリ/サービスURLを検証する。
      * @param url 検証対象URL
@@ -262,6 +270,7 @@ private:
     mutable std::string m_lastError;                                          // 最新エラーメッセージ
     mutable std::mutex m_mutex;                                               // スレッド排他ロック
     std::atomic<bool> m_cancelRequested{false};                               // キャンセル要求フラグ
+    std::atomic<bool> m_lastOpCancelled{false};                               // 直前の操作が取消しで中断された
     zypp::ResolverProblemList m_problems;                                     // ソルバー問題リスト
     KeyRingReceiver m_keyRingReceiver;                                        // GPG鍵信頼コールバック
     DigestReceiver m_digestReceiver;                                          // ダイジェスト検証コールバック
