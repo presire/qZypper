@@ -1,4 +1,4 @@
-module qzypper 0.3.2;
+module qzypper 0.3.3;
 
 ########################################
 # qZypper SELinux Policy Module
