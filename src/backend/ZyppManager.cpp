@@ -1647,8 +1647,13 @@ PackageDetails ZyppManager::getPackageDetails(const std::string& name) const
         }
 
         // 利用可能バージョン
+        const auto installed = sel->installedObj();
         for (auto avail = sel->availableBegin(); avail != sel->availableEnd(); ++avail) {
             QVariantMap ver;
+            // インストール済みと同じバージョン・アーキテクチャか (同一版の別アーキテクチャと区別する)
+            ver["installed"] = static_cast<bool>(installed) &&
+                               avail->edition() == installed.edition() &&
+                               avail->arch() == installed.arch();
             ver["version"]   = QString::fromStdString(avail->edition().asString());
             ver["arch"]      = QString::fromStdString(avail->arch().asString());
             ver["repoAlias"] = QString::fromStdString(avail->repoInfo().alias());
@@ -1664,6 +1669,9 @@ PackageDetails ZyppManager::getPackageDetails(const std::string& name) const
 
 /**
  * @brief 指定リポジトリに属するパッケージ一覧を取得する。
+ *
+ * 利用可能なバージョンのいずれかが指定リポジトリにあるパッケージを返す (YaST と同じ)。
+ * 候補バージョンのリポジトリでは判定しないため、ユーザが別リポジトリのバージョンを選択しても一覧から外れない。
  * @param repoAlias リポジトリエイリアス
  * @return パッケージ情報のベクタ
  */
@@ -1680,9 +1688,11 @@ std::vector<PackageInfo> ZyppManager::getPackagesByRepo(const std::string& repoA
          it != pool.byKindEnd<zypp::Package>(); ++it) {
 
         const auto& sel = *it;
-        auto cand = sel->candidateObj();
-        if (cand && cand.repoInfo().alias() == repoAlias) {
-            result.push_back(makePackageInfo(sel));
+        for (auto avail = sel->availableBegin(); avail != sel->availableEnd(); ++avail) {
+            if (avail->repoInfo().alias() == repoAlias) {
+                result.push_back(makePackageInfo(sel));
+                break;
+            }
         }
     }
 

@@ -1732,14 +1732,19 @@ ApplicationWindow {
                                         width: versionFlickable.contentWidth
                                         height: versionFlickable.height
                                         clip: true
-                                        model: PackageController.currentPackageDetails.availableVersions || []
+                                        // 表示中パッケージの詳細 (変更時に選択を同期する)
+                                        property var details: PackageController.currentPackageDetails
+                                        model: details.availableVersions || []
 
                                         property int selectedIndex: -1
+
+                                        // モデル差し替えと同じ通知で変わるため、モデル更新後に同期する
+                                        onDetailsChanged: Qt.callLater(syncSelection)
 
                                         function selectVersion(idx, versionData) {
                                             if (selectedIndex === idx) return
                                             selectedIndex = idx
-                                            var d = PackageController.currentPackageDetails
+                                            var d = details
                                             if (d && d.name) {
                                                 PackageController.setPackageVersion(
                                                     d.name,
@@ -1748,19 +1753,46 @@ ApplicationWindow {
                                                     versionData.repoAlias
                                                 )
                                             }
+                                            // 変更に失敗した場合も含め、実際の状態に選択を合わせる
+                                            Qt.callLater(syncSelection)
                                         }
 
-                                        onModelChanged: {
-                                            selectedIndex = -1
-                                            var d = PackageController.currentPackageDetails
-                                            if (!d || !d.installedVersion) return
-                                            var versions = d.availableVersions || []
-                                            for (var i = 0; i < versions.length; i++) {
-                                                if (versions[i].version === d.installedVersion) {
-                                                    selectedIndex = i
-                                                    break
+                                        // 選択 (ラジオボタン) を詳細の状態に合わせる
+                                        // インストール/更新対象なら候補バージョン、それ以外はインストール済みバージョンを選択する
+                                        function syncSelection() {
+                                            var d = details
+                                            var versions = (d && d.availableVersions) || []
+                                            var idx = -1
+                                            var i
+                                            if (d && d.name) {
+                                                var s = d.status
+                                                var toInstall = s === PackageStatusInfo.Install || s === PackageStatusInfo.AutoInstall
+                                                             || s === PackageStatusInfo.Update || s === PackageStatusInfo.AutoUpdate
+                                                if (toInstall) {
+                                                    for (i = 0; i < versions.length; i++) {
+                                                        var v = versions[i]
+                                                        if (v.version === d.version && v.arch === d.arch && v.repoAlias === d.repoAlias) {
+                                                            idx = i
+                                                            break
+                                                        }
+                                                    }
+                                                }
+                                                else if (d.installedVersion) {
+                                                    // installed: インストール済みとバージョン・アーキテクチャが一致する (バックエンドで判定)
+                                                    // 同じバージョンが複数リポジトリにある場合は候補のリポジトリを優先する
+                                                    for (i = 0; i < versions.length; i++) {
+                                                        if (versions[i].installed !== true) continue
+                                                        if (idx < 0) idx = i
+                                                        if (versions[i].repoAlias === d.repoAlias) {
+                                                            idx = i
+                                                            break
+                                                        }
+                                                    }
                                                 }
                                             }
+                                            selectedIndex = idx
+                                            // 選択行が見えている場合はスクロール位置を動かさない
+                                            if (idx >= 0) positionViewAtIndex(idx, ListView.Contain)
                                         }
 
                                         delegate: ItemDelegate {
@@ -1770,10 +1802,7 @@ ApplicationWindow {
                                             required property int index
                                             required property var modelData
 
-                                            property bool isInstalled: {
-                                                var d = PackageController.currentPackageDetails
-                                                return d && d.installedVersion && d.installedVersion === modelData.version
-                                            }
+                                            property bool isInstalled: modelData.installed === true
                                             property bool isSelected: versionListView.selectedIndex === index
 
                                             onClicked: versionListView.selectVersion(index, modelData)
