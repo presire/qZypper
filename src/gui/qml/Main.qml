@@ -1778,16 +1778,33 @@ ApplicationWindow {
                                                     }
                                                 }
                                                 else if (d.installedVersion) {
-                                                    // installed: インストール済みとバージョン・アーキテクチャが一致する (バックエンドで判定)
-                                                    // 同じバージョンが複数リポジトリにある場合は候補のリポジトリを優先する
+                                                    // installed: いずれかのインストール済みとバージョン・アーキテクチャが一致する (バックエンドで判定)
+                                                    // 複数版インストール時は代表版 (installedVersion) を選ぶ。優先順:
+                                                    //   0. 候補と一致するインストール済みの行 (インストール済みの版を選んで「変更なし」にした場合)
+                                                    //   1. installedVersion と一致し、候補と同じリポジトリの行
+                                                    //   2. installedVersion と一致する行
+                                                    //   3. インストール済みの行
+                                                    var sameVerIdx = -1
+                                                    var anyInstIdx = -1
                                                     for (i = 0; i < versions.length; i++) {
+                                                        var c = versions[i]
+                                                        if (c.installed === true && c.version === d.version
+                                                                && c.arch === d.arch && c.repoAlias === d.repoAlias) {
+                                                            idx = i
+                                                            break
+                                                        }
+                                                    }
+                                                    for (i = 0; idx < 0 && i < versions.length; i++) {
                                                         if (versions[i].installed !== true) continue
-                                                        if (idx < 0) idx = i
+                                                        if (anyInstIdx < 0) anyInstIdx = i
+                                                        if (versions[i].version !== d.installedVersion) continue
+                                                        if (sameVerIdx < 0) sameVerIdx = i
                                                         if (versions[i].repoAlias === d.repoAlias) {
                                                             idx = i
                                                             break
                                                         }
                                                     }
+                                                    if (idx < 0) idx = sameVerIdx >= 0 ? sameVerIdx : anyInstIdx
                                                 }
                                             }
                                             selectedIndex = idx

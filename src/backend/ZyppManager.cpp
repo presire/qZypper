@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#include <utility>
+#include <vector>
 #include <sys/stat.h>
 #include <boost/logic/tribool.hpp>
 #include <QLoggingCategory>
@@ -1647,13 +1649,12 @@ PackageDetails ZyppManager::getPackageDetails(const std::string& name) const
         }
 
         // 利用可能バージョン
-        const auto installed = sel->installedObj();
         for (auto avail = sel->availableBegin(); avail != sel->availableEnd(); ++avail) {
             QVariantMap ver;
-            // インストール済みと同じバージョン・アーキテクチャか (同一版の別アーキテクチャと区別する)
-            ver["installed"] = static_cast<bool>(installed) &&
-                               avail->edition() == installed.edition() &&
-                               avail->arch() == installed.arch();
+            // インストール済みの全版 (kernel 等の複数版同時インストール対応) のいずれかと同一か。
+            // identicalInstalled() は edition・arch に加えて vendor・buildtime も比較するため、
+            // 同一版の別アーキテクチャや別ビルドをインストール済みと誤判定しない。
+            ver["installed"] = sel->identicalInstalled(*avail);
             ver["version"]   = QString::fromStdString(avail->edition().asString());
             ver["arch"]      = QString::fromStdString(avail->arch().asString());
             ver["repoAlias"] = QString::fromStdString(avail->repoInfo().alias());
@@ -1975,6 +1976,7 @@ bool ZyppManager::setPackageStatus(const std::string& name, int status)
  *
  * 指定されたバージョン・アーキテクチャ・リポジトリに一致する PoolItem を候補として設定し、
  * インストール済みパッケージの場合はステータスを S_Update (または S_KeepInstalled) に変更する。
+ * 選択した版がインストール済みのいずれかの版と一致する場合は S_KeepInstalled (変更なし) とする。
  * YaST の YQPkgVersionsView::checkForChangedCandidate() と同等の動作。
  * @param name パッケージ名
  * @param version 選択バージョン (edition 文字列)
@@ -2032,12 +2034,15 @@ bool ZyppManager::setPackageVersion(const std::string& name, const std::string& 
             if (sel->status() != zypp::ui::S_Install && !sel->setStatus(zypp::ui::S_Install))
                 return rollback();
         } else {
-            auto inst = sel->installedObj();
-            bool isSameVersion = (inst.edition().asString() == version &&
-                                  inst.arch().asString() == arch);
+            // 複数版を同時にインストールできるパッケージ (kernel 等) を考慮し、
+            // インストール済みの全版と比較する (getPackageDetails() の installed 判定と同じ基準)。
+            // installedObj() はソルバーが再インストール対象にした版を優先して返すため、
+            // 1 件だけとの比較では「変更なし」へ戻せない。
+            const bool isSameVersion = sel->identicalInstalled(matchedItem);
 
             if (isSameVersion) {
-                // インストール済みと同じバージョンを選択 → 変更なし
+                // インストール済みのいずれかと同じバージョンを選択 → 変更なし
+                // (S_KeepInstalled への遷移で、ソルバーが付けた再インストール指定も解除される)
                 auto cur = sel->status();
                 if (cur != zypp::ui::S_KeepInstalled &&
                     cur != zypp::ui::S_Protected &&
