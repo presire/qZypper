@@ -84,7 +84,8 @@ PackageController::PackageController(QObject *parent)
         else
             setStatusMessage(tr("Some operations encountered errors"));
 
-        refreshPackageStatuses();
+        // コミット後は一覧の内容が大きく変わるため、新しい世代として通知する
+        refreshPackageStatuses(true);
         loadPatterns();
         setBusy(false);
     });
@@ -217,6 +218,7 @@ void PackageController::searchPackages(const QString &query, int flags)
     m_lastSearchFlags = flags;
 
     m_packages = m_dbus->searchPackages(query, flags);
+    ++m_listGeneration;
 
     emit packagesChanged();
     setStatusMessage(tr("%1 packages found").arg(m_packages.size()));
@@ -249,6 +251,7 @@ void PackageController::loadPackagesByRepo(const QString &repoAlias)
     m_lastSourceParam = repoAlias;
 
     m_packages = m_dbus->getPackagesByRepo(repoAlias);
+    ++m_listGeneration;
 
     emit packagesChanged();
     setStatusMessage(tr("%1 packages loaded").arg(m_packages.size()));
@@ -264,6 +267,19 @@ void PackageController::loadPackageDetails(const QString &name)
     if (!m_connected) return;
 
     m_currentDetails = m_dbus->getPackageDetails(name);
+    emit currentPackageDetailsChanged();
+}
+
+/**
+ * @brief 選択中パッケージの詳細表示をクリアする。
+ *
+ * パッケージ一覧から選択中のパッケージが無くなった場合に使用する。
+ */
+void PackageController::clearPackageDetails()
+{
+    if (m_currentDetails.isEmpty()) return;
+
+    m_currentDetails.clear();
     emit currentPackageDetailsChanged();
 }
 
@@ -294,6 +310,7 @@ void PackageController::loadPackagesByPattern(const QString &patternName)
     m_lastSourceParam = patternName;
 
     m_packages = m_dbus->getPackagesByPattern(patternName);
+    ++m_listGeneration;
 
     emit packagesChanged();
     setStatusMessage(tr("%1 packages loaded").arg(m_packages.size()));
@@ -312,6 +329,7 @@ void PackageController::loadPatches(int category)
     m_lastSourceParam = QString::number(category);
 
     m_packages = m_dbus->getPatches(category);
+    ++m_listGeneration;
     emit packagesChanged();
 }
 
@@ -434,8 +452,10 @@ bool PackageController::setPackageVersion(const QString &name, const QString &ve
  * @brief 現在のソースに基づいてパッケージリストを再取得する。
  *
  * ソルバー実行後、自動ステータスを反映するために使用する。
+ * ステータス変更のみの再取得では世代を進めない (QML 側は表示集合を維持する)。
+ * @param newGeneration true の場合は一覧の世代を進める (QML 側で表示集合を作り直す)
  */
-void PackageController::refreshPackageStatuses()
+void PackageController::refreshPackageStatuses(bool newGeneration)
 {
     switch (m_lastSource) {
     case PackageSource::Search:
@@ -453,6 +473,8 @@ void PackageController::refreshPackageStatuses()
     default:
         return;
     }
+    if (newGeneration)
+        ++m_listGeneration;
     emit packagesChanged();
 }
 
@@ -515,6 +537,10 @@ bool PackageController::togglePatternStatus(const QString &patternName)
     }
     emit patternsChanged();
 
+    // ソースが別のパターンへ切り替わる場合は新しい世代として通知する
+    const bool sourceChanged = m_lastSource != PackageSource::Pattern
+                            || m_lastSourceParam != patternName;
+
     // ソースを更新 (refreshPackageStatuses で使用)
     m_lastSource      = PackageSource::Pattern;
     m_lastSourceParam = patternName;
@@ -526,16 +552,18 @@ bool PackageController::togglePatternStatus(const QString &patternName)
         // バックエンドがクラッシュした場合、パッケージリストのみ再取得
         qWarning() << "Backend disconnected during pattern resolve";
         m_packages = {};
+        if (sourceChanged)
+            ++m_listGeneration;
         emit packagesChanged();
         return true;
     }
 
     if (result.value("success").toBool()) {
         // 成功 — 自動依存パッケージのステータスを含むリストを再取得
-        refreshPackageStatuses();
+        refreshPackageStatuses(sourceChanged);
     } else {
         // 衝突あり — リストを再取得してからコンフリクトダイアログを表示
-        refreshPackageStatuses();
+        refreshPackageStatuses(sourceChanged);
         auto problems = result.value("problems").toList();
         if (!problems.isEmpty()) {
             emit conflictsDetected(problems);
@@ -584,8 +612,8 @@ QVariantMap PackageController::updateAllPackages()
         return result;
     }
 
-    // ソルバー実行後、パッケージリストを再読み込みしてステータスを反映
-    refreshPackageStatuses();
+    // ソルバー実行後、パッケージリストを再読み込みしてステータスを反映 (新しい世代として通知)
+    refreshPackageStatuses(true);
 
     if (result["success"].toBool()) {
         setStatusMessage(tr("Update check completed"));

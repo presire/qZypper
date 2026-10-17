@@ -15,6 +15,14 @@ target_compile_definitions(qzypper PRIVATE
     APP_VERSION="${CMAKE_PROJECT_VERSION}"
 )
 
+# QMLシングルトン (pragma Singleton だけでは生成 qmldir に singleton 行が出力されないため明示する)
+# qt_add_qml_module() より前に設定する必要がある
+set_source_files_properties(
+    qml/Theme.qml
+    qml/PackageStatusInfo.qml
+    PROPERTIES QT_QML_SINGLETON_TYPE TRUE
+)
+
 # QMLモジュール
 # NO_IMPORT_SCAN: 共有ライブラリビルド (SUSE 16) での静的プラグインリンク警告を抑制
 # QMLプラグインは実行時に動的ロードされるため静的リンク不要
@@ -24,6 +32,7 @@ qt_add_qml_module(qzypper
     NO_IMPORT_SCAN
     QML_FILES
         qml/Theme.qml
+        qml/PackageStatusInfo.qml
         qml/Main.qml
         qml/dialogs/RepoManagerDrawerContent.qml
         qml/dialogs/AddRepoDialog.qml
@@ -36,6 +45,8 @@ qt_add_qml_module(qzypper
         qml/components/RepoTable.qml
         qml/components/RepoPropertiesPanel.qml
         qml/components/UrlTypeSelector.qml
+        qml/components/StatusIcon.qml
+        qml/components/StatusFilterPanel.qml
     RESOURCES
         icons/Qt.png
         icons/qZypper@64.png
@@ -43,6 +54,16 @@ qt_add_qml_module(qzypper
         icons/qZypper@256.png
         icons/qZypper@512.png
         icons/qZypper@1024.png
+        icons/status/no-inst.svg
+        icons/status/install.svg
+        icons/status/auto-install.svg
+        icons/status/keep.svg
+        icons/status/update.svg
+        icons/status/auto-update.svg
+        icons/status/delete.svg
+        icons/status/auto-delete.svg
+        icons/status/taboo.svg
+        icons/status/protected.svg
 )
 
 # アプリケーションアイコン (QMLモジュールとは別に登録し、起動時から利用可能にする)

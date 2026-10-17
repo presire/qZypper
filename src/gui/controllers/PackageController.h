@@ -32,6 +32,7 @@ class PackageController : public QObject
     Q_PROPERTY(QVariantMap currentPackageDetails READ currentPackageDetails NOTIFY currentPackageDetailsChanged)
     Q_PROPERTY(bool hasPendingChanges READ hasPendingChanges NOTIFY packagesChanged)
     Q_PROPERTY(QVariantMap commitResult READ commitResult NOTIFY commitResultChanged)
+    Q_PROPERTY(int listGeneration READ listGeneration NOTIFY packagesChanged)
 
 public:
     explicit PackageController(QObject *parent = nullptr);
@@ -48,6 +49,7 @@ public:
         return m_currentDetails;
     }
     QVariantMap commitResult() const { return m_commitResult; }  // コミット結果
+    int listGeneration() const { return m_listGeneration; }    // パッケージ一覧の世代 (表示集合の作り直し判定用)
     bool hasPendingChanges();                                  // 変更予定の有無
 
     // QMLから呼び出し可能なメソッド
@@ -56,6 +58,7 @@ public:
     Q_INVOKABLE void loadRepos();                                             // リポジトリ一覧読込
     Q_INVOKABLE void loadPackagesByRepo(const QString &repoAlias);            // リポ別パッケージ読込
     Q_INVOKABLE void loadPackageDetails(const QString &name);                 // パッケージ詳細読込
+    Q_INVOKABLE void clearPackageDetails();                                   // パッケージ詳細クリア
     Q_INVOKABLE void loadPatterns();                                          // パターン一覧読込
     Q_INVOKABLE void loadPackagesByPattern(const QString &patternName);       // パターン別パッケージ読込
     Q_INVOKABLE void loadPatches(int category = -1);                          // パッチ一覧読込
@@ -133,7 +136,7 @@ private:
 
     void setBusy(bool busy);                            // ビジー状態設定
     void setStatusMessage(const QString &msg);          // ステータスメッセージ設定
-    void refreshPackageStatuses();                      // パッケージ一覧再取得
+    void refreshPackageStatuses(bool newGeneration = false);  // パッケージ一覧再取得
 
     DBusClient *m_dbus = nullptr;                       // D-Busクライアント
     bool m_connected = false;                           // バックエンド接続状態
@@ -149,6 +152,7 @@ private:
     PackageSource m_lastSource = PackageSource::None;   // 最後のパッケージソース
     QString m_lastSourceParam;                          // 最後のソースパラメータ
     int m_lastSearchFlags = 0x07;                       // 最後の検索フラグ
+    int m_listGeneration = 0;                           // パッケージ一覧の世代カウンタ
 };
 
 } // namespace qZypper

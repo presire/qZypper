@@ -42,6 +42,12 @@ ApplicationWindow {
         category: "splitView"
         property real leftPaneWidth: 280
         property real detailPaneHeight: 250
+        property real statusFilterHeight: 330
+    }
+
+    Settings {
+        category: "statusFilter"
+        property alias mask: statusFilterPanel.statusMask
     }
 
     Settings {
@@ -433,17 +439,20 @@ ApplicationWindow {
         }
     }
 
-    function sortedPackages() {
-        var pkgs = PackageController.packages
-        if (sortColumn < 0) return pkgs
+    // -- ステータスフィルタと一覧モデル --
+    // PackageController.packages のキャッシュ (変更通知ごとに 1 回だけ取得する)
+    property var pkgCache: []
+    // 表示集合 (パッケージ名 → true)。ステータス変更 (sticky) では作り直さない
+    property var visibleNameSet: ({})
+    // 最後に表示集合を作り直した時の PackageController.listGeneration
+    property int lastListGeneration: -1
 
-        var arr = []
-        for (var i = 0; i < pkgs.length; i++) arr.push(pkgs[i])
-
+    // 配列をソート列に従って並べ替える (引数の配列を並べ替えて返す)
+    function sortPackages(arr) {
         if (sortColumn === 0) {
             arr.sort(function(a, b) {
-                var aChecked = (a.status === 3 || a.status === 1 || a.status === 2 || a.status === 4 || a.status === 5 || a.status === 9) ? 1 : 0
-                var bChecked = (b.status === 3 || b.status === 1 || b.status === 2 || b.status === 4 || b.status === 5 || b.status === 9) ? 1 : 0
+                var aChecked = PackageStatusInfo.isChecked(a.status) ? 1 : 0
+                var bChecked = PackageStatusInfo.isChecked(b.status) ? 1 : 0
                 return sortAscending ? (aChecked - bChecked) : (bChecked - aChecked)
             })
         }
@@ -458,44 +467,49 @@ ApplicationWindow {
         return arr
     }
 
-    function toggleSort(col) {
-        if (sortColumn === col) {
-            sortAscending = !sortAscending
+    // 一覧モデルを再構築する (フィルタ → ソートの順に適用)
+    // resetVisibleSet: true ならステータスフィルタで表示集合を作り直す。false なら現在の表示集合を維持する (sticky)
+    // keepView: true なら選択パッケージとスクロール位置を保持する。false なら先頭を選択する
+    function rebuildPackageModel(resetVisibleSet, keepView) {
+        var src = pkgCache || []
+        var filtered = []
+        var i
+        if (resetVisibleSet) {
+            var mask = statusFilterPanel.statusMask
+            var set = {}
+            for (i = 0; i < src.length; ++i) {
+                var p = src[i]
+                if (PackageStatusInfo.maskHas(mask, p.status)) {
+                    filtered.push(p)
+                    set[p.name] = true
+                }
+            }
+            visibleNameSet = set
         }
         else {
-            sortColumn = col
-            sortAscending = true
+            var visible = visibleNameSet
+            for (i = 0; i < src.length; ++i) {
+                if (visible[src[i].name] === true) filtered.push(src[i])
+            }
         }
-        // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
-        packageListView.currentIndex = -1
-        packageListView.model = sortedPackages()
-        if (packageListView.count > 0) packageListView.currentIndex = 0
-    }
+        var newModel = sortPackages(filtered)
 
-    // ステータス変更に伴うパッケージリスト再取得中は true (スクロール位置と選択パッケージを保持する)
-    property bool preservePkgListView: false
-
-    // パッケージリストの再取得を伴うステータス変更操作を、表示位置を保持したまま実行する
-    function runPreservingPkgListView(operation) {
-        preservePkgListView = true
-        try {
-            return operation()
-        } finally {
-            preservePkgListView = false
+        if (!keepView) {
+            // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
+            packageListView.currentIndex = -1
+            packageListView.model = newModel
+            if (packageListView.count > 0) packageListView.currentIndex = 0
+            return
         }
-    }
 
-    // ステータスのみが変化したリストへ差し替え、スクロール位置と選択パッケージを復元する
-    function reloadPackageListPreservingView() {
         var savedContentY = packageListView.contentY
         var oldModel = packageListView.model
         var oldIndex = packageListView.currentIndex
         var selectedName = (oldIndex >= 0 && oldModel && oldModel[oldIndex]) ? (oldModel[oldIndex].name || "") : ""
 
-        var newModel = sortedPackages()
         var newIndex = -1
         if (selectedName.length > 0) {
-            for (var i = 0; i < newModel.length; ++i) {
+            for (i = 0; i < newModel.length; ++i) {
                 if (newModel[i].name === selectedName) {
                     newIndex = i
                     break
@@ -509,28 +523,48 @@ ApplicationWindow {
         packageListView.currentIndex = newIndex
         packageListView.suppressDetailsLoad = false
 
-        // モデル差し替えで先頭に戻ったスクロール位置を復元する (currentIndex 設定後に行う)
-        var maxContentY = packageListView.originY + Math.max(0, packageListView.contentHeight - packageListView.height)
-        packageListView.contentY = Math.min(Math.max(savedContentY, packageListView.originY), maxContentY)
+        if (resetVisibleSet) {
+            // 表示集合が変わった場合は、選択パッケージが見える位置へ移動する (無ければ先頭)
+            if (newIndex >= 0) packageListView.positionViewAtIndex(newIndex, ListView.Contain)
+            else packageListView.contentY = packageListView.originY
+        }
+        else {
+            // モデル差し替えで先頭に戻ったスクロール位置を復元する (currentIndex 設定後に行う)
+            var maxContentY = packageListView.originY + Math.max(0, packageListView.contentHeight - packageListView.height)
+            packageListView.contentY = Math.min(Math.max(savedContentY, packageListView.originY), maxContentY)
+        }
 
         if (newIndex >= 0) PackageController.loadPackageDetails(selectedName)
+        else PackageController.clearPackageDetails()  // 選択パッケージが一覧から消えた
     }
 
-    // パッケージリスト更新時にソートを再適用
+    function toggleSort(col) {
+        if (sortColumn === col) {
+            sortAscending = !sortAscending
+        }
+        else {
+            sortColumn = col
+            sortAscending = true
+        }
+        // ソート変更では表示集合を作り直さない
+        rebuildPackageModel(false, false)
+    }
+
+    // パッケージリスト更新時: 新しい世代なら表示集合を作り直し、ステータス変更のみなら表示集合を維持する (sticky)
     Connections {
         target: PackageController
         function onPackagesChanged() {
-            if (preservePkgListView) {
-                reloadPackageListPreservingView()
-                return
+            root.pkgCache = PackageController.packages
+            var generation = PackageController.listGeneration
+            if (generation !== root.lastListGeneration) {
+                root.lastListGeneration = generation
+                root.rebuildPackageModel(true, false)
+                root.pkgSearchBuffer = ""
+                pkgSearchClearTimer.stop()
             }
-
-            // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
-            packageListView.currentIndex = -1
-            packageListView.model = sortedPackages()
-            if (packageListView.count > 0) packageListView.currentIndex = 0
-            pkgSearchBuffer = ""
-            pkgSearchClearTimer.stop()
+            else {
+                root.rebuildPackageModel(false, true)
+            }
         }
     }
 
@@ -548,288 +582,312 @@ ApplicationWindow {
             padding: 0
             onWidthChanged: splitSettings.leftPaneWidth = width
 
-            StackLayout {
+            SplitView {
+                id: leftSplit
                 anchors.fill: parent
-                currentIndex: filterTabBar.currentIndex
+                orientation: Qt.Vertical
 
-                // 検索フィルタ
-                Pane {
-                    padding: 12
+                StackLayout {
+                    SplitView.fillHeight: true
+                    SplitView.minimumHeight: 180   // ウィンドウ最小高 600 でもリポジトリ一覧が数行表示できる高さ
+                    currentIndex: filterTabBar.currentIndex
 
-                    ColumnLayout {
-                        anchors.fill: parent
-                        spacing: 8
+                    // 検索フィルタ (左ペインを縮めた時にコントロールが重ならないようスクロール可能にする)
+                    Pane {
+                        padding: 12
 
-                        // 検索入力
-                        RowLayout {
-                            Layout.fillWidth: true
-
-                            TextField {
-                                id: searchField
-                                Layout.fillWidth: true
-                                placeholderText: qsTr("Search packages...")
-                                onAccepted: performSearch()
-                            }
-
-                            Button {
-                                text: qsTr("Search")
-                                onClicked: performSearch()
-                            }
-                        }
-
-                        // 検索対象チェックボックス
-                        GroupBox {
-                            title: qsTr("Search Criteria")
-                            Layout.fillWidth: true
+                        ScrollView {
+                            id: searchScroll
+                            anchors.fill: parent
+                            contentWidth: availableWidth
+                            clip: true
 
                             ColumnLayout {
-                                anchors.fill: parent
-
-                                component ElidedCheckBox : CheckBox {
-                                    Layout.fillWidth: true
-                                    contentItem: Label {
-                                        text: parent.text
-                                        leftPadding: parent.indicator.width + parent.spacing
-                                        elide: Text.ElideRight
-                                        verticalAlignment: Text.AlignVCenter
-                                    }
-                                }
-
-                                ElidedCheckBox { id: cbName;     text: qsTr("Name (&E)");                    checked: true }
-                                ElidedCheckBox { id: cbKeyword;  text: qsTr("Keywords (&K)");                 checked: true }
-                                ElidedCheckBox { id: cbSummary;  text: qsTr("Summary (&M)");                  checked: true }
-                                ElidedCheckBox { id: cbDesc;     text: qsTr("Description (&I)") }
-                                ElidedCheckBox { id: cbProvides; text: qsTr("RPM \"Provides\" (&R)") }
-                                ElidedCheckBox { id: cbRequires; text: qsTr("RPM \"Requires\" (&Q)") }
-                            }
-                        }
-
-                        Item { Layout.fillHeight: true }
-                    }
-                }
-
-                // インストールの概要
-                Pane {
-                    padding: 0
-
-                    ListView {
-                        id: summaryListView
-                        anchors.fill: parent
-                        clip: true
-                        model: buildSummaryModel()
-
-                        section.property: "category"
-                        section.delegate: Rectangle {
-                            width: summaryListView.width
-                            height: 28
-                            color: section === "install" ? "#4caf50"
-                                 : section === "update"  ? "#2196f3"
-                                 : section === "delete"  ? "#f44336" : "#9e9e9e"
-
-                            Label {
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.left: parent.left
-                                anchors.leftMargin: 8
-                                font.bold: true
-                                color: "white"
-                                text: section === "install" ? qsTr("Install")
-                                    : section === "update"  ? qsTr("Update")
-                                    : section === "delete"  ? qsTr("Delete") : section
-                            }
-                        }
-
-                        delegate: ItemDelegate {
-                            width: summaryListView.width
-                            height: 24
-
-                            required property var modelData
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 16
+                                width: searchScroll.availableWidth
                                 spacing: 8
 
-                                Label {
-                                    text: modelData.name || ""
-                                    textFormat: Text.PlainText
-                                    Layout.preferredWidth: 200
-                                    elide: Text.ElideRight
-                                }
-
-                                Label {
-                                    text: modelData.version || ""
-                                    textFormat: Text.PlainText
+                                // 検索入力
+                                RowLayout {
                                     Layout.fillWidth: true
-                                    color: palette.placeholderText
+
+                                    TextField {
+                                        id: searchField
+                                        Layout.fillWidth: true
+                                        placeholderText: qsTr("Search packages...")
+                                        onAccepted: performSearch()
+                                    }
+
+                                    Button {
+                                        text: qsTr("Search")
+                                        onClicked: performSearch()
+                                    }
+                                }
+
+                                // 検索対象チェックボックス
+                                GroupBox {
+                                    title: qsTr("Search Criteria")
+                                    Layout.fillWidth: true
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+
+                                        component ElidedCheckBox : CheckBox {
+                                            Layout.fillWidth: true
+                                            contentItem: Label {
+                                                text: parent.text
+                                                leftPadding: parent.indicator.width + parent.spacing
+                                                elide: Text.ElideRight
+                                                verticalAlignment: Text.AlignVCenter
+                                            }
+                                        }
+
+                                        ElidedCheckBox { id: cbName;     text: qsTr("Name (&E)");                    checked: true }
+                                        ElidedCheckBox { id: cbKeyword;  text: qsTr("Keywords (&K)");                 checked: true }
+                                        ElidedCheckBox { id: cbSummary;  text: qsTr("Summary (&M)");                  checked: true }
+                                        ElidedCheckBox { id: cbDesc;     text: qsTr("Description (&I)") }
+                                        ElidedCheckBox { id: cbProvides; text: qsTr("RPM \"Provides\" (&R)") }
+                                        ElidedCheckBox { id: cbRequires; text: qsTr("RPM \"Requires\" (&Q)") }
+                                    }
                                 }
                             }
                         }
-
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        Label {
-                            anchors.centerIn: parent
-                            text: qsTr("No pending package changes")
-                            color: palette.placeholderText
-                            visible: summaryListView.count === 0
-                        }
                     }
-                }
 
-                // リポジトリフィルタ
-                Pane {
-                    padding: 0
+                    // インストールの概要
+                    Pane {
+                        padding: 0
 
-                    ListView {
-                        id: repoListView
-                        anchors.fill: parent
-                        clip: true
-                        model: PackageController.repos
-                        delegate: ItemDelegate {
-                            id: repoDelegate
-                            width: repoListView.width
-                            text: modelData.name || modelData.alias || ""
-                            highlighted: ListView.isCurrentItem
-                            // リポジトリ名はメタデータ由来のため PlainText で表示する
-                            // (既定の IconLabel は AutoText で HTML を解釈する)
-                            contentItem: Text {
-                                text: repoDelegate.text
-                                textFormat: Text.PlainText
-                                font: repoDelegate.font
-                                color: repoDelegate.highlighted ? repoDelegate.palette.highlightedText
-                                                                : repoDelegate.palette.text
-                                elide: Text.ElideRight
-                                verticalAlignment: Text.AlignVCenter
+                        ListView {
+                            id: summaryListView
+                            anchors.fill: parent
+                            clip: true
+                            model: buildSummaryModel()
+
+                            section.property: "category"
+                            section.delegate: Rectangle {
+                                width: summaryListView.width
+                                height: 28
+                                color: section === "install" ? "#4caf50"
+                                     : section === "update"  ? "#2196f3"
+                                     : section === "delete"  ? "#f44336" : "#9e9e9e"
+
+                                Label {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    font.bold: true
+                                    color: "white"
+                                    text: section === "install" ? qsTr("Install")
+                                        : section === "update"  ? qsTr("Update")
+                                        : section === "delete"  ? qsTr("Delete") : section
+                                }
                             }
-                            onClicked: {
-                                repoListView.currentIndex = index
-                                PackageController.loadPackagesByRepo(modelData.alias)
+
+                            delegate: ItemDelegate {
+                                width: summaryListView.width
+                                height: 24
+
+                                required property var modelData
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 16
+                                    spacing: 8
+
+                                    Label {
+                                        text: modelData.name || ""
+                                        textFormat: Text.PlainText
+                                        Layout.preferredWidth: 200
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Label {
+                                        text: modelData.version || ""
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        color: palette.placeholderText
+                                    }
+                                }
                             }
-                        }
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                    }
-                }
 
-                // パターン
-                Pane {
-                    padding: 0
-
-                    // スクロール位置保存用
-                    property real savedContentY: 0
-                    property int  savedIndex: -1
-                    property bool restorePending: false
-
-                    ListView {
-                        id: patternListView
-                        anchors.fill: parent
-                        model: PackageController.patterns
-                        clip: true
-
-                        onModelChanged: {
-                            if (parent.restorePending) {
-                                parent.restorePending = false
-                                patternListView.currentIndex = parent.savedIndex
-                                patternListView.contentY = parent.savedContentY
-                            }
-                        }
-
-                        // パターンのチェック状態をトグル (スクロール位置を保持)
-                        function togglePattern(name) {
-                            parent.savedContentY = patternListView.contentY
-                            parent.savedIndex    = patternListView.currentIndex
-                            parent.restorePending = true
-                            PackageController.togglePatternStatus(name)
-                        }
-
-                        section.property: "category"
-                        section.delegate: Rectangle {
-                            width: patternListView.width
-                            height: 28
-                            color: palette.alternateBase
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                             Label {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 8
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: section
-                                textFormat: Text.PlainText
-                                font.bold: true
-                                font.pixelSize: 13
+                                anchors.centerIn: parent
+                                text: qsTr("No pending package changes")
+                                color: palette.placeholderText
+                                visible: summaryListView.count === 0
                             }
-                        }
-
-                        delegate: ItemDelegate {
-                            id: patternDelegate
-                            width: patternListView.width
-                            highlighted: ListView.isCurrentItem
-
-                            readonly property int pStatus: modelData.status || 0
-                            readonly property bool pChecked:
-                                pStatus === 1 || pStatus === 2 || pStatus === 3 ||
-                                pStatus === 4 || pStatus === 5 || pStatus === 9
-                            readonly property color statusColor: {
-                                if (pStatus === 3 || pStatus === 9) return "#4CAF50"  // KeepInstalled/Protected
-                                if (pStatus === 1 || pStatus === 2) return "#2196F3"  // Install/AutoInstall
-                                if (pStatus === 4 || pStatus === 5) return "#FF9800"  // Update/AutoUpdate
-                                if (pStatus === 6 || pStatus === 7) return "#F44336"  // Del/AutoDel
-                                return palette.mid
-                            }
-
-                            contentItem: RowLayout {
-                                spacing: 6
-
-                                // カスタムチェックボックス
-                                Rectangle {
-                                    width: 18; height: 18
-                                    radius: 3
-                                    color: patternDelegate.pChecked ? patternDelegate.statusColor : "transparent"
-                                    border.color: patternDelegate.pChecked ? patternDelegate.statusColor : palette.mid
-                                    border.width: patternDelegate.pChecked ? 0 : 1.5
-
-                                    // チェックマーク
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: "\u2713"
-                                        font.pixelSize: 13
-                                        font.bold: true
-                                        color: "white"
-                                        visible: patternDelegate.pChecked
-                                    }
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        anchors.margins: -4
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            patternListView.togglePattern(modelData.name)
-                                        }
-                                    }
-                                }
-
-                                Label {
-                                    text: modelData.summary || modelData.name || ""
-                                    textFormat: Text.PlainText
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
-                                    color: patternDelegate.highlighted ? palette.highlightedText : palette.text
-                                }
-                            }
-
-                            onClicked: {
-                                patternListView.currentIndex = index
-                                PackageController.loadPackagesByPattern(modelData.name)
-                            }
-                        }
-
-                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        Label {
-                            anchors.centerIn: parent
-                            text: qsTr("Loading patterns...")
-                            color: palette.placeholderText
-                            visible: patternListView.count === 0
                         }
                     }
+
+                    // リポジトリフィルタ
+                    Pane {
+                        padding: 0
+
+                        ListView {
+                            id: repoListView
+                            anchors.fill: parent
+                            clip: true
+                            model: PackageController.repos
+                            delegate: ItemDelegate {
+                                id: repoDelegate
+                                width: repoListView.width
+                                text: modelData.name || modelData.alias || ""
+                                highlighted: ListView.isCurrentItem
+                                // リポジトリ名はメタデータ由来のため PlainText で表示する
+                                // (既定の IconLabel は AutoText で HTML を解釈する)
+                                contentItem: Text {
+                                    text: repoDelegate.text
+                                    textFormat: Text.PlainText
+                                    font: repoDelegate.font
+                                    color: repoDelegate.highlighted ? repoDelegate.palette.highlightedText
+                                                                    : repoDelegate.palette.text
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                onClicked: {
+                                    repoListView.currentIndex = index
+                                    PackageController.loadPackagesByRepo(modelData.alias)
+                                }
+                            }
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        }
+                    }
+
+                    // パターン
+                    Pane {
+                        padding: 0
+
+                        // スクロール位置保存用
+                        property real savedContentY: 0
+                        property int  savedIndex: -1
+                        property bool restorePending: false
+
+                        ListView {
+                            id: patternListView
+                            anchors.fill: parent
+                            model: PackageController.patterns
+                            clip: true
+
+                            onModelChanged: {
+                                if (parent.restorePending) {
+                                    parent.restorePending = false
+                                    patternListView.currentIndex = parent.savedIndex
+                                    patternListView.contentY = parent.savedContentY
+                                }
+                            }
+
+                            // パターンのチェック状態をトグル (スクロール位置を保持)
+                            function togglePattern(name) {
+                                parent.savedContentY = patternListView.contentY
+                                parent.savedIndex    = patternListView.currentIndex
+                                parent.restorePending = true
+                                PackageController.togglePatternStatus(name)
+                            }
+
+                            section.property: "category"
+                            section.delegate: Rectangle {
+                                width: patternListView.width
+                                height: 28
+                                color: palette.alternateBase
+
+                                Label {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: section
+                                    textFormat: Text.PlainText
+                                    font.bold: true
+                                    font.pixelSize: 13
+                                }
+                            }
+
+                            delegate: ItemDelegate {
+                                id: patternDelegate
+                                width: patternListView.width
+                                highlighted: ListView.isCurrentItem
+
+                                readonly property int pStatus: modelData.status || 0
+                                readonly property bool pChecked:
+                                    pStatus === 1 || pStatus === 2 || pStatus === 3 ||
+                                    pStatus === 4 || pStatus === 5 || pStatus === 9
+                                readonly property color statusColor: {
+                                    if (pStatus === 3 || pStatus === 9) return "#4CAF50"  // KeepInstalled/Protected
+                                    if (pStatus === 1 || pStatus === 2) return "#2196F3"  // Install/AutoInstall
+                                    if (pStatus === 4 || pStatus === 5) return "#FF9800"  // Update/AutoUpdate
+                                    if (pStatus === 6 || pStatus === 7) return "#F44336"  // Del/AutoDel
+                                    return palette.mid
+                                }
+
+                                contentItem: RowLayout {
+                                    spacing: 6
+
+                                    // カスタムチェックボックス
+                                    Rectangle {
+                                        width: 18; height: 18
+                                        radius: 3
+                                        color: patternDelegate.pChecked ? patternDelegate.statusColor : "transparent"
+                                        border.color: patternDelegate.pChecked ? patternDelegate.statusColor : palette.mid
+                                        border.width: patternDelegate.pChecked ? 0 : 1.5
+
+                                        // チェックマーク
+                                        Label {
+                                            anchors.centerIn: parent
+                                            text: "\u2713"
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                            color: "white"
+                                            visible: patternDelegate.pChecked
+                                        }
+
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            anchors.margins: -4
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                patternListView.togglePattern(modelData.name)
+                                            }
+                                        }
+                                    }
+
+                                    Label {
+                                        text: modelData.summary || modelData.name || ""
+                                        textFormat: Text.PlainText
+                                        Layout.fillWidth: true
+                                        elide: Text.ElideRight
+                                        color: patternDelegate.highlighted ? palette.highlightedText : palette.text
+                                    }
+                                }
+
+                                onClicked: {
+                                    patternListView.currentIndex = index
+                                    PackageController.loadPackagesByPattern(modelData.name)
+                                }
+                            }
+
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                            Label {
+                                anchors.centerIn: parent
+                                text: qsTr("Loading patterns...")
+                                color: palette.placeholderText
+                                visible: patternListView.count === 0
+                            }
+                        }
+                    }
+                }
+
+                // ステータスフィルタ (右側のパッケージ一覧にのみ適用。インストールの概要には適用しない)
+                StatusFilterPanel {
+                    id: statusFilterPanel
+                    SplitView.preferredHeight: splitSettings.statusFilterHeight
+                    SplitView.minimumHeight: 150
+                    SplitView.maximumHeight: Math.max(150, leftSplit.height - 180)
+                    // 起動時のレイアウト確定前の高さを保存しないよう、ユーザがハンドルをドラッグした時のみ保存する
+                    onHeightChanged: if (leftSplit.resizing) splitSettings.statusFilterHeight = height
+                    onMaskEdited: root.rebuildPackageModel(true, true)
+                    onRefreshRequested: root.rebuildPackageModel(true, true)
                 }
             }
         }
@@ -1070,13 +1128,14 @@ ApplicationWindow {
                         ListView {
                             id: packageListView
 
-                            // reloadPackageListPreservingView() のモデル差し替え中は詳細読込を抑止する
+                            // rebuildPackageModel() のモデル差し替え中は詳細読込を抑止する
                             property bool suppressDetailsLoad: false
 
                             width: packageFlickable.contentWidth
                             height: packageFlickable.height
                             clip: true
-                            model: sortedPackages()
+                            // モデルは rebuildPackageModel() でのみ更新する (バインディングは使わない)
+                            model: []
                             focus: true
                             activeFocusOnTab: true
                             keyNavigationWraps: false
@@ -1084,7 +1143,7 @@ ApplicationWindow {
                             highlightMoveVelocity: -1
                             highlightResizeDuration: 0
 
-                            // 通常の選択変更時の詳細読込パス (表示保持の再読込時は reloadPackageListPreservingView() で読み込む)
+                            // 通常の選択変更時の詳細読込パス (表示保持の再構築時は rebuildPackageModel() で読み込む)
                             onCurrentIndexChanged: {
                                 if (packageListView.suppressDetailsLoad) return
                                 var idx = packageListView.currentIndex
@@ -1092,6 +1151,10 @@ ApplicationWindow {
                                     var m = packageListView.model
                                     if (m && m[idx] && m[idx].name)
                                         PackageController.loadPackageDetails(m[idx].name)
+                                }
+                                else if (idx < 0) {
+                                    // 選択が無くなった場合は前のパッケージの詳細を残さない
+                                    PackageController.clearPackageDetails()
                                 }
                             }
 
@@ -1172,24 +1235,8 @@ ApplicationWindow {
                                     color: pkgDelegate.highlighted ? palette.highlight : "transparent"
                                 }
 
-                                property bool isChecked: {
-                                    var s = pkgDelegate.modelData.status
-                                    return s === 3 || s === 1 || s === 2 || s === 4 || s === 5 || s === 9
-                                }
-
-                                property bool isMarkedForRemoval: {
-                                    var s = pkgDelegate.modelData.status
-                                    return s === 6 || s === 7
-                                }
-
-                                property color statusColor: {
-                                    var s = pkgDelegate.modelData.status
-                                    if (s === 3 || s === 9) return "#4CAF50"  // KeepInstalled/Protected
-                                    if (s === 1 || s === 2) return "#2196F3"  // Install/AutoInstall
-                                    if (s === 4 || s === 5) return "#FF9800"  // Update/AutoUpdate
-                                    if (s === 6 || s === 7) return "#F44336"  // Del/AutoDel
-                                    return palette.mid
-                                }
+                                property bool isChecked: PackageStatusInfo.isChecked(pkgDelegate.modelData.status)
+                                property bool isMarkedForRemoval: PackageStatusInfo.isMarkedForRemoval(pkgDelegate.modelData.status)
 
                                 onClicked: {
                                     packageListView.currentIndex = pkgDelegate.index
@@ -1216,22 +1263,9 @@ ApplicationWindow {
                                         height: parent.height
                                         z: 10
 
-                                        Rectangle {
-                                            width: 18; height: 18
+                                        StatusIcon {
                                             anchors.centerIn: parent
-                                            radius: 3
-                                            color: (pkgDelegate.isChecked || pkgDelegate.isMarkedForRemoval) ? pkgDelegate.statusColor : "transparent"
-                                            border.color: (pkgDelegate.isChecked || pkgDelegate.isMarkedForRemoval) ? pkgDelegate.statusColor : palette.mid
-                                            border.width: (pkgDelegate.isChecked || pkgDelegate.isMarkedForRemoval) ? 0 : 1.5
-
-                                            Label {
-                                                anchors.centerIn: parent
-                                                text: pkgDelegate.isMarkedForRemoval ? "\u2715" : "\u2713"
-                                                font.pixelSize: 13
-                                                font.bold: true
-                                                color: "white"
-                                                visible: pkgDelegate.isChecked || pkgDelegate.isMarkedForRemoval
-                                            }
+                                            status: pkgDelegate.modelData.status || 0
                                         }
 
                                         MouseArea {
@@ -1435,6 +1469,15 @@ ApplicationWindow {
                             }
                         }
                     }
+                }
+
+                // 空一覧時のメッセージ (全体が 0 件か、ステータスフィルタで 0 件か)
+                Label {
+                    anchors.centerIn: parent
+                    visible: packageListView.count === 0 && !PackageController.busy
+                    text: root.pkgCache.length === 0 ? qsTr("No packages to display")
+                                                     : qsTr("No packages match the status filter")
+                    color: palette.placeholderText
                 }
             }
 
@@ -2205,9 +2248,8 @@ ApplicationWindow {
         standardButtons: Dialog.NoButton
 
         onRejected: {
-            runPreservingPkgListView(function() {
-                PackageController.restoreState()
-            })
+            // ステータス変更を元に戻す (表示集合と表示位置は維持される)
+            PackageController.restoreState()
         }
 
         property var problems: []
@@ -2356,10 +2398,8 @@ ApplicationWindow {
                             // 「適用」からの呼び出し — 再度依存関係解決
                             applyChanges()
                         } else {
-                            // チェックボックスからの呼び出し — ソルバー再実行 (パッケージリストの表示位置は保持)
-                            var result = runPreservingPkgListView(function() {
-                                return PackageController.resolveDependencies()
-                            })
+                            // チェックボックスからの呼び出し — ソルバー再実行 (パッケージリストの表示集合と表示位置は保持)
+                            var result = PackageController.resolveDependencies()
                             if (result && !result.success && result.problems && result.problems.length > 0) {
                                 conflictDialog.problems = result.problems
                                 conflictDialog.open()
@@ -2371,10 +2411,8 @@ ApplicationWindow {
                 Button {
                     text: qsTr("Cancel (C)")
                     onClicked: {
-                        // ステータス変更を元に戻す (内部でパッケージリスト再取得も実行、表示位置は保持)
-                        runPreservingPkgListView(function() {
-                            PackageController.restoreState()
-                        })
+                        // ステータス変更を元に戻す (内部でパッケージリスト再取得も実行、表示集合と表示位置は保持)
+                        PackageController.restoreState()
                         conflictDialog.close()
                     }
                 }
@@ -2515,10 +2553,8 @@ ApplicationWindow {
 
     function setStatus(packageName, status) {
         // C++側でステータス変更 → ソルバー実行 → パッケージリスト再読み込みを一括処理
-        // 再読み込みはステータス反映のみのため、スクロール位置と選択パッケージを保持する
-        runPreservingPkgListView(function() {
-            return PackageController.setPackageStatus(packageName, status)
-        })
+        // 再読み込みはステータス反映のみ (一覧の世代は変わらない) のため、表示集合・スクロール位置・選択パッケージを保持する
+        return PackageController.setPackageStatus(packageName, status)
     }
 
     function updateAllPackages() {
@@ -2601,34 +2637,6 @@ ApplicationWindow {
         }
         // カテゴリ順: インストール --> 更新 --> 削除
         return installs.concat(updates, deletes)
-    }
-
-    function statusLabel(status) {
-        switch (status) {
-            case 1: return "+"     // Install
-            case 2: return "a+"    // AutoInstall
-            case 4: return "↑"     // Update
-            case 5: return "a↑"    // AutoUpdate
-            case 6: return "-"     // Del
-            case 7: return "a-"    // AutoDel
-            case 8: return "T"     // Taboo
-            case 9: return "P"     // Protected
-            default: return ""
-        }
-    }
-
-    function statusColor(status) {
-        switch (status) {
-            case 1: return "#4caf50"   // Install
-            case 2: return "#81c784"   // AutoInstall
-            case 4: return "#2196f3"   // Update
-            case 5: return "#64b5f6"   // AutoUpdate
-            case 6: return "#f44336"   // Del
-            case 7: return "#e57373"   // AutoDel
-            case 8: return "#ff9800"   // Taboo
-            case 9: return "#9c27b0"   // Protected
-            default: return "transparent"
-        }
     }
 
     function formatSize(bytes) {

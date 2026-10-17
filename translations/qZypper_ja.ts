@@ -407,20 +407,20 @@
         <translation>qZypper - ソフトウェア管理</translation>
     </message>
     <message>
-        <location line="+79"/>
-        <location line="+776"/>
-        <location line="+1103"/>
+        <location line="+85"/>
+        <location line="+877"/>
+        <location line="+1094"/>
         <source>Packages</source>
         <translation>パッケージ</translation>
     </message>
     <message>
-        <location line="-1868"/>
-        <location line="+2217"/>
+        <location line="-1960"/>
+        <location line="+2310"/>
         <source>Update All Packages</source>
         <translation>すべてのパッケージを更新</translation>
     </message>
     <message>
-        <location line="-2204"/>
+        <location line="-2297"/>
         <source>Apply Changes</source>
         <translation>変更を適用</translation>
     </message>
@@ -460,7 +460,7 @@
         <translation>終了</translation>
     </message>
     <message>
-        <location line="+98"/>
+        <location line="+103"/>
         <source>Will be cancelled after the current repository finishes</source>
         <translation>現在のリポジトリの処理が完了した後にキャンセルされます</translation>
     </message>
@@ -471,12 +471,12 @@
     </message>
     <message>
         <location line="+7"/>
-        <location line="+1520"/>
+        <location line="+1607"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location line="-1485"/>
+        <location line="-1572"/>
         <source>Menu</source>
         <translation>メニュー</translation>
     </message>
@@ -487,23 +487,23 @@
     </message>
     <message>
         <location line="+8"/>
-        <location line="+155"/>
+        <location line="+238"/>
         <source>Search</source>
         <translation>検索</translation>
     </message>
     <message>
-        <location line="-154"/>
+        <location line="-237"/>
         <source>Installation Summary</source>
         <translation>インストールの概要</translation>
     </message>
     <message>
         <location line="+1"/>
-        <location line="+1226"/>
+        <location line="+1313"/>
         <source>Repository</source>
         <translation>リポジトリ</translation>
     </message>
     <message>
-        <location line="-1225"/>
+        <location line="-1312"/>
         <source>Patterns</source>
         <translation>パターン</translation>
     </message>
@@ -518,7 +518,7 @@
         <translation>ライトモード</translation>
     </message>
     <message>
-        <location line="+130"/>
+        <location line="+213"/>
         <source>Search packages...</source>
         <translation>パッケージを検索...</translation>
     </message>
@@ -559,24 +559,24 @@
     </message>
     <message>
         <location line="+32"/>
-        <location line="+746"/>
+        <location line="+741"/>
         <source>Install</source>
         <translation>インストール</translation>
     </message>
     <message>
-        <location line="-745"/>
-        <location line="+758"/>
+        <location line="-740"/>
+        <location line="+753"/>
         <source>Update</source>
         <translation>更新</translation>
     </message>
     <message>
-        <location line="-757"/>
-        <location line="+750"/>
+        <location line="-752"/>
+        <location line="+745"/>
         <source>Delete</source>
         <translation>削除</translation>
     </message>
     <message>
-        <location line="-715"/>
+        <location line="-710"/>
         <source>No pending package changes</source>
         <translation>変更予定のパッケージはありません</translation>
     </message>
@@ -586,18 +586,18 @@
         <translation>パターンを読み込み中...</translation>
     </message>
     <message>
-        <location line="+123"/>
+        <location line="+136"/>
         <source>Summary</source>
         <translation>概要</translation>
     </message>
     <message>
         <location line="+27"/>
-        <location line="+847"/>
+        <location line="+838"/>
         <source>Installed</source>
         <translation>インストール済み</translation>
     </message>
     <message>
-        <location line="-817"/>
+        <location line="-808"/>
         <source>Available</source>
         <translation>利用可能</translation>
     </message>
@@ -607,7 +607,7 @@
         <translation>サイズ</translation>
     </message>
     <message>
-        <location line="+318"/>
+        <location line="+300"/>
         <source>Search: </source>
         <translation>検索: </translation>
     </message>
@@ -627,7 +627,17 @@
         <translation>変更を取り消す</translation>
     </message>
     <message>
-        <location line="+33"/>
+        <location line="+20"/>
+        <source>No packages to display</source>
+        <translation>表示するパッケージがありません</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>No packages match the status filter</source>
+        <translation>ステータスフィルタに一致するパッケージがありません</translation>
+    </message>
+    <message>
+        <location line="+21"/>
         <source>Description</source>
         <translation>説明</translation>
     </message>
@@ -644,12 +654,12 @@
     <message>
         <location line="+1"/>
         <location line="+117"/>
-        <location line="+1057"/>
+        <location line="+1031"/>
         <source>Version</source>
         <translation>バージョン</translation>
     </message>
     <message>
-        <location line="-1173"/>
+        <location line="-1147"/>
         <source>File List</source>
         <translation>ファイル一覧</translation>
     </message>
@@ -660,12 +670,12 @@
     </message>
     <message>
         <location line="+155"/>
-        <location line="+1018"/>
+        <location line="+992"/>
         <source>Architecture</source>
         <translation>アーキテクチャ</translation>
     </message>
     <message>
-        <location line="-969"/>
+        <location line="-943"/>
         <source>Status</source>
         <translation>状態</translation>
     </message>
@@ -742,7 +752,7 @@ Please wait.</source>
         <translation>合計ダウンロードサイズ:</translation>
     </message>
     <message>
-        <location line="+344"/>
+        <location line="+346"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -754,12 +764,12 @@ Click &quot;Apply Changes&quot; to proceed.</source>
 「変更を適用」をクリックして続行してください。</translation>
     </message>
     <message>
-        <location line="-332"/>
+        <location line="-334"/>
         <source>Warning</source>
         <translation>警告</translation>
     </message>
     <message>
-        <location line="+66"/>
+        <location line="+67"/>
         <source>Conflict resolution:</source>
         <translation>競合の解決方法:</translation>
     </message>
@@ -784,7 +794,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>初期化しています。しばらくお待ちください...</translation>
     </message>
     <message>
-        <location line="+194"/>
+        <location line="+167"/>
         <source>License</source>
         <translation>ライセンス</translation>
     </message>
@@ -848,6 +858,59 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <location line="+1"/>
         <source>&lt;p&gt;No dependency information&lt;/p&gt;</source>
         <translation>&lt;p&gt;依存関係情報なし&lt;/p&gt;</translation>
+    </message>
+</context>
+<context>
+    <name>PackageStatusInfo</name>
+    <message>
+        <location filename="../src/gui/qml/PackageStatusInfo.qml" line="+46"/>
+        <source>Do Not Install</source>
+        <translation>インストールしない</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Install</source>
+        <translation>インストール</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Auto-Install</source>
+        <translation>自動インストール</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Keep</source>
+        <translation>保持</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Update</source>
+        <translation>更新</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Auto-Update</source>
+        <translation>自動更新</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Delete</source>
+        <translation>削除</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Auto-Delete</source>
+        <translation>自動削除</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Taboo</source>
+        <translation>タブー</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Protected</source>
+        <translation>保護</translation>
     </message>
 </context>
 <context>
@@ -1048,6 +1111,40 @@ Click &quot;Apply Changes&quot; to proceed.</source>
     </message>
 </context>
 <context>
+    <name>StatusFilterPanel</name>
+    <message>
+        <location filename="../src/gui/qml/components/StatusFilterPanel.qml" line="+35"/>
+        <source>Show Packages with Status</source>
+        <translation>ステータスでパッケージを表示</translation>
+    </message>
+    <message>
+        <location line="+47"/>
+        <location line="+75"/>
+        <source>Middle-click on a status to show only this one</source>
+        <translation>ステータスを中クリックするとそのステータスのみ表示します</translation>
+    </message>
+    <message>
+        <location line="-18"/>
+        <source>Show Only This Status</source>
+        <translation>このステータスのみ表示</translation>
+    </message>
+    <message>
+        <location line="+5"/>
+        <source>Show All Statuses</source>
+        <translation>すべてのステータスを表示</translation>
+    </message>
+    <message>
+        <location line="+24"/>
+        <source>Defaults</source>
+        <translation>既定値</translation>
+    </message>
+    <message>
+        <location line="+6"/>
+        <source>Refresh List</source>
+        <translation>一覧を更新</translation>
+    </message>
+</context>
+<context>
     <name>UrlTypeSelector</name>
     <message>
         <location filename="../src/gui/qml/components/UrlTypeSelector.qml" line="+19"/>
@@ -1075,7 +1172,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location line="+65"/>
+        <location line="+66"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
@@ -1115,7 +1212,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>パッケージを検索中...</translation>
     </message>
     <message>
-        <location line="+9"/>
+        <location line="+10"/>
         <source>%1 packages found</source>
         <translation>%1 件のパッケージが見つかりました</translation>
     </message>
@@ -1125,38 +1222,38 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>パッケージを読み込み中...</translation>
     </message>
     <message>
-        <location line="+8"/>
-        <location line="+45"/>
+        <location line="+9"/>
+        <location line="+59"/>
         <source>%1 packages loaded</source>
         <translation>%1 件のパッケージを読み込みました</translation>
     </message>
     <message>
-        <location line="-8"/>
+        <location line="-9"/>
         <source>Loading pattern packages...</source>
         <translation>パターンのパッケージを読み込み中...</translation>
     </message>
     <message>
-        <location line="+43"/>
-        <location line="+278"/>
+        <location line="+45"/>
+        <location line="+288"/>
         <source>Resolving dependencies...</source>
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="-248"/>
-        <location line="+272"/>
+        <location line="-258"/>
+        <location line="+282"/>
         <source>Dependencies resolved</source>
         <translation>依存関係を解決しました</translation>
     </message>
     <message>
-        <location line="-268"/>
+        <location line="-278"/>
         <location line="+54"/>
-        <location line="+171"/>
+        <location line="+181"/>
         <location line="+47"/>
         <source>Dependency problems found</source>
         <translation>依存関係の問題が見つかりました</translation>
     </message>
     <message>
-        <location line="-243"/>
+        <location line="-253"/>
         <source>Changing version...</source>
         <translation>バージョンを変更中...</translation>
     </message>
@@ -1166,7 +1263,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>バージョンを変更しました</translation>
     </message>
     <message>
-        <location line="+147"/>
+        <location line="+157"/>
         <source>Updating all packages...</source>
         <translation>すべてのパッケージを更新中...</translation>
     </message>
@@ -1206,14 +1303,14 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>変更を適用中...</translation>
     </message>
     <message>
-        <location line="-661"/>
-        <location line="+605"/>
+        <location line="-689"/>
+        <location line="+633"/>
         <source>Changes applied successfully</source>
         <translation>変更が正常に適用されました</translation>
     </message>
     <message>
-        <location line="-603"/>
-        <location line="+605"/>
+        <location line="-631"/>
+        <location line="+633"/>
         <source>Some operations encountered errors</source>
         <translation>一部の操作でエラーが発生しました</translation>
     </message>
@@ -1243,13 +1340,13 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>リポジトリをリフレッシュ中...</translation>
     </message>
     <message>
-        <location line="-856"/>
+        <location line="-884"/>
         <location line="+12"/>
         <source>Refresh failed</source>
         <translation>リフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location line="+712"/>
+        <location line="+740"/>
         <source>Signing key approved. It will be imported when you retry the operation.</source>
         <translation>署名鍵を承認しました。操作を再実行したときにインポートされます。</translation>
     </message>
@@ -1284,13 +1381,13 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>サービスをリフレッシュ中: %1</translation>
     </message>
     <message>
-        <location line="-959"/>
+        <location line="-987"/>
         <source>Service refreshed</source>
         <translation>サービスをリフレッシュしました</translation>
     </message>
     <message>
         <location line="+2"/>
-        <location line="+960"/>
+        <location line="+988"/>
         <source>Failed to refresh service</source>
         <translation>サービスのリフレッシュに失敗しました</translation>
     </message>
