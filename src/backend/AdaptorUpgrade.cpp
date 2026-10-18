@@ -47,11 +47,13 @@ QVariant solverMap(const ZyppManager::SolverResult &solver)
 /** @brief 拡張検索オプションを厳格に検証し、PoolQuery 検索を実行する。 */
 QVariantList PackageManagerAdaptor::SearchPackagesEx(const QVariantMap &options)
 {
+    // 正規表現のコンパイル検証は主スレッドで行うため、所有者確認を先に済ませる。
+    if (!checkRead())
+        return {};
     SearchOptions parsed;
     QString error;
     if (!parseSearchOptions(options, parsed, error)) {
-        if (checkRead())
-            sendErrorReply(QDBusError::InvalidArgs, error);
+        sendErrorReply(QDBusError::InvalidArgs, error);
         return {};
     }
     return runRead([parsed] {

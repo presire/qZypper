@@ -17,16 +17,18 @@ QVariantMap PromptRegistry::ask(const PromptRequest &request, const Notify &noti
     notify(id, request.type, request.data);
     lock.lock();
     m_ready.wait_for(lock, request.timeout, [this] { return m_answer.has_value() || !m_active; });
+    // 認可待ちで保留中なら、期限を過ぎても認可の結果 (または中断) を待つ。
+    m_ready.wait(lock, [this] { return m_answer.has_value() || !m_active || !m_held; });
     const auto result = m_answer.value_or(request.safeDefault);
     m_pendingId = 0;
+    m_held = false;
     m_answer.reset();
     return result;
 }
 
-/** @brief 一致するIDと厳密な回答スキーマのみを受理する。 */
-bool PromptRegistry::accepts(quint32 id, const QVariantMap &answer)
+/** @brief 一致するIDと厳密な回答スキーマのみを受理する (m_mutex 保持中に呼ぶ)。 */
+bool PromptRegistry::acceptable(quint32 id, const QVariantMap &answer) const
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_active || id == 0 || id != m_pendingId || m_answer || answer.size() != 1)
         return false;
     const auto action = answer.constFind(QStringLiteral("action"));
@@ -37,12 +39,34 @@ bool PromptRegistry::accepts(quint32 id, const QVariantMap &answer)
 bool PromptRegistry::answer(quint32 id, const QVariantMap &answer)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_active || id == 0 || id != m_pendingId || m_answer || answer.size() != 1)
+    if (m_held || !acceptable(id, answer))
         return false;
-    const auto action = answer.constFind(QStringLiteral("action"));
-    if (action == answer.cend() || action->typeId() != QMetaType::QString
-        || !m_actions.contains(action->toString()))
+    m_answer = answer;
+    m_ready.notify_one();
+    return true;
+}
+
+/** @brief 回答を検証して保留を開始し、認可中の期限切れを止める。 */
+bool PromptRegistry::hold(quint32 id, const QVariantMap &answer)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_held || !acceptable(id, answer))
         return false;
+    m_held = true;
+    return true;
+}
+
+/** @brief 保留を終えて回答を適用する。保留が無効になっていれば適用しない。 */
+bool PromptRegistry::release(quint32 id, const QVariantMap &answer)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_held || id != m_pendingId)
+        return false;
+    m_held = false;
+    if (!acceptable(id, answer)) {
+        m_ready.notify_one();
+        return false;
+    }
     m_answer = answer;
     m_ready.notify_one();
     return true;
@@ -60,6 +84,7 @@ void PromptRegistry::interrupt()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_active = false;
+    m_held = false;
     m_answer.reset();
     m_ready.notify_one();
 }

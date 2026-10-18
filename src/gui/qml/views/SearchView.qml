@@ -71,6 +71,7 @@ import org.presire.qzypper.gui
                                             Layout.fillWidth: true
                                             contentItem: Label {
                                                 text: parent.text
+                                                textFormat: Text.PlainText
                                                 leftPadding: parent.indicator.width + parent.spacing
                                                 elide: Text.ElideRight
                                                 verticalAlignment: Text.AlignVCenter
@@ -90,6 +91,7 @@ import org.presire.qzypper.gui
                                 Label {
                                     visible: PackageController.searchError.length > 0
                                     text: PackageController.searchError
+                                    textFormat: Text.PlainText
                                     color: "#F44336"
                                     wrapMode: Text.WordWrap
                                     Layout.fillWidth: true

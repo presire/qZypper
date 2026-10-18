@@ -11,11 +11,9 @@ namespace KeyTrustPrompt {
 QString typeString(KeyTrustPromptKind kind)
 {
     switch (kind) {
-    case KeyTrustPromptKind::GpgKey:         return QStringLiteral("gpg-key");
-    case KeyTrustPromptKind::GpgUnsigned:    return QStringLiteral("gpg-unsigned");
-    case KeyTrustPromptKind::GpgVerifyFailed: return QStringLiteral("gpg-verify-failed");
+    case KeyTrustPromptKind::GpgKey: return QStringLiteral("gpg-key");
     }
-    return QStringLiteral("gpg-unsigned");
+    return QStringLiteral("gpg-key");
 }
 
 /**
@@ -25,22 +23,15 @@ QString typeString(KeyTrustPromptKind kind)
  */
 QVariantList buttons(KeyTrustPromptKind kind)
 {
-    if (kind == KeyTrustPromptKind::GpgKey) {
-        return {
-            QVariantMap{{QStringLiteral("action"), QStringLiteral("trust-temporary")},
-                        {QStringLiteral("label"), QStringLiteral("Trust Temporarily")}},
-            QVariantMap{{QStringLiteral("action"), QStringLiteral("trust-permanent")},
-                        {QStringLiteral("label"), QStringLiteral("Trust Always")}},
-            QVariantMap{{QStringLiteral("action"), QStringLiteral("reject")},
-                        {QStringLiteral("label"), QStringLiteral("Reject")}},
-        };
-    }
-    // 未署名/検証失敗は fail-closed: 既定・タイムアウトとも拒否。
+    Q_UNUSED(kind)
+    // 未署名・未知の鍵・検証失敗は問い合わせずに常に拒否するため、鍵信頼のボタンだけを持つ。
     return {
+        QVariantMap{{QStringLiteral("action"), QStringLiteral("trust-temporary")},
+                    {QStringLiteral("label"), QStringLiteral("Trust Temporarily")}},
+        QVariantMap{{QStringLiteral("action"), QStringLiteral("trust-permanent")},
+                    {QStringLiteral("label"), QStringLiteral("Trust Always")}},
         QVariantMap{{QStringLiteral("action"), QStringLiteral("reject")},
-                    {QStringLiteral("label"), QStringLiteral("Abort")}},
-        QVariantMap{{QStringLiteral("action"), QStringLiteral("accept-once")},
-                    {QStringLiteral("label"), QStringLiteral("Ignore and Continue")}},
+                    {QStringLiteral("label"), QStringLiteral("Reject")}},
     };
 }
 
@@ -104,39 +95,6 @@ PromptRequest buildKeyRequest(const KeyTrustAnswerInfo &info)
 }
 
 /**
- * @brief 未署名/検証失敗プロンプトの要求を構築する。
- * @param file 対象ファイル名
- * @param kind プロンプト種別
- * @return PromptRequest
- */
-PromptRequest buildUnsignedRequest(const std::string &file, KeyTrustPromptKind kind)
-{
-    if (kind == KeyTrustPromptKind::GpgKey)
-        kind = KeyTrustPromptKind::GpgUnsigned;
-
-    PromptRequest request;
-    request.type = typeString(kind);
-    request.actions = actionList(kind);
-    request.safeDefault = rejectDefault();
-    request.timeout = std::chrono::milliseconds(60000);
-
-    const QString fileName = QString::fromStdString(file);
-    const QString message = kind == KeyTrustPromptKind::GpgVerifyFailed
-        ? QStringLiteral("Signature verification failed for \"%1\".").arg(fileName)
-        : QStringLiteral("\"%1\" is not signed.").arg(fileName);
-
-    request.data = QVariantMap{
-        {QStringLiteral("message"), message},
-        {QStringLiteral("details"),
-         QStringLiteral("The signature could not be verified with a trusted key. "
-                        "Continuing is insecure and is not recommended.")},
-        {QStringLiteral("file"), fileName},
-        {QStringLiteral("buttons"), buttons(kind)},
-    };
-    return request;
-}
-
-/**
  * @brief 指定種別で有効なアクションかを判定する。
  * @param kind プロンプト種別
  * @param action 判定するアクション
@@ -161,24 +119,6 @@ std::optional<KeyTrustDecision> decisionFromAnswer(const QVariantMap &answer)
         return KeyTrustDecision::TrustPermanently;
     if (action == QStringLiteral("reject"))
         return KeyTrustDecision::Reject;
-    return std::nullopt;
-}
-
-/**
- * @brief 回答マップを未署名許否へ写像する。
- * @param kind プロンプト種別
- * @param answer 回答
- * @return 許可/拒否、または不正時 nullopt
- */
-std::optional<bool> unsignedFromAnswer(KeyTrustPromptKind kind, const QVariantMap &answer)
-{
-    if (kind == KeyTrustPromptKind::GpgKey)
-        kind = KeyTrustPromptKind::GpgUnsigned;
-    const QString action = answer.value(QStringLiteral("action")).toString();
-    if (action == QStringLiteral("accept-once"))
-        return true;
-    if (action == QStringLiteral("reject"))
-        return false;
     return std::nullopt;
 }
 

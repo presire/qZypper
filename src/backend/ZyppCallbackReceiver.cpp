@@ -550,16 +550,6 @@ void KeyRingReceiver::setKeyTrustPromptCallback(KeyTrustPromptFn cb)
 }
 
 /**
- * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する (mutex 保護)。
- * @param cb 回答コールバック
- */
-void KeyRingReceiver::setUnsignedFilePromptCallback(UnsignedFilePromptFn cb)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_unsignedPrompt = std::move(cb);
-}
-
-/**
  * @brief GPG鍵を信頼するか確認する (fail-closed)。
  *
  * 事前に approveFingerprint で承認されたフィンガープリントと一致した
@@ -643,18 +633,6 @@ bool KeyRingReceiver::askUserToAcceptUnsignedFile(
     const std::string &file,
     const zypp::KeyContext &/*keycontext*/)
 {
-    UnsignedFilePromptFn prompt;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        prompt = m_unsignedPrompt;
-    }
-    if (prompt) {
-        if (prompt(file, KeyTrustPromptKind::GpgUnsigned).value_or(false)) {
-            qWarning("User accepted unsigned file: %s", file.c_str());
-            return true;
-        }
-        return false;
-    }
     qWarning("Refusing unsigned file: %s", file.c_str());
     return false;
 }
@@ -671,18 +649,6 @@ bool KeyRingReceiver::askUserToAcceptUnknownKey(
     const std::string &id,
     const zypp::KeyContext &/*keycontext*/)
 {
-    UnsignedFilePromptFn prompt;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        prompt = m_unsignedPrompt;
-    }
-    if (prompt) {
-        if (prompt(file, KeyTrustPromptKind::GpgUnsigned).value_or(false)) {
-            qWarning("User accepted unknown key id=%s for file: %s", id.c_str(), file.c_str());
-            return true;
-        }
-        return false;
-    }
     qWarning("Refusing unknown key id=%s for file: %s", id.c_str(), file.c_str());
     return false;
 }
@@ -699,19 +665,6 @@ bool KeyRingReceiver::askUserToAcceptVerificationFailed(
     const zypp::PublicKey &key,
     const zypp::KeyContext &/*keycontext*/)
 {
-    UnsignedFilePromptFn prompt;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        prompt = m_unsignedPrompt;
-    }
-    if (prompt) {
-        if (prompt(file, KeyTrustPromptKind::GpgVerifyFailed).value_or(false)) {
-            qWarning("User accepted failed verification: %s key id=%s",
-                     file.c_str(), key.id().c_str());
-            return true;
-        }
-        return false;
-    }
     qWarning("Refusing file with failed verification: %s key id=%s",
              file.c_str(), key.id().c_str());
     return false;

@@ -36,8 +36,8 @@ struct SearchOptions {
 /**
  * @brief SearchPackagesEx のオプションを厳格に検証して解析する。
  *
- * 未知のキー、型不一致、範囲外の値、不正な照合方式、コンパイル不能な
- * 正規表現はすべて拒否する。入力の制御文字・過大長は
+ * 未知のキー、型不一致、範囲外の値、不正な照合方式、POSIX ERE として
+ * コンパイル不能な正規表現はすべて拒否する。入力の制御文字・過大長は
  * InputValidation::validateArguments で弾く。
  * @param options D-Bus 由来のオプションマップ
  * @param out 解析結果の格納先

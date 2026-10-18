@@ -1,4 +1,5 @@
 #include "KeyTrustPrompt.h"
+#include "ZyppCallbackReceiver.h"
 
 #include <QtTest>
 
@@ -21,22 +22,16 @@ class KeyTrustPromptTest : public QObject {
 private slots:
     void mapsTypeStrings();
     void buildsKeyButtons();
-    void buildsUnsignedButtons();
     void keyRequestIsFailClosed();
-    void unsignedRequestIsFailClosed();
     void knowsActions();
     void mapsKeyAnswers();
-    void mapsUnsignedAnswers();
     void rejectsUnknownAnswers();
+    void alwaysRejectsSignatureProblems();
 };
 
 void KeyTrustPromptTest::mapsTypeStrings()
 {
     QCOMPARE(KeyTrustPrompt::typeString(KeyTrustPromptKind::GpgKey), QStringLiteral("gpg-key"));
-    QCOMPARE(KeyTrustPrompt::typeString(KeyTrustPromptKind::GpgUnsigned),
-             QStringLiteral("gpg-unsigned"));
-    QCOMPARE(KeyTrustPrompt::typeString(KeyTrustPromptKind::GpgVerifyFailed),
-             QStringLiteral("gpg-verify-failed"));
 }
 
 void KeyTrustPromptTest::buildsKeyButtons()
@@ -45,12 +40,6 @@ void KeyTrustPromptTest::buildsKeyButtons()
     QCOMPARE(actions,
              QStringList({QStringLiteral("trust-temporary"), QStringLiteral("trust-permanent"),
                           QStringLiteral("reject")}));
-}
-
-void KeyTrustPromptTest::buildsUnsignedButtons()
-{
-    const QStringList actions = actionsOf(KeyTrustPrompt::buttons(KeyTrustPromptKind::GpgUnsigned));
-    QCOMPARE(actions, QStringList({QStringLiteral("reject"), QStringLiteral("accept-once")}));
 }
 
 void KeyTrustPromptTest::keyRequestIsFailClosed()
@@ -77,26 +66,13 @@ void KeyTrustPromptTest::keyRequestIsFailClosed()
     QVERIFY(data.contains(QStringLiteral("details")));
 }
 
-void KeyTrustPromptTest::unsignedRequestIsFailClosed()
-{
-    const PromptRequest request =
-        KeyTrustPrompt::buildUnsignedRequest("file.rpm", KeyTrustPromptKind::GpgVerifyFailed);
-    QCOMPARE(request.type, QStringLiteral("gpg-verify-failed"));
-    QCOMPARE(request.safeDefault.value(QStringLiteral("action")).toString(),
-             QStringLiteral("reject"));
-    QCOMPARE(request.actions,
-             actionsOf(KeyTrustPrompt::buttons(KeyTrustPromptKind::GpgVerifyFailed)));
-    QCOMPARE(request.data.value(QStringLiteral("file")).toString(), QStringLiteral("file.rpm"));
-}
-
 void KeyTrustPromptTest::knowsActions()
 {
     QVERIFY(KeyTrustPrompt::isKnownAction(KeyTrustPromptKind::GpgKey,
                                           QStringLiteral("trust-permanent")));
-    QVERIFY(KeyTrustPrompt::isKnownAction(KeyTrustPromptKind::GpgUnsigned,
-                                          QStringLiteral("accept-once")));
-    QVERIFY(!KeyTrustPrompt::isKnownAction(KeyTrustPromptKind::GpgUnsigned,
-                                           QStringLiteral("trust-permanent")));
+    // 「今回だけ受け入れる」は廃止済みで、どの種別でも受け付けない。
+    QVERIFY(!KeyTrustPrompt::isKnownAction(KeyTrustPromptKind::GpgKey,
+                                           QStringLiteral("accept-once")));
 }
 
 void KeyTrustPromptTest::mapsKeyAnswers()
@@ -115,26 +91,29 @@ void KeyTrustPromptTest::mapsKeyAnswers()
     QCOMPARE(*reject, KeyTrustDecision::Reject);
 }
 
-void KeyTrustPromptTest::mapsUnsignedAnswers()
-{
-    const auto accept = KeyTrustPrompt::unsignedFromAnswer(
-        KeyTrustPromptKind::GpgUnsigned, {{QStringLiteral("action"), QStringLiteral("accept-once")}});
-    QVERIFY(accept.has_value());
-    QCOMPARE(*accept, true);
-    const auto reject = KeyTrustPrompt::unsignedFromAnswer(
-        KeyTrustPromptKind::GpgVerifyFailed, {{QStringLiteral("action"), QStringLiteral("reject")}});
-    QVERIFY(reject.has_value());
-    QCOMPARE(*reject, false);
-}
-
 void KeyTrustPromptTest::rejectsUnknownAnswers()
 {
     QVERIFY(!KeyTrustPrompt::decisionFromAnswer({{QStringLiteral("action"), QStringLiteral("accept-once")}})
                  .has_value());
     QVERIFY(!KeyTrustPrompt::decisionFromAnswer({}).has_value());
-    QVERIFY(!KeyTrustPrompt::unsignedFromAnswer(KeyTrustPromptKind::GpgUnsigned,
-                                                {{QStringLiteral("action"), QStringLiteral("trust-permanent")}})
-                 .has_value());
+}
+
+void KeyTrustPromptTest::alwaysRejectsSignatureProblems()
+{
+    // Given: 鍵信頼プロンプトが常に「恒久的に信頼」と答える受信側
+    KeyRingReceiver receiver;
+    int prompts = 0;
+    receiver.setKeyTrustPromptCallback([&prompts](const KeyTrustAnswerInfo &) {
+        ++prompts;
+        return std::optional<KeyTrustDecision>(KeyTrustDecision::TrustPermanently);
+    });
+    const zypp::KeyContext context;
+
+    // When / Then: 未署名・未知の鍵・検証失敗は問い合わせずに拒否する
+    QVERIFY(!receiver.askUserToAcceptUnsignedFile("repomd.xml", context));
+    QVERIFY(!receiver.askUserToAcceptUnknownKey("repomd.xml", "0123456789ABCDEF", context));
+    QVERIFY(!receiver.askUserToAcceptVerificationFailed("repomd.xml", zypp::PublicKey(), context));
+    QCOMPARE(prompts, 0);
 }
 
 QTEST_GUILESS_MAIN(KeyTrustPromptTest)

@@ -22,8 +22,6 @@ Dialog {
     readonly property var promptData: (prompt && prompt.data) ? prompt.data : ({})
     readonly property string promptType: (prompt && prompt.type) ? String(prompt.type) : ""
     readonly property bool isLongText: promptType === "license" || promptType === "file-conflicts"
-    // 未署名/署名検証失敗は危険操作扱いとし、拒否側を強調する
-    readonly property bool isInsecure: promptType === "gpg-unsigned" || promptType === "gpg-verify-failed"
 
     // 許可された action の一覧。data.buttons が無ければ安全側の既定値を使う。
     function allowedActions() {
@@ -42,24 +40,12 @@ Dialog {
         return out
     }
 
-    function safeAction() {
-        var actions = allowedActions()
-        var safe = ["reject", "abort", "cancel", "no"]
-        for (var i = 0; i < safe.length; ++i) {
-            if (actions.indexOf(safe[i]) >= 0)
-                return safe[i]
-        }
-        return actions[actions.length - 1]
-    }
-
     function titleForType(type) {
         switch (type) {
         case "license":           return qsTr("License Agreement")
         case "media-change":      return qsTr("Media Change Required")
         case "file-conflicts":    return qsTr("File Conflicts")
         case "gpg-key":           return qsTr("Unknown GPG Key")
-        case "gpg-unsigned":      return qsTr("Unsigned File")
-        case "gpg-verify-failed": return qsTr("Signature Verification Failed")
         default:                  return qsTr("Package Manager")
         }
     }
@@ -79,11 +65,6 @@ Dialog {
         case "gpg-key":
             return qsTr("The repository \"%1\" is signed with an unknown GPG key. Check the fingerprint before trusting it.")
                    .arg(d.repoName || d.repoAlias || "")
-        case "gpg-unsigned":
-            return qsTr("\"%1\" is not signed. Accepting unsigned data is insecure.").arg(d.file || "")
-        case "gpg-verify-failed":
-            return qsTr("The signature of \"%1\" could not be verified. The data may have been tampered with.")
-                   .arg(d.file || "")
         default:
             return d.message ? String(d.message) : qsTr("The package manager needs your input.")
         }
@@ -127,8 +108,10 @@ Dialog {
         case "reject":            return promptType === "license" ? qsTr("Reject License") : qsTr("Reject")
         case "trust-temporary":   return qsTr("Trust Temporarily")
         case "trust-permanent":   return qsTr("Trust Permanently")
-        case "accept-once":       return qsTr("Accept Once (Insecure)")
-        default:                  return action
+        // 未知の action はバックエンド (data.buttons) 由来の外部文字列。Fusion Button の
+        // 内部 IconLabel は AutoText で描画し、'&' はニーモニックとして消費されるため、
+        // escapeHtml ではなく '<' '>' '&' を除去して HTML 解釈を無効化する。
+        default:                  return String(action).replace(/[<>&]/g, "")
         }
     }
 
@@ -136,7 +119,6 @@ Dialog {
         switch (action) {
         case "trust-temporary": return qsTr("Trust this key for the current operation only (requires authentication)")
         case "trust-permanent": return qsTr("Import this key into the trusted keyring (requires authentication)")
-        case "accept-once":     return qsTr("Use the unverified data this time only")
         case "skip":            return qsTr("Skip the packages on this medium")
         default:                return ""
         }
@@ -166,8 +148,6 @@ Dialog {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            font.bold: promptDialog.isInsecure
-            color: promptDialog.isInsecure ? "#F44336" : palette.text
             text: promptDialog.messageForPrompt()
             Accessible.role: Accessible.StaticText
             Accessible.name: text
@@ -216,9 +196,7 @@ Dialog {
                 delegate: Button {
                     required property var modelData
                     text: promptDialog.actionLabel(modelData)
-                    highlighted: promptDialog.isInsecure
-                                 ? modelData === promptDialog.safeAction()
-                                 : modelData === promptDialog.allowedActions()[0]
+                    highlighted: modelData === promptDialog.allowedActions()[0]
                     activeFocusOnTab: true
                     Accessible.name: text
                     Accessible.description: promptDialog.actionDescription(modelData)

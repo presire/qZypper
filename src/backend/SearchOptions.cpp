@@ -2,7 +2,10 @@
 
 #include "InputValidation.h"
 
-#include <QRegularExpression>
+#include <regex.h>
+
+#include <algorithm>
+#include <vector>
 
 namespace qZypper {
 
@@ -10,6 +13,7 @@ namespace {
 
 constexpr int kMaxSearchFlags = 127; ///< SearchFlag に定義された全ビットの和
 constexpr int kMaxQueryBytes = 256;  ///< 検索文字列の最大バイト数
+constexpr quint64 kMaxRegexRepeatTotal = 1000; ///< 正規表現の繰り返し上限の合計の最大値
 
 /**
  * @brief 整数として扱える型かどうかを判定する。
@@ -44,6 +48,139 @@ bool toNonNegative(const QVariant &value, unsigned int &out)
     if (!ok || v < 0)
         return false;
     out = static_cast<unsigned int>(v);
+    return true;
+}
+
+/**
+ * @brief 正規表現が regcomp の資源を過大に消費しないかを検査する。
+ *
+ * glibc の regcomp は繰り返しを展開・入れ子にしてコンパイルするため、
+ * 256 バイト以内でも入れ子の繰り返し (例: (a{32767}){32767}、((a)+)+) や
+ * 連続した量指定子 (例: a+++) で大量のメモリと CPU を消費する。
+ * そのため次を拒否する:
+ * - 量指定子 (*, +, ?, {m,n}) を含むグループへの量指定子
+ * - 量指定子の直後の量指定子
+ * - {m,n} の上限の合計が kMaxRegexRepeatTotal を超えるもの
+ * - 後方参照 (\1〜\9。照合時のバックトラックが指数的になり得る)
+ *
+ * @param pattern 検査対象 (UTF-8)
+ * @param error 拒否時のエラーメッセージ
+ * @return 許可できれば true
+ */
+bool checkRegexComplexity(const QByteArray &pattern, QString &error)
+{
+    enum class Previous { None, Atom, Group, QuantifiedGroup, Quantifier };
+
+    const QString tooMany = QStringLiteral("Option 'query' uses too many repetitions (limit %1)")
+                                .arg(kMaxRegexRepeatTotal);
+    const QString nested = QStringLiteral("Option 'query' must not use nested or consecutive repetitions");
+
+    std::vector<bool> groupHasQuantifier{false};
+    Previous previous = Previous::None;
+    quint64 total = 0;
+
+    const int size = static_cast<int>(pattern.size());
+    for (int i = 0; i < size; ++i) {
+        const char c = pattern.at(i);
+        int quantifierEnd = -1;
+        quint64 bound = 0;
+
+        if (c == '\\') {
+            if (i + 1 < size && pattern.at(i + 1) >= '1' && pattern.at(i + 1) <= '9') {
+                error = QStringLiteral("Option 'query' must not use back-references");
+                return false;
+            }
+            ++i;
+            previous = Previous::Atom;
+            continue;
+        }
+        if (c == '[') {
+            // ブラケット式内の '{' や量指定子はリテラル。先頭の '^' と ']' は終端ではない。
+            int j = i + 1;
+            if (j < size && pattern.at(j) == '^')
+                ++j;
+            if (j < size && pattern.at(j) == ']')
+                ++j;
+            while (j < size && pattern.at(j) != ']') {
+                const char next = j + 1 < size ? pattern.at(j + 1) : '\0';
+                if (pattern.at(j) == '[' && (next == ':' || next == '.' || next == '=')) {
+                    const char terminator[] = {next, ']', '\0'};
+                    const int close = static_cast<int>(pattern.indexOf(terminator, j + 2));
+                    j = close < 0 ? size : close + 2;
+                    continue;
+                }
+                ++j;
+            }
+            i = j;
+            previous = Previous::Atom;
+            continue;
+        }
+        if (c == '(') {
+            groupHasQuantifier.push_back(false);
+            previous = Previous::None;
+            continue;
+        }
+        if (c == ')') {
+            if (groupHasQuantifier.size() > 1) {
+                const bool inner = groupHasQuantifier.back();
+                groupHasQuantifier.pop_back();
+                if (inner)
+                    groupHasQuantifier.back() = true;
+                previous = inner ? Previous::QuantifiedGroup : Previous::Group;
+            } else {
+                previous = Previous::Atom;
+            }
+            continue;
+        }
+        if (c == '|') {
+            previous = Previous::None;
+            continue;
+        }
+        if (c == '*' || c == '+' || c == '?') {
+            quantifierEnd = i;
+            bound = 1;
+        } else if (c == '{') {
+            int j = i + 1;
+            quint64 low = 0;
+            quint64 high = 0;
+            bool hasLow = false;
+            bool hasHigh = false;
+            while (j < size && pattern.at(j) >= '0' && pattern.at(j) <= '9' && low <= 0xFFFFFFFFULL) {
+                low = low * 10 + static_cast<quint64>(pattern.at(j) - '0');
+                hasLow = true;
+                ++j;
+            }
+            if (j < size && pattern.at(j) == ',') {
+                ++j;
+                while (j < size && pattern.at(j) >= '0' && pattern.at(j) <= '9' && high <= 0xFFFFFFFFULL) {
+                    high = high * 10 + static_cast<quint64>(pattern.at(j) - '0');
+                    hasHigh = true;
+                    ++j;
+                }
+            }
+            if (j < size && pattern.at(j) == '}' && (hasLow || hasHigh)) {
+                quantifierEnd = j;
+                bound = std::max<quint64>(1, hasHigh ? high : low);
+            }
+        }
+
+        if (quantifierEnd < 0) {
+            previous = Previous::Atom;
+            continue;
+        }
+        if (previous == Previous::Quantifier || previous == Previous::QuantifiedGroup) {
+            error = nested;
+            return false;
+        }
+        if (bound > kMaxRegexRepeatTotal || total + bound > kMaxRegexRepeatTotal) {
+            error = tooMany;
+            return false;
+        }
+        total += bound;
+        groupHasQuantifier.back() = true;
+        previous = Previous::Quantifier;
+        i = quantifierEnd;
+    }
     return true;
 }
 
@@ -161,13 +298,24 @@ bool parseSearchOptions(const QVariantMap &options, SearchOptions &out, QString 
     }
 
     // 正規表現は D-Bus 境界でコンパイル検証し、実行時の例外を避ける。
+    // libzypp (StrMatcher) / libsolv (datamatcher) は POSIX ERE を
+    // REG_EXTENDED | REG_NOSUB | REG_NEWLINE で実行するため、同じフラグ
+    // (照合が大文字小文字無視のため REG_ICASE を追加) で事前検証する。
     if (parsed.match == SearchMatchMode::Regex) {
-        const QRegularExpression re(parsed.query);
-        if (!re.isValid()) {
+        const QByteArray pattern = parsed.query.toUtf8();
+        if (!checkRegexComplexity(pattern, error))
+            return false;
+        regex_t regex;
+        const int rc = ::regcomp(&regex, pattern.constData(),
+                                 REG_EXTENDED | REG_NOSUB | REG_NEWLINE | REG_ICASE);
+        if (rc != 0) {
+            char buffer[256];
+            ::regerror(rc, &regex, buffer, sizeof(buffer));
             error = QStringLiteral("Option 'query' is not a valid regular expression: %1")
-                        .arg(re.errorString());
+                        .arg(QString::fromLocal8Bit(buffer));
             return false;
         }
+        ::regfree(&regex);
     }
 
     out = parsed;

@@ -71,16 +71,6 @@ void ZyppManager::setKeyTrustPromptCallback(KeyTrustPromptFn cb)
 }
 
 /**
- * @brief 未署名ファイル・検証失敗プロンプト用コールバックを設定する。
- * @param cb コールバック (解除は空の std::function)
- */
-void ZyppManager::setUnsignedFilePromptCallback(UnsignedFilePromptFn cb)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_keyRingReceiver.setUnsignedFilePromptCallback(std::move(cb));
-}
-
-/**
  * @brief 一時ローカルリポジトリとディレクトリを破棄する (排他取得あり)。
  */
 void ZyppManager::cleanupLocalRpms()

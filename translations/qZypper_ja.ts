@@ -522,7 +522,7 @@
         <translation>履歴のアクションフィルター</translation>
     </message>
     <message>
-        <location line="+5"/>
+        <location line="+28"/>
         <source>Since:</source>
         <translation>開始日:</translation>
     </message>
@@ -1017,7 +1017,7 @@
         <translation>qZypper - ソフトウェア管理</translation>
     </message>
     <message>
-        <location line="+354"/>
+        <location line="+362"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
@@ -1370,7 +1370,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
 <context>
     <name>PackageDetailsPane</name>
     <message>
-        <location filename="../src/gui/qml/components/PackageDetailsPane.qml" line="+22"/>
+        <location filename="../src/gui/qml/components/PackageDetailsPane.qml" line="+39"/>
         <source>Description</source>
         <translation>説明</translation>
     </message>
@@ -1429,7 +1429,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>パッケージシステムがロックされています</translation>
     </message>
     <message>
-        <location line="+14"/>
+        <location line="+15"/>
         <source>Another package manager (%1, PID %2) is using the package system. Close it and retry.</source>
         <translation>別のパッケージマネージャー (%1, PID %2) がパッケージシステムを使用しています。終了して再試行してください。</translation>
     </message>
@@ -1530,12 +1530,12 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>サイズ</translation>
     </message>
     <message>
-        <location line="+314"/>
+        <location line="+320"/>
         <source>Search: </source>
         <translation>検索: </translation>
     </message>
     <message>
-        <location line="+13"/>
+        <location line="+14"/>
         <source>Install</source>
         <translation>インストール</translation>
     </message>
@@ -1707,7 +1707,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>パッチ %1 を選択</translation>
     </message>
     <message>
-        <location line="+35"/>
+        <location line="+39"/>
         <source>Interactive</source>
         <translation>対話型</translation>
     </message>
@@ -1738,7 +1738,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
 <context>
     <name>PromptDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/PromptDialog.qml" line="+57"/>
+        <location filename="../src/gui/qml/dialogs/PromptDialog.qml" line="+45"/>
         <source>License Agreement</source>
         <translation>ライセンス契約</translation>
     </message>
@@ -1756,16 +1756,6 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <location line="+1"/>
         <source>Unknown GPG Key</source>
         <translation>不明な GPG 鍵</translation>
-    </message>
-    <message>
-        <location line="+1"/>
-        <source>Unsigned File</source>
-        <translation>署名のないファイル</translation>
-    </message>
-    <message>
-        <location line="+1"/>
-        <source>Signature Verification Failed</source>
-        <translation>署名の検証に失敗しました</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -1793,16 +1783,6 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <location line="+3"/>
         <source>The repository &quot;%1&quot; is signed with an unknown GPG key. Check the fingerprint before trusting it.</source>
         <translation>リポジトリ &quot;%1&quot; は不明な GPG 鍵で署名されています。信頼する前にフィンガープリントを確認してください。</translation>
-    </message>
-    <message>
-        <location line="+3"/>
-        <source>&quot;%1&quot; is not signed. Accepting unsigned data is insecure.</source>
-        <translation>&quot;%1&quot; は署名されていません。署名のないデータを受け入れるのは安全ではありません。</translation>
-    </message>
-    <message>
-        <location line="+2"/>
-        <source>The signature of &quot;%1&quot; could not be verified. The data may have been tampered with.</source>
-        <translation>&quot;%1&quot; の署名を検証できませんでした。データが改ざんされている可能性があります。</translation>
     </message>
     <message>
         <location line="+22"/>
@@ -1893,12 +1873,7 @@ Expires: %5</source>
         <translation>永続的に信頼</translation>
     </message>
     <message>
-        <location line="+1"/>
-        <source>Accept Once (Insecure)</source>
-        <translation>今回のみ受け入れる (安全ではありません)</translation>
-    </message>
-    <message>
-        <location line="+7"/>
+        <location line="+9"/>
         <source>Trust this key for the current operation only (requires authentication)</source>
         <translation>今回の操作に限りこの鍵を信頼します (認証が必要です)</translation>
     </message>
@@ -1909,16 +1884,11 @@ Expires: %5</source>
     </message>
     <message>
         <location line="+1"/>
-        <source>Use the unverified data this time only</source>
-        <translation>検証されていないデータを今回のみ使用します</translation>
-    </message>
-    <message>
-        <location line="+1"/>
         <source>Skip the packages on this medium</source>
         <translation>このメディア上のパッケージをスキップします</translation>
     </message>
     <message>
-        <location line="+50"/>
+        <location line="+48"/>
         <source>License text</source>
         <translation>ライセンス本文</translation>
     </message>
@@ -1933,7 +1903,7 @@ Expires: %5</source>
         <translation>60 秒以内に応答しない場合、要求は自動的に拒否されます。</translation>
     </message>
     <message>
-        <location line="-112"/>
+        <location line="-110"/>
         <source>The package manager needs your input.</source>
         <translation>パッケージマネージャーが入力を求めています。</translation>
     </message>
@@ -2077,12 +2047,12 @@ Expires: %5</source>
         <translation>以下のリポジトリを追加します。GPG チェックが無効なもの、または既存のエイリアスと重複するものはスキップされます。</translation>
     </message>
     <message>
-        <location line="+15"/>
+        <location line="+16"/>
         <source>Repositories in file</source>
         <translation>ファイル内のリポジトリ</translation>
     </message>
     <message>
-        <location line="+20"/>
+        <location line="+22"/>
         <source>GPG check disabled — will be skipped</source>
         <translation>GPG チェック無効 — スキップされます</translation>
     </message>
@@ -2306,7 +2276,7 @@ Expires: %5</source>
         <translation>検索対象</translation>
     </message>
     <message>
-        <location line="+16"/>
+        <location line="+17"/>
         <source>Name (&amp;E)</source>
         <translation>名前(&amp;E)</translation>
     </message>
@@ -2336,7 +2306,7 @@ Expires: %5</source>
         <translation>RPMが&quot;必要とするもの&quot;(&amp;Q)</translation>
     </message>
     <message>
-        <location line="+18"/>
+        <location line="+19"/>
         <source>Classification:</source>
         <translation>分類:</translation>
     </message>
@@ -2646,23 +2616,23 @@ Please wait.</source>
     <name>qZypper::PackageController</name>
     <message>
         <location filename="../src/gui/controllers/PackageController.cpp" line="+43"/>
-        <location line="+1329"/>
+        <location line="+1332"/>
         <location line="+37"/>
         <source>Repository refresh completed</source>
         <translation>リポジトリのリフレッシュが完了しました</translation>
     </message>
     <message>
-        <location line="-1364"/>
+        <location line="-1367"/>
         <source>Refreshing: %1 (%2%)</source>
         <translation>リフレッシュ中: %1 (%2%)</translation>
     </message>
     <message>
-        <location line="+1330"/>
+        <location line="+1333"/>
         <source>Refresh cancelled</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location line="-1290"/>
+        <location line="-1293"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
@@ -2693,19 +2663,19 @@ Please wait.</source>
     </message>
     <message>
         <location line="+31"/>
-        <location line="+268"/>
+        <location line="+271"/>
         <source>Package manager is not initialized</source>
         <translation>パッケージマネージャが初期化されていません</translation>
     </message>
     <message>
-        <location line="-262"/>
-        <location line="+268"/>
+        <location line="-265"/>
+        <location line="+271"/>
         <source>Searching packages...</source>
         <translation>パッケージを検索中...</translation>
     </message>
     <message>
-        <location line="-255"/>
-        <location line="+268"/>
+        <location line="-258"/>
+        <location line="+271"/>
         <source>%1 packages found</source>
         <translation>%1 件のパッケージが見つかりました</translation>
     </message>
@@ -2741,12 +2711,12 @@ Please wait.</source>
         <location line="-476"/>
         <location line="+406"/>
         <location line="+73"/>
-        <location line="+924"/>
+        <location line="+927"/>
         <source>Dependency problems found</source>
         <translation>依存関係の問題が見つかりました</translation>
     </message>
     <message>
-        <location line="-1025"/>
+        <location line="-1028"/>
         <source>Updating all packages...</source>
         <translation>すべてのパッケージを更新中...</translation>
     </message>
@@ -2863,7 +2833,7 @@ Please wait.</source>
         <translation>リフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location line="+486"/>
+        <location line="+489"/>
         <source>Editing session ended</source>
         <translation>編集セッションが終了しました</translation>
     </message>
@@ -2914,7 +2884,7 @@ Please wait.</source>
         <translation>リポジトリのインポートに失敗しました</translation>
     </message>
     <message>
-        <location line="-823"/>
+        <location line="-826"/>
         <source>Signing key approved. It will be imported when you retry the operation.</source>
         <translation>署名鍵を承認しました。操作を再実行したときにインポートされます。</translation>
     </message>
@@ -2929,7 +2899,7 @@ Please wait.</source>
         <translation>リポジトリをリフレッシュ中: %1</translation>
     </message>
     <message>
-        <location line="+50"/>
+        <location line="+53"/>
         <source>Adding service...</source>
         <translation>サービスを追加中...</translation>
     </message>

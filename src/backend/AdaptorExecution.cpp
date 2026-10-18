@@ -29,11 +29,21 @@ bool changesSelection(const QString &member)
 }
 }
 
-/** @brief 読取も遅延返信で同じ常駐ワーカーへ送る。 */
+/** @brief 所有者の読取も遅延返信で同じ常駐ワーカーへ送る。途中の取消しはエラーで返す。 */
 QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
 {
     if (!checkRead()) return {};
-    startWorker(message(), [job] { AsyncOutcome result; result.value = job(); return result; });
+    OperationState *control = &m_executor.control();
+    startWorker(message(), [job, control] {
+        AsyncOutcome result;
+        result.value = job();
+        if (control->cancelFlag().load()) {
+            result.value = QVariant();
+            result.errorName = QStringLiteral("org.presire.qzypper.Error.Cancelled");
+            result.errorText = QStringLiteral("Operation cancelled");
+        }
+        return result;
+    });
     return {};
 }
 
@@ -60,8 +70,8 @@ bool PackageManagerAdaptor::preparePrivileged()
 void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::function<AsyncOutcome()> &job)
 {
     if (calledFromDBus()) setDelayedReply(true);
+    // アイドルタイマーは止めない。期限が来ても実行中なら再設定され、終了時は所有者の要求だけが延長する。
     m_busy = true;
-    m_idleTimer.stop();
     m_executor.control().run(initialStage(msg.member()));
     m_executor.prompts().open();
     publishState();
@@ -77,11 +87,11 @@ void PackageManagerAdaptor::startPrivileged(const QString &actionId, const std::
     const auto msg = message();
     setDelayedReply(true);
     m_busy = true;
-    m_idleTimer.stop();
     m_executor.control().authorize();
     publishState();
-    m_authId = m_authorization.request(msg.service(), actionId, [this, msg, job](bool authorized) {
-        m_authId.clear();
+    m_authId = m_authorization.request(msg.service(), actionId,
+                                       [this, msg, job](const QString &authId, bool authorized) {
+        clearAuthorizationId(m_authId, authId);
         if (!authorized || m_executor.control().cancelFlag().load() || m_owner != msg.service()) {
             AsyncOutcome result;
             result.errorName = m_executor.control().cancelFlag().load()
@@ -116,6 +126,8 @@ bool PackageManagerAdaptor::runPrivilegedBool(const QString &actionId, const std
 /** @brief ワーカー終了通知の後にだけbusyを解除する。void返信は引数なしにする。 */
 void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const AsyncOutcome &outcome)
 {
+    // 所有者の解放前に判定し、所有者以外の要求ではアイドル期限を延長しない。
+    const bool fromOwner = !m_owner.isEmpty() && msg.service() == m_owner;
     m_executor.control().finishing();
     m_executor.prompts().interrupt();
     publishState();
@@ -140,7 +152,7 @@ void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const Asyn
     }
     if (m_quitWhenIdle) { releaseAbandonedSession(); return; }
     m_busy = false;
-    m_idleTimer.start();
+    if (fromOwner || !m_idleTimer.isActive()) m_idleTimer.start();
 }
 
 } // namespace qZypper

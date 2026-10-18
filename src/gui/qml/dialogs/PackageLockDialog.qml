@@ -23,6 +23,7 @@ Dialog {
         Label {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
             text: qsTr("Another package manager (%1, PID %2) is using the package system. Close it and retry.")
                   .arg(lockDialog.lockerName.length > 0 ? lockDialog.lockerName : qsTr("unknown"))
                   .arg(lockDialog.lockerPid)

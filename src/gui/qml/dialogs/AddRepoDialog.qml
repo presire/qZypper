@@ -212,6 +212,7 @@ Dialog {
             Label {
                 visible: root.errorMessage.length > 0
                 text: root.errorMessage
+                textFormat: Text.PlainText
                 color: palette.brightText
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true

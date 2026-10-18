@@ -308,6 +308,9 @@ void PackageController::refreshPackageStatuses(bool newGeneration)
  */
 void PackageController::loadRepos()
 {
+    // 読み取り系は所有者だけに許可されるため、Initialize の完了前は呼ばない
+    if (!m_connected)
+        return;
     m_dbus->getRepos([this](bool ok, const QString &, const QString &, const QVariantList &args) {
         if (!ok)
             return;
@@ -1424,6 +1427,9 @@ void PackageController::refreshSingleRepo(const QString &alias)
  */
 void PackageController::loadServices()
 {
+    // 読み取り系は所有者だけに許可されるため、Initialize の完了前は呼ばない
+    if (!m_connected)
+        return;
     m_dbus->getServices([this](bool ok, const QString &, const QString &, const QVariantList &args) {
         if (!ok)
             return;

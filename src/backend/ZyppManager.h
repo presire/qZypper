@@ -71,8 +71,8 @@ public:
     bool refreshService(const std::string& alias);                             // サービスリフレッシュ
 
     // パッケージ検索・一覧
-    std::vector<PackageInfo> searchPackages(const std::string& query, int flags) const;  // パッケージ検索
-    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options) const;       // 拡張検索 (PoolQuery)
+    std::vector<PackageInfo> searchPackages(const std::string& query, int flags);        // パッケージ検索
+    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options);             // 拡張検索 (PoolQuery)
     PackageDetails getPackageDetails(const std::string& name) const;                     // パッケージ詳細取得
     std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;      // リポ別パッケージ
 
@@ -94,8 +94,10 @@ public:
     //                  retracted/retractedInstalled/ptf/locked)
     std::vector<PackageInfo> getPackagesByClassification(const std::string& cls) const;
 
-    // zypp ヒストリ (/var/log/zypp/history、新しい順)
-    std::vector<HistoryEntry> getHistory(const HistoryOptions& options) const;
+    // zypp ヒストリ (/var/log/zypp/history、新しい順)。ファイルが無ければ空で成功。
+    // 上限超過・取消し・読込失敗は false を返し error に理由を設定する。
+    bool getHistory(const HistoryOptions& options, std::vector<HistoryEntry>& entries,
+                    std::string& error);
 
     // ソルバーテストケース生成 (戻り値は作成したディレクトリパス)
     std::string createSolverTestcase();                          // /var/log 配下に出力
@@ -206,12 +208,6 @@ public:
      * @param cb 回答コールバック (ワーカースレッドで実行)
      */
     void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
-
-    /**
-     * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する。
-     * @param cb 回答コールバック (ワーカースレッドで実行)
-     */
-    void setUnsignedFilePromptCallback(UnsignedFilePromptFn cb);
 
     /**
      * @brief 検証済みローカルRPMを一時 plaindir リポジトリ経由で選択・解決する。

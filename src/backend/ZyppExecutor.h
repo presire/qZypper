@@ -43,14 +43,6 @@ public:
      */
     std::optional<KeyTrustDecision> askKeyTrust(const KeyTrustAnswerInfo &info);
 
-    /**
-     * @brief 未署名ファイル・検証失敗の続行可否を利用者へ問い合わせる (ワーカースレッド専用)。
-     * @param file 対象ファイル
-     * @param kind 問い合わせ種別
-     * @return 続行可否 (未回答・取消時は std::nullopt)
-     */
-    std::optional<bool> askUnsignedFile(const std::string &file, KeyTrustPromptKind kind);
-
 signals:
     void untrustedKey(const QVariantMap &key);
     void promptRequested(quint32 id, const QString &type, const QVariantMap &data);

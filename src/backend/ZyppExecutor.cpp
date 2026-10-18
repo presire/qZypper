@@ -52,9 +52,6 @@ ZyppExecutor::ZyppExecutor(QObject *parent) : QObject(parent), m_worker(new QObj
         manager.setKeyTrustPromptCallback([this](const KeyTrustAnswerInfo &info) {
             return askKeyTrust(info);
         });
-        manager.setUnsignedFilePromptCallback([this](const std::string &file, KeyTrustPromptKind kind) {
-            return askUnsignedFile(file, kind);
-        });
     }, Qt::BlockingQueuedConnection);
 }
 
@@ -67,7 +64,6 @@ ZyppExecutor::~ZyppExecutor()
         auto &manager = ZyppManager::instance();
         manager.setUntrustedKeyCallback({});
         manager.setKeyTrustPromptCallback({});
-        manager.setUnsignedFilePromptCallback({});
         manager.cleanupLocalRpms();
         manager.shutdown();
     }, Qt::BlockingQueuedConnection);
@@ -138,14 +134,6 @@ std::optional<KeyTrustDecision> ZyppExecutor::askKeyTrust(const KeyTrustAnswerIn
     Q_ASSERT(QThread::currentThread() == &m_thread);
     const QVariantMap answer = ask(KeyTrustPrompt::buildKeyRequest(info));
     return KeyTrustPrompt::decisionFromAnswer(answer);
-}
-
-/** @brief 未署名ファイル・検証失敗の続行可否を専用プロンプトで問い合わせる。 */
-std::optional<bool> ZyppExecutor::askUnsignedFile(const std::string &file, KeyTrustPromptKind kind)
-{
-    Q_ASSERT(QThread::currentThread() == &m_thread);
-    const QVariantMap answer = ask(KeyTrustPrompt::buildUnsignedRequest(file, kind));
-    return KeyTrustPrompt::unsignedFromAnswer(kind, answer);
 }
 
 } // namespace qZypper

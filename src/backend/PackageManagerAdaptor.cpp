@@ -63,11 +63,17 @@ bool PackageManagerAdaptor::checkNotBusy()
     return false;
 }
 
-/** @brief 読取要求もワーカーとの競合を防ぐ。 */
+/**
+ * @brief 読取要求を所有者だけに許可し、ワーカーとの競合も防ぐ。
+ *
+ * 所有者以外は実行中かどうかに関係なく AccessDenied とし、ワーカーもアイドル期限も使わせない。
+ */
 bool PackageManagerAdaptor::checkRead()
 {
-    resetIdleTimer();
-    return checkNotBusy() && checkArguments();
+    if (!checkOwner() || !checkNotBusy() || !checkArguments()) return false;
+    if (m_initialized) return true;
+    sendErrorReply(QStringLiteral("org.presire.qzypper.Error.NotInitialized"), QStringLiteral("Backend not initialized"));
+    return false;
 }
 
 /** @brief 一意バス名で所有者を検査する。 */
@@ -139,24 +145,32 @@ bool PackageManagerAdaptor::AnswerPrompt(uint id, const QVariantMap &answer)
     // 鍵の信頼 (一時・恒久とも) は所有者の trust-key 認可を待ってから確定する (ask-then-authorize)。
     const QString action = answer.value(QStringLiteral("action")).toString();
     if (action == QLatin1String("trust-permanent") || action == QLatin1String("trust-temporary")) {
-        // 認可ダイアログを出す前に、有効な問合せへの正当な回答かを検証する
-        if (!m_executor.prompts().accepts(id, answer)) {
-            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid, expired, or mismatched prompt answer"));
-            return false;
-        }
         if (!m_authId.isEmpty()) {
             sendErrorReply(QStringLiteral("org.presire.qzypper.Error.Busy"),
                            QStringLiteral("An authorization request is already pending"));
             return false;
         }
+        // 認可ダイアログを出す前に回答を検証し、認可が終わるまで問合せの期限切れを止める
+        if (!m_executor.prompts().hold(id, answer)) {
+            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid, expired, or mismatched prompt answer"));
+            return false;
+        }
         const QVariantMap requested = answer;
         m_authId = m_authorization.request(m_owner, QStringLiteral("org.presire.qzypper.trust-key"),
-                                           [this, id, requested](bool authorized) {
-            m_authId.clear();
-            QVariantMap effective = requested;
-            if (!authorized)
-                effective = QVariantMap{{QStringLiteral("action"), QStringLiteral("reject")}};
-            m_executor.prompts().answer(id, effective);
+                                           [this, id, requested](const QString &authId, bool authorized) {
+            clearAuthorizationId(m_authId, authId);
+            const QVariantMap effective = authorized
+                ? requested : QVariantMap{{QStringLiteral("action"), QStringLiteral("reject")}};
+            if (!m_executor.prompts().release(id, effective)) {
+                // 認可は得たが中断などで問合せが既に終わっていた場合は、反映できなかったことを知らせる。
+                // 取消しで終わった場合は鍵が拒否されたままなので通知しない。
+                if (authorized)
+                    emitToOwner(QStringLiteral("ErrorOccurred"),
+                        {QStringLiteral("The key trust answer could not be applied because the prompt has ended")});
+            } else if (!authorized) {
+                emitToOwner(QStringLiteral("ErrorOccurred"),
+                    {QStringLiteral("Authorization to trust the key was denied; the key was rejected")});
+            }
         });
         return true;
     }
@@ -188,10 +202,10 @@ void PackageManagerAdaptor::bumpRevision()
     m_resolvedRevision = 0;
 }
 
-/** @brief libzyppに触れず改訂番号を返す。 */
+/** @brief libzyppに触れず改訂番号を返す。選択状態の変化が分かるため所有者に限る。 */
 qulonglong PackageManagerAdaptor::GetSelectionRevision()
 {
-    resetIdleTimer();
+    if (!checkOwner()) return 0;
     return m_revision;
 }
 

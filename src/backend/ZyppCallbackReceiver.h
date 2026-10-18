@@ -254,12 +254,6 @@ public:
     void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
 
     /**
-     * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する (mutex 保護)。
-     * @param cb 回答コールバック (ワーカースレッドで実行)。未設定時は fail-closed。
-     */
-    void setUnsignedFilePromptCallback(UnsignedFilePromptFn cb);
-
-    /**
      * @brief GPG鍵を信頼するか確認 — 承認済みフィンガープリントのみ信頼する。
      * @param key 対象の公開鍵
      * @param keycontext 鍵のコンテキスト (リポジトリ情報)
@@ -304,7 +298,6 @@ private:
     std::set<std::string> m_approved;
     UntrustedKeyCallbackFn m_untrustedCb;
     KeyTrustPromptFn m_keyTrustPrompt;
-    UnsignedFilePromptFn m_unsignedPrompt;
 };
 
 /**

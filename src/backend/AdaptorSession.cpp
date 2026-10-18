@@ -38,7 +38,7 @@ bool PackageManagerAdaptor::Initialize()
     }
     setDelayedReply(true);
     const auto authId = m_authorization.request(caller, QStringLiteral("org.presire.qzypper.initialize"),
-        [this, caller](bool authorized) { handleInitializeAuth(caller, authorized); });
+        [this, caller](const QString &, bool authorized) { handleInitializeAuth(caller, authorized); });
     m_pendingInitCalls.insert(caller, PendingInit{caller, uid.value(), message(), authId});
     m_ownerWatcher.addWatchedService(caller);
     return false;

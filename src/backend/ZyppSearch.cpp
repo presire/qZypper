@@ -3,11 +3,15 @@
 
 #include <zypp/Locale.h>
 #include <zypp/PoolQuery.h>
+#include <zypp/Repository.h>
 #include <zypp/ResKind.h>
 #include <zypp/ZConfig.h>
+#include <zypp/sat/Pool.h>
 #include <zypp/sat/SolvAttr.h>
+#include <zypp/ui/Selectable.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -123,7 +127,7 @@ void buildQuery(zypp::PoolQuery &query, const SearchOptions &options)
  * @param flags 検索フラグ (SearchFlag のビットマスク)
  * @return 一致したパッケージ情報のベクタ
  */
-std::vector<PackageInfo> ZyppManager::searchPackages(const std::string &query, int flags) const
+std::vector<PackageInfo> ZyppManager::searchPackages(const std::string &query, int flags)
 {
     if (query.size() > 256 || flags < 1 || flags > kMaxSearchFlags) {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -147,7 +151,7 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string &query, i
  * @param options 検証済み検索オプション
  * @return 一致したパッケージ情報のベクタ
  */
-std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &options) const
+std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &options)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::vector<PackageInfo> result;
@@ -162,13 +166,44 @@ std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &opti
     }
 
     try {
-        zypp::PoolQuery query;
-        buildQuery(query, options);
+        // selectableBegin()/++it は次の一致まで不一致の候補を内部で走査するため、
+        // プール全体を 1 クエリにすると 0 件一致の検索がキャンセル不能になる。
+        // リポジトリ単位のクエリに分割し、各リポジトリの境界と一致ごとに
+        // キャンセルと heartbeat を確認する (中断待ちは最大 1 リポジトリ分)。
+        std::vector<std::string> aliases;
+        if (!options.repoAlias.isEmpty()) {
+            aliases.push_back(options.repoAlias.toStdString());
+        } else {
+            for (const zypp::Repository &repo : zypp::sat::Pool::instance().repos())
+                aliases.push_back(repo.alias());
+        }
 
-        for (auto it = query.selectableBegin(); it != query.selectableEnd(); ++it) {
-            const zypp::ui::Selectable::Ptr &sel = *it;
-            if (sel)
-                result.push_back(makePackageInfo(sel));
+        std::set<const zypp::ui::Selectable *> seen;
+        quint64 enumerated = 0;
+        for (const std::string &alias : aliases) {
+            if (m_cancelRequested.load()) {
+                m_lastError = "Operation cancelled";
+                return {};
+            }
+            m_operation.heartbeat();
+
+            SearchOptions scoped = options;
+            scoped.repoAlias = QString::fromStdString(alias);
+            zypp::PoolQuery query;
+            buildQuery(query, scoped);
+
+            for (auto it = query.selectableBegin(); it != query.selectableEnd(); ++it) {
+                if (m_cancelRequested.load()) {
+                    m_lastError = "Operation cancelled";
+                    return {};
+                }
+                const zypp::ui::Selectable::Ptr &sel = *it;
+                // 同名パッケージは複数リポジトリで一致するため 1 件にまとめる。
+                if (sel && seen.insert(sel.get()).second)
+                    result.push_back(makePackageInfo(sel));
+                if (++enumerated % 1000 == 0)
+                    m_operation.heartbeat();
+            }
         }
     } catch (const zypp::MatchInvalidRegexException &e) {
         m_lastError = std::string("Invalid search regex: ") + e.msg();

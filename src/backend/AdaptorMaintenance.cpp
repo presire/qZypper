@@ -130,15 +130,28 @@ QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
         }
         return {};
     }
-    return runRead([parsed]() -> QVariant {
-        const std::vector<HistoryEntry> entries = ZyppManager::instance().getHistory(parsed);
+    // 上限超過などの失敗を空の履歴と区別できるよう、D-Bus エラーとして返す。
+    if (!checkRead()) return {};
+    startWorker(message(), [parsed] {
+        AsyncOutcome result;
+        std::vector<HistoryEntry> entries;
+        std::string historyError;
+        if (!ZyppManager::instance().getHistory(parsed, entries, historyError)) {
+            const bool cancelled = historyError == "Operation cancelled";
+            result.errorName = cancelled ? QStringLiteral("org.presire.qzypper.Error.Cancelled")
+                                         : QStringLiteral("org.freedesktop.DBus.Error.Failed");
+            result.errorText = QString::fromStdString(historyError);
+            return result;
+        }
         QVariantList list;
         list.reserve(static_cast<int>(entries.size()));
         for (const HistoryEntry &entry : entries) {
             list.append(entry.toVariantMap());
         }
-        return list;
-    }).toList();
+        result.value = list;
+        return result;
+    });
+    return {};
 }
 
 QVariantMap PackageManagerAdaptor::VerifySystem()

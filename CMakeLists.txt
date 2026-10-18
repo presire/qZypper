@@ -16,6 +16,20 @@ set(CMAKE_AUTORCC ON)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra)
+    # Hardening for root-running backend. Flags already supplied by the packager
+    # (e.g. RPM optflags with _FORTIFY_SOURCE=3) are not overridden.
+    # _FORTIFY_SOURCE needs optimization, so it is limited to optimized configs.
+    if(NOT CMAKE_CXX_FLAGS MATCHES "_FORTIFY_SOURCE")
+        add_compile_options(
+            "$<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
+    endif()
+    if(NOT CMAKE_CXX_FLAGS MATCHES "-fstack-protector")
+        add_compile_options(-fstack-protector-strong)
+    endif()
+    add_link_options(LINKER:-z,relro LINKER:-z,now)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    include(CheckPIESupported)
+    check_pie_supported()
 endif()
 include(CTest)
 
@@ -114,49 +128,70 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/desktop/org.presire.qzypper.desktop
 )
 
 # SELinux: インストール後にポリシーロードとファイルラベル付与を実行
-# cmake configure時にSELinuxツールが見つからなくても、install時に検出して実行する
-set(_SELINUX_TE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/selinux/qzypper.te")
-set(_SELINUX_FC_GEN "${CMAKE_CURRENT_BINARY_DIR}/selinux/qzypper.fc")
-set(_SELINUX_PP_DEST "/usr/share/selinux/packages/qzypper.pp")
-set(_SELINUX_BIN "${CMAKE_INSTALL_FULL_BINDIR}/qzypper")
-set(_SELINUX_BACKEND "${CMAKE_INSTALL_FULL_LIBEXECDIR}/qzypper-backend")
+# cmake configure時にSELinuxツールが見つからなくても、install時に検出して実行する。
+# ENABLE_SELINUX=OFF のときは何もしない。DESTDIR を使うステージングインストール
+# (RPM ビルドなど) では、ビルドホストのポリシーとラベルを変更しないよう
+# semodule と restorecon を実行せず、ロードは RPM の %post に任せる。
+# return() は cmake_install.cmake の残りの処理 (マニフェスト出力など) まで
+# 打ち切るため使わない。ポリシーファイルと同じ selinux コンポーネントに属させる。
+if(ENABLE_SELINUX)
+    set(_SELINUX_TE_SRC "${CMAKE_CURRENT_SOURCE_DIR}/selinux/qzypper.te")
+    set(_SELINUX_FC_GEN "${CMAKE_CURRENT_BINARY_DIR}/selinux/qzypper.fc")
+    # checkmodule は出力ファイルのベース名がモジュール名と一致しないと失敗するため、
+    # 専用ディレクトリに qzypper.mod として置く (/tmp の固定パスは使わない)。
+    set(_SELINUX_MOD_DIR "${CMAKE_CURRENT_BINARY_DIR}/selinux-install")
+    set(_SELINUX_MOD_TMP "${_SELINUX_MOD_DIR}/qzypper.mod")
+    set(_SELINUX_PP_DEST "/usr/share/selinux/packages/qzypper.pp")
+    set(_SELINUX_BIN "${CMAKE_INSTALL_FULL_BINDIR}/qzypper")
+    set(_SELINUX_BACKEND "${CMAKE_INSTALL_FULL_LIBEXECDIR}/qzypper-backend")
 
-install(CODE "
+    install(CODE "
+    set(_QZ_SELINUX_SETUP TRUE)
+    if(NOT \"\$ENV{DESTDIR}\" STREQUAL \"\")
+        message(STATUS \"SELinux: DESTDIR is set; skipping semodule and restorecon (handled by the package %post script)\")
+        set(_QZ_SELINUX_SETUP FALSE)
+    endif()
+
     # Check if running as root
-    execute_process(COMMAND id -u OUTPUT_VARIABLE _UID OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(NOT _UID STREQUAL \"0\")
-        return()
+    if(_QZ_SELINUX_SETUP)
+        execute_process(COMMAND id -u OUTPUT_VARIABLE _UID OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT _UID STREQUAL \"0\")
+            set(_QZ_SELINUX_SETUP FALSE)
+        endif()
     endif()
 
     # Check if SELinux is enabled
-    execute_process(COMMAND selinuxenabled RESULT_VARIABLE _SE OUTPUT_QUIET ERROR_QUIET)
-    if(NOT _SE EQUAL 0)
-        return()
+    if(_QZ_SELINUX_SETUP)
+        execute_process(COMMAND selinuxenabled RESULT_VARIABLE _SE OUTPUT_QUIET ERROR_QUIET)
+        if(NOT _SE EQUAL 0)
+            set(_QZ_SELINUX_SETUP FALSE)
+        endif()
     endif()
 
     # Build .pp from source if not already installed by selinux/ subdirectory
-    if(NOT EXISTS \"${_SELINUX_PP_DEST}\")
+    if(_QZ_SELINUX_SETUP AND NOT EXISTS \"${_SELINUX_PP_DEST}\")
         find_program(_CHECKMODULE checkmodule)
         find_program(_SEMODULE_PKG semodule_package)
         if(_CHECKMODULE AND _SEMODULE_PKG AND EXISTS \"${_SELINUX_TE_SRC}\")
             message(STATUS \"SELinux: Building policy module from source...\")
+            file(MAKE_DIRECTORY \"${_SELINUX_MOD_DIR}\")
             execute_process(
                 COMMAND \${_CHECKMODULE} -M -m
-                        -o /tmp/qzypper_selinux.mod \"${_SELINUX_TE_SRC}\"
+                        -o \"${_SELINUX_MOD_TMP}\" \"${_SELINUX_TE_SRC}\"
                 RESULT_VARIABLE _R ERROR_VARIABLE _ERR)
             if(_R EQUAL 0)
                 if(EXISTS \"${_SELINUX_FC_GEN}\")
                     execute_process(
                         COMMAND \${_SEMODULE_PKG}
                                 -o \"${_SELINUX_PP_DEST}\"
-                                -m /tmp/qzypper_selinux.mod
+                                -m \"${_SELINUX_MOD_TMP}\"
                                 -f \"${_SELINUX_FC_GEN}\"
                         RESULT_VARIABLE _R ERROR_VARIABLE _ERR)
                 else()
                     execute_process(
                         COMMAND \${_SEMODULE_PKG}
                                 -o \"${_SELINUX_PP_DEST}\"
-                                -m /tmp/qzypper_selinux.mod
+                                -m \"${_SELINUX_MOD_TMP}\"
                         RESULT_VARIABLE _R ERROR_VARIABLE _ERR)
                 endif()
                 if(_R EQUAL 0)
@@ -167,12 +202,12 @@ install(CODE "
             else()
                 message(WARNING \"SELinux: checkmodule failed: \${_ERR}\")
             endif()
-            file(REMOVE /tmp/qzypper_selinux.mod)
+            file(REMOVE \"${_SELINUX_MOD_TMP}\")
         endif()
     endif()
 
     # Load policy module
-    if(EXISTS \"${_SELINUX_PP_DEST}\")
+    if(_QZ_SELINUX_SETUP AND EXISTS \"${_SELINUX_PP_DEST}\")
         find_program(_SEMODULE semodule)
         if(_SEMODULE)
             message(STATUS \"SELinux: Loading policy module...\")
@@ -188,22 +223,25 @@ install(CODE "
     endif()
 
     # Relabel binaries
-    find_program(_RESTORECON restorecon)
-    if(_RESTORECON)
-        message(STATUS \"SELinux: Relabeling binaries...\")
-        execute_process(COMMAND \${_RESTORECON} -v \"${_SELINUX_BIN}\"
-                        OUTPUT_VARIABLE _O1 ERROR_QUIET)
-        execute_process(COMMAND \${_RESTORECON} -v \"${_SELINUX_BACKEND}\"
-                        OUTPUT_VARIABLE _O2 ERROR_QUIET)
-        if(_O1)
-            message(STATUS \"  \${_O1}\")
+    if(_QZ_SELINUX_SETUP)
+        find_program(_RESTORECON restorecon)
+        if(_RESTORECON)
+            message(STATUS \"SELinux: Relabeling binaries...\")
+            execute_process(COMMAND \${_RESTORECON} -v \"${_SELINUX_BIN}\"
+                            OUTPUT_VARIABLE _O1 ERROR_QUIET)
+            execute_process(COMMAND \${_RESTORECON} -v \"${_SELINUX_BACKEND}\"
+                            OUTPUT_VARIABLE _O2 ERROR_QUIET)
+            if(_O1)
+                message(STATUS \"  \${_O1}\")
+            endif()
+            if(_O2)
+                message(STATUS \"  \${_O2}\")
+            endif()
+            message(STATUS \"SELinux: Relabeling complete\")
         endif()
-        if(_O2)
-            message(STATUS \"  \${_O2}\")
-        endif()
-        message(STATUS \"SELinux: Relabeling complete\")
     endif()
-")
+" COMPONENT selinux)
+endif()
 
 # CPack RPM パッケージ設定
 set(CPACK_GENERATOR "RPM")
@@ -229,9 +267,12 @@ set(CPACK_RPM_PACKAGE_REQUIRES "dbus-1, polkit")
 set(CPACK_RPM_PACKAGE_SUGGESTS "selinux-policy")
 
 # SELinux post-install / post-uninstall スクリプト
-set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE
-    "${CMAKE_CURRENT_BINARY_DIR}/packaging/rpm-post-install.sh")
-set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE
-    "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm-post-uninstall.sh")
+# ENABLE_SELINUX=OFF のパッケージでは、ポリシーのロードもラベル付与も行わない。
+if(ENABLE_SELINUX)
+    set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE
+        "${CMAKE_CURRENT_BINARY_DIR}/packaging/rpm-post-install.sh")
+    set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm-post-uninstall.sh")
+endif()
 
 include(CPack)

@@ -578,6 +578,7 @@ import org.presire.qzypper.gui
                                 id: pkgSearchPopupLabel
                                 anchors.centerIn: parent
                                 text: qsTr("Search: ") + pkgSearchBuffer
+                                textFormat: Text.PlainText
                                 color: "#ffffff"
                                 font.bold: true
                             }

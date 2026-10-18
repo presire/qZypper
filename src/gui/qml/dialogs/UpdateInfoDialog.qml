@@ -17,6 +17,7 @@ import org.presire.qzypper.gui
 
         Label {
             text: updateInfoDialog.message
+            textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             anchors.left: parent.left
             anchors.right: parent.right

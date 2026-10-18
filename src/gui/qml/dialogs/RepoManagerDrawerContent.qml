@@ -473,6 +473,7 @@ Pane {
                 visible: repoImportDialog.errorText !== ""
                 color: "#F44336"
                 text: repoImportDialog.errorText
+                textFormat: Text.PlainText
             }
             ListView {
                 Layout.fillWidth: true
@@ -488,12 +489,14 @@ Pane {
                         spacing: 2
                         Label {
                             text: (modelData.name || modelData.alias || "") + "  (" + (modelData.alias || "") + ")"
+                            textFormat: Text.PlainText
                             font.bold: true
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
                         Label {
                             text: modelData.url || ""
+                            textFormat: Text.PlainText
                             font.pixelSize: 11
                             elide: Text.ElideMiddle
                             Layout.fillWidth: true

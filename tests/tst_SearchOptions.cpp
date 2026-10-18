@@ -88,6 +88,54 @@ private slots:
         QCOMPARE(out.repoAlias, QStringLiteral("repo-oss"));
     }
 
+    void acceptsValidPosixEre()
+    {
+        // Given
+        const QVariantMap options{{QStringLiteral("query"), QStringLiteral("^lib.*-devel$")},
+                                  {QStringLiteral("match"), QStringLiteral("regex")}};
+        SearchOptions out;
+        QString error;
+
+        // When
+        const bool accepted = parseSearchOptions(options, out, error);
+
+        // Then
+        QVERIFY2(accepted, qPrintable(error));
+        QCOMPARE(out.query, QStringLiteral("^lib.*-devel$"));
+        QCOMPARE(static_cast<int>(out.match), static_cast<int>(SearchMatchMode::Regex));
+    }
+
+    void acceptsBoundedRepetition_data()
+    {
+        QTest::addColumn<QString>("query");
+
+        QTest::newRow("small-bounds") << QStringLiteral("[0-9]{1,3}\\.[0-9]{1,3}");
+        QTest::newRow("brace-in-bracket") << QStringLiteral("[{]x[}]");
+        QTest::newRow("class-then-bound") << QStringLiteral("[[:digit:]]{2}");
+        QTest::newRow("bound-at-limit") << QStringLiteral("a{1000}");
+        QTest::newRow("escaped-brace") << QStringLiteral("a\\{99999\\}");
+        QTest::newRow("quantified-plain-group") << QStringLiteral("(ab)+c*");
+        QTest::newRow("sequential-bounds") << QStringLiteral("a{30}b{40}");
+        QTest::newRow("quantifier-inside-unquantified-group") << QStringLiteral("(lib|libx)-devel.*");
+        QTest::newRow("quantifier-char-in-bracket") << QStringLiteral("[+*?]+");
+    }
+
+    void acceptsBoundedRepetition()
+    {
+        // Given
+        QFETCH(QString, query);
+        const QVariantMap options{{QStringLiteral("query"), query},
+                                  {QStringLiteral("match"), QStringLiteral("regex")}};
+        SearchOptions out;
+        QString error;
+
+        // When
+        const bool accepted = parseSearchOptions(options, out, error);
+
+        // Then
+        QVERIFY2(accepted, qPrintable(error));
+    }
+
     void rejectsInvalidOptions_data()
     {
         QTest::addColumn<QVariantMap>("options");
@@ -128,6 +176,43 @@ private slots:
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("a\nb")}};
         QTest::newRow("regex-does-not-compile")
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("([unclosed")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-posix-unmatched-brace")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a{1")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-posix-unmatched-paren")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-pcre-only-inline-flag")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(?i)abc")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-nested-repetition")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(a{32}){32}")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-huge-nested-repetition")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(a{32767}){32767}")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-open-bound-over-limit")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a{1001,}")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-nested-plus-groups")
+            << QVariantMap{{QStringLiteral("query"), QString(20, QLatin1Char('(')) + QStringLiteral("a")
+                                                         + QStringLiteral(")+").repeated(20)},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-consecutive-plus")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a") + QString(50, QLatin1Char('+'))},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-quantified-quantified-group")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(a+)+")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-star-then-bound")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a*{2}")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-sequential-bounds-over-total")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a{600}b{600}")},
+                           {QStringLiteral("match"), QStringLiteral("regex")}};
+        QTest::newRow("regex-back-reference")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("(a*)*\\1")},
                            {QStringLiteral("match"), QStringLiteral("regex")}};
     }
 

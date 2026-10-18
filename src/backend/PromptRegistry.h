@@ -26,8 +26,23 @@ public:
     using Notify = std::function<void(quint32, const QString &, const QVariantMap &)>;
     QVariantMap ask(const PromptRequest &request, const Notify &notify);
     bool answer(quint32 id, const QVariantMap &answer);
-    /** @brief answer() が受理する回答かを、消費せずに検査する (認可開始前の検証用)。 */
-    bool accepts(quint32 id, const QVariantMap &answer);
+    /**
+     * @brief 回答を検証し、認可が終わるまで問合せを保留する。
+     *
+     * 保留中は期限切れにならず、通常の answer() も受け付けない。
+     * 保留は release() か interrupt() でのみ終わる。
+     * @param id 問合せID
+     * @param answer 認可後に適用する予定の回答
+     * @return 回答が有効で保留を開始した場合 true
+     */
+    bool hold(quint32 id, const QVariantMap &answer);
+    /**
+     * @brief 保留を終え、認可結果に応じた回答を適用する。
+     * @param id hold() に渡した問合せID
+     * @param answer 適用する回答
+     * @return 回答を適用できた場合 true (中断済み・別の問合せに移った場合は false)
+     */
+    bool release(quint32 id, const QVariantMap &answer);
     void open();
     void interrupt();
 
@@ -39,6 +54,8 @@ private:
     QStringList m_actions;
     std::optional<QVariantMap> m_answer;
     bool m_active = false;
+    bool m_held = false;
+    bool acceptable(quint32 id, const QVariantMap &answer) const;
 };
 
 } // namespace qZypper

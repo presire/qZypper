@@ -92,8 +92,19 @@ install(FILES
 # Post-installation: Load module and relabel files
 ########################################
 
+# DESTDIR を使うステージングインストール (RPM ビルドなど) では、ビルドホストの
+# ポリシーとラベルを変更しないよう semodule と restorecon を実行しない。
+# その場合のロードは RPM の %post (packaging/rpm-post-install.sh.in) が行う。
+# SELinux が無効なホストでも実行しない。ポリシーファイルと同じ selinux
+# コンポーネントに属させ、--component 指定時の配置とロードを一致させる。
 if(SEMODULE AND RESTORECON)
     install(CODE "
+      execute_process(COMMAND selinuxenabled RESULT_VARIABLE _QZ_SELINUX_ENABLED OUTPUT_QUIET ERROR_QUIET)
+      if(NOT \"\$ENV{DESTDIR}\" STREQUAL \"\")
+        message(STATUS \"SELinux: DESTDIR is set; skipping semodule and restorecon (handled by the package %post script)\")
+      elseif(NOT _QZ_SELINUX_ENABLED EQUAL 0)
+        message(STATUS \"SELinux: SELinux is not enabled on this system; skipping semodule and restorecon\")
+      else()
         set(POLICY_PP \"/usr/share/selinux/packages/${POLICY_NAME}.pp\")
 
         message(STATUS \"\")
@@ -200,7 +211,8 @@ if(SEMODULE AND RESTORECON)
         endif()
         message(STATUS \"========================================\")
         message(STATUS \"\")
-    ")
+      endif()
+    " COMPONENT selinux)
 else()
     message(STATUS "SELinux tools (semodule, restorecon) not found at build time.")
     message(STATUS "Policy module will be installed but not automatically loaded.")

@@ -15,13 +15,11 @@ namespace qZypper {
 /**
  * @brief GPG 鍵信頼プロンプトの種別。
  *
- * libzypp の KeyRingReport は用途別に複数の問合せを発行する。
- * それぞれを独立した D-Bus プロンプト種別へ写像する。
+ * 利用者へ問い合わせるのは署名鍵の信頼 (askUserToAcceptKey) だけである。
+ * 未署名ファイル・未知の鍵・署名検証失敗は問い合わせずに常に拒否する。
  */
 enum class KeyTrustPromptKind {
-    GpgKey,          //!< 未知の署名鍵 (askUserToAcceptKey)
-    GpgUnsigned,     //!< 未署名ファイル (askUserToAcceptUnsignedFile / askUserToAcceptUnknownKey)
-    GpgVerifyFailed  //!< 署名検証失敗 (askUserToAcceptVerificationFailed)
+    GpgKey  //!< 未知の署名鍵 (askUserToAcceptKey)
 };
 
 /**
@@ -53,10 +51,6 @@ struct KeyTrustAnswerInfo {
 using KeyTrustPromptFn =
     std::function<std::optional<KeyTrustDecision>(const KeyTrustAnswerInfo &info)>;
 
-/** @brief 未署名/検証失敗プロンプトへの回答を返すコールバック (ワーカースレッドで実行)。 */
-using UnsignedFilePromptFn =
-    std::function<std::optional<bool>(const std::string &file, KeyTrustPromptKind kind)>;
-
 /**
  * @brief GPG 関連プロンプトの契約 (型名・データキー・ボタン) を一元管理する。
  *
@@ -68,7 +62,7 @@ namespace KeyTrustPrompt {
 /**
  * @brief プロンプト種別の D-Bus 型文字列を返す。
  * @param kind プロンプト種別
- * @return "gpg-key" / "gpg-unsigned" / "gpg-verify-failed"
+ * @return "gpg-key"
  */
 QString typeString(KeyTrustPromptKind kind);
 
@@ -90,14 +84,6 @@ QVariantList buttons(KeyTrustPromptKind kind);
 PromptRequest buildKeyRequest(const KeyTrustAnswerInfo &info);
 
 /**
- * @brief 未署名/検証失敗プロンプトの要求を構築する。
- * @param file 対象ファイル名
- * @param kind プロンプト種別 (GpgUnsigned または GpgVerifyFailed)
- * @return PromptRequest (safeDefault=reject, タイムアウト時も拒否)
- */
-PromptRequest buildUnsignedRequest(const std::string &file, KeyTrustPromptKind kind);
-
-/**
  * @brief 指定種別で有効なアクションかを判定する。
  * @param kind プロンプト種別
  * @param action 判定するアクション
@@ -111,14 +97,6 @@ bool isKnownAction(KeyTrustPromptKind kind, const QString &action);
  * @return 有効な判断、または不正回答の場合 nullopt
  */
 std::optional<KeyTrustDecision> decisionFromAnswer(const QVariantMap &answer);
-
-/**
- * @brief 回答マップを未署名許否へ写像する。
- * @param kind プロンプト種別
- * @param answer 回答 ({action:...})
- * @return 許可=true/拒否=false、それ以外は nullopt
- */
-std::optional<bool> unsignedFromAnswer(KeyTrustPromptKind kind, const QVariantMap &answer);
 
 } // namespace KeyTrustPrompt
 

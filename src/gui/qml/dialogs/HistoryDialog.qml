@@ -132,6 +132,29 @@ Dialog {
                 activeFocusOnTab: true
                 Accessible.name: qsTr("History action filter")
                 onActivated: historyTable.model = historyDialog.displayRows()
+
+                // バックエンド履歴の action 文字列は外部由来。Fusion ComboBox の既定 delegate
+                // (MenuItem の内部 IconLabel) は AutoText で描画するため、contentItem を
+                // PlainText で上書きする。色・フォント・ハイライトは Fusion/MenuItem.qml
+                // の既定ロジック (palette ベース) を再現。
+                delegate: MenuItem {
+                    id: actionItem
+                    required property var modelData
+                    required property int index
+                    width: ListView.view.width
+                    text: modelData
+                    font.weight: actionCombo.currentIndex === index ? Font.DemiBold : Font.Normal
+                    highlighted: actionCombo.highlightedIndex === index
+                    hoverEnabled: actionCombo.hoverEnabled
+                    contentItem: Text {
+                        text: actionItem.text
+                        textFormat: Text.PlainText
+                        font: actionItem.font
+                        color: actionItem.down || actionItem.highlighted
+                               ? actionItem.palette.highlightedText : actionItem.palette.text
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
             }
 
             Label {
@@ -224,13 +247,13 @@ Dialog {
                         }
 
                         Label { text: fmtTime(modelData); Layout.preferredWidth: 150; elide: Text.ElideRight }
-                        Label { text: String(modelData.action || ""); Layout.preferredWidth: 130; elide: Text.ElideRight }
-                        Label { text: String(modelData.name || ""); Layout.fillWidth: true; elide: Text.ElideRight }
-                        Label { text: String(modelData.edition || ""); Layout.preferredWidth: 120; elide: Text.ElideRight }
-                        Label { text: String(modelData.arch || ""); Layout.preferredWidth: 60; elide: Text.ElideRight }
-                        Label { text: String(modelData.repoAlias || ""); Layout.preferredWidth: 100; elide: Text.ElideRight }
-                        Label { text: String(modelData.requestedBy || ""); Layout.preferredWidth: 90; elide: Text.ElideRight }
-                        Label { text: String(modelData.command || ""); Layout.preferredWidth: 120; elide: Text.ElideRight }
+                        Label { text: String(modelData.action || ""); textFormat: Text.PlainText; Layout.preferredWidth: 130; elide: Text.ElideRight }
+                        Label { text: String(modelData.name || ""); textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight }
+                        Label { text: String(modelData.edition || ""); textFormat: Text.PlainText; Layout.preferredWidth: 120; elide: Text.ElideRight }
+                        Label { text: String(modelData.arch || ""); textFormat: Text.PlainText; Layout.preferredWidth: 60; elide: Text.ElideRight }
+                        Label { text: String(modelData.repoAlias || ""); textFormat: Text.PlainText; Layout.preferredWidth: 100; elide: Text.ElideRight }
+                        Label { text: String(modelData.requestedBy || ""); textFormat: Text.PlainText; Layout.preferredWidth: 90; elide: Text.ElideRight }
+                        Label { text: String(modelData.command || ""); textFormat: Text.PlainText; Layout.preferredWidth: 120; elide: Text.ElideRight }
                     }
                 }
             }

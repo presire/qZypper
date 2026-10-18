@@ -168,6 +168,61 @@ QVariantMap HistoryEntry::toVariantMap() const
     return map;
 }
 
+BoundedHistoryCollector::BoundedHistoryCollector(quint32 offset, quint32 limit)
+    : m_capacity(static_cast<std::size_t>(offset) + static_cast<std::size_t>(limit))
+    , m_offset(offset)
+{
+    m_kept.reserve(m_capacity);
+}
+
+bool BoundedHistoryCollector::newerThan(const Item &a, const Item &b)
+{
+    if (a.entry.timestamp != b.entry.timestamp) {
+        return a.entry.timestamp > b.entry.timestamp;
+    }
+    return a.seq < b.seq;
+}
+
+void BoundedHistoryCollector::add(const HistoryEntry &entry)
+{
+    if (m_capacity == 0) {
+        return;
+    }
+
+    Item item;
+    item.entry = entry;
+    item.seq = m_seq++;
+
+    if (m_kept.size() < m_capacity) {
+        m_kept.push_back(item);
+        std::push_heap(m_kept.begin(), m_kept.end(), HeapCompare());
+        return;
+    }
+
+    // ヒープ先頭は最終順序で最下位 (最初に捨てる候補)。より新しければ差し替える。
+    if (newerThan(item, m_kept.front())) {
+        std::pop_heap(m_kept.begin(), m_kept.end(), HeapCompare());
+        m_kept.back() = item;
+        std::push_heap(m_kept.begin(), m_kept.end(), HeapCompare());
+    }
+}
+
+std::vector<HistoryEntry> BoundedHistoryCollector::take() const
+{
+    std::vector<Item> sorted = m_kept;
+    std::sort(sorted.begin(), sorted.end(), newerThan);
+
+    std::vector<HistoryEntry> result;
+    if (m_offset >= sorted.size()) {
+        return result;
+    }
+    result.reserve(sorted.size() - m_offset);
+    for (std::size_t i = m_offset; i < sorted.size(); ++i) {
+        result.push_back(sorted[i].entry);
+    }
+    return result;
+}
+
 bool parseHistoryOptions(const QVariantMap &map, HistoryOptions &out, std::string &error)
 {
     HistoryOptions options;
@@ -213,6 +268,13 @@ bool parseHistoryOptions(const QVariantMap &map, HistoryOptions &out, std::strin
         options.offset = static_cast<quint32>(value);
     }
 
+    // 保持件数 offset + limit を上限内に制限する (メモリ使用量の安全弁)。
+    if (options.offset > kMaxHistoryWindow
+        || options.limit > kMaxHistoryWindow - options.offset) {
+        error = "invalid 'offset'";
+        return false;
+    }
+
     const QVariant actionsVar = map.value(QStringLiteral("actions"));
     if (!actionsVar.isNull()) {
         QStringList actions;
@@ -240,22 +302,54 @@ bool parseHistoryOptions(const QVariantMap &map, HistoryOptions &out, std::strin
     return true;
 }
 
-std::vector<HistoryEntry> ZyppManager::getHistory(const HistoryOptions &options) const
+bool readHistoryFile(const std::string &path, const HistoryOptions &options,
+                     const std::atomic<bool> &cancel, const std::function<void()> &heartbeat,
+                     std::vector<HistoryEntry> &out, std::string &error,
+                     const HistoryReadLimits &limits)
 {
-    std::vector<HistoryEntry> result;
-
-    const zypp::Pathname historyPath("/var/log/zypp/history");
-    if (!zypp::PathInfo(historyPath).isExist()) {
-        m_lastError = "history file not found";
-        return result;
+    const zypp::PathInfo info{zypp::Pathname(path)};
+    if (!info.isExist()) {
+        out.clear();
+        return true;
     }
+    if (!info.isFile()) {
+        error = "history file is not a regular file";
+        return false;
+    }
+    // 読み込み量はフィルタ後の件数ではなくファイル全体で決まるため、
+    // 先にファイルサイズで上限を掛ける (フィルタ不一致や不正行も対象)。
+    if (static_cast<quint64>(info.size()) > limits.maxBytes) {
+        error = "history file is too large (" + std::to_string(info.size())
+                + " bytes, limit " + std::to_string(limits.maxBytes) + ")";
+        return false;
+    }
+
+    // ファイル走査中に watchdog へ進捗を伝える heartbeat 間隔 (エントリ数)。
+    constexpr quint64 kHeartbeatInterval = 1000;
+
+    BoundedHistoryCollector collector(options.offset, options.limit);
+    bool cancelled = false;
+    bool tooMany = false;
+    quint64 scanned = 0;
 
     try {
         zypp::parser::HistoryLogReader reader(
-            historyPath,
+            info.path(),
             zypp::parser::HistoryLogReader::Options(),
-            [&result](const zypp::HistoryLogData::Ptr &data) -> bool {
-                result.push_back(buildEntry(data));
+            [&](const zypp::HistoryLogData::Ptr &data) -> bool {
+                // HistoryLogReader はコールバックの false で読み込みを打ち切る。
+                if (cancel.load()) {
+                    cancelled = true;
+                    return false;
+                }
+                // 上限で打ち切った結果は最新側を欠くため、部分結果は返さない。
+                if (scanned >= limits.maxEntries) {
+                    tooMany = true;
+                    return false;
+                }
+                collector.add(buildEntry(data));
+                if (++scanned % kHeartbeatInterval == 0 && heartbeat)
+                    heartbeat();
                 return true;
             });
         reader.setIgnoreInvalidItems(true);
@@ -271,22 +365,28 @@ std::vector<HistoryEntry> ZyppManager::getHistory(const HistoryOptions &options)
             reader.readAll();
         }
     } catch (const std::exception &e) {
-        m_lastError = e.what();
-        return {};
+        error = e.what();
+        return false;
     }
 
-    std::stable_sort(result.begin(), result.end(),
-                     [](const HistoryEntry &lhs, const HistoryEntry &rhs) {
-                         return lhs.timestamp > rhs.timestamp;
-                     });
-
-    const std::size_t skip = options.offset;
-    if (skip >= result.size()) {
-        return {};
+    if (cancelled) {
+        error = "Operation cancelled";
+        return false;
     }
-    const std::size_t take = std::min<std::size_t>(options.limit, result.size() - skip);
-    return std::vector<HistoryEntry>(result.begin() + static_cast<std::ptrdiff_t>(skip),
-                                     result.begin() + static_cast<std::ptrdiff_t>(skip + take));
+    if (tooMany) {
+        error = "history has too many entries (limit " + std::to_string(limits.maxEntries) + ")";
+        return false;
+    }
+
+    out = collector.take();
+    return true;
+}
+
+bool ZyppManager::getHistory(const HistoryOptions &options, std::vector<HistoryEntry> &entries,
+                             std::string &error)
+{
+    return readHistoryFile("/var/log/zypp/history", options, m_cancelRequested,
+                           [this] { m_operation.heartbeat(); }, entries, error);
 }
 
 } // namespace qZypper

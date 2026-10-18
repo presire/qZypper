@@ -124,6 +124,7 @@ Pane {
 
                 Label {
                     text: modelData.name || ""
+                    textFormat: Text.PlainText
                     Layout.preferredWidth: 170
                     elide: Text.ElideRight
                     font.bold: modelData.isNeeded === true
@@ -131,18 +132,21 @@ Pane {
 
                 Label {
                     text: patchView.categoryText(modelData.category)
+                    textFormat: Text.PlainText
                     Layout.preferredWidth: 100
                     elide: Text.ElideRight
                 }
 
                 Label {
                     text: modelData.severity || ""
+                    textFormat: Text.PlainText
                     Layout.preferredWidth: 80
                     elide: Text.ElideRight
                 }
 
                 Label {
                     text: modelData.summary || ""
+                    textFormat: Text.PlainText
                     Layout.fillWidth: true
                     elide: Text.ElideRight
                 }

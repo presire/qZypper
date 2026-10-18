@@ -70,7 +70,7 @@ QString PolkitAuthorization::request(const QString &caller, const QString &actio
         const bool cancelled = m_cancelled.take(id);
         const bool authorized = !cancelled && caller.startsWith(':') && authorizedReply(watcher->reply());
         watcher->deleteLater();
-        completion(authorized);
+        completion(id, authorized);
     });
     return id;
 }

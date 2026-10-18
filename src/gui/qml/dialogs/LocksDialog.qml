@@ -89,10 +89,10 @@ Dialog {
                 required property var modelData
 
                 Label { text: modelData.name || ""; textFormat: Text.PlainText; Layout.preferredWidth: 150; elide: Text.ElideRight }
-                Label { text: modelData.kind || ""; Layout.preferredWidth: 70; elide: Text.ElideRight }
-                Label { text: modelData.match || ""; Layout.preferredWidth: 55; elide: Text.ElideRight }
+                Label { text: modelData.kind || ""; textFormat: Text.PlainText; Layout.preferredWidth: 70; elide: Text.ElideRight }
+                Label { text: modelData.match || ""; textFormat: Text.PlainText; Layout.preferredWidth: 55; elide: Text.ElideRight }
                 Label { text: modelData.repoAlias || ""; textFormat: Text.PlainText; Layout.preferredWidth: 100; elide: Text.ElideRight }
-                Label { text: modelData.arch || ""; Layout.preferredWidth: 60; elide: Text.ElideRight }
+                Label { text: modelData.arch || ""; textFormat: Text.PlainText; Layout.preferredWidth: 60; elide: Text.ElideRight }
                 Label { text: modelData.version || ""; textFormat: Text.PlainText; Layout.preferredWidth: 85; elide: Text.ElideRight }
                 Label { text: modelData.comment || ""; textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight; color: palette.placeholderText }
                 Label {
