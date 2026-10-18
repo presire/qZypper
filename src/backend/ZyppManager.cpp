@@ -1082,6 +1082,17 @@ bool ZyppManager::modifyRepo(const std::string& alias, const RepoChanges& change
         if (changes.keepPackages)
             repo.setKeepPackages(*changes.keepPackages);
 
+        // 保存前に、変更後の RepoInfo 全体 (ベース URL・GPG 鍵 URL・ミラーリスト・
+        // サービス由来の設定) をポリシー検査する。違反時は .repo を書き換えない。
+        // checkRepoOrigins はミラーリスト取得 (ネットワーク I/O) を伴い、
+        // ここではメディアに触れないため行わない。端点は refreshRepo /
+        // refreshRepos / commit が使用直前に検査する。
+        std::string policyErr;
+        if (!checkRepoPolicy(repo, policyErr)) {
+            m_lastError = "Repository violates policy: " + policyErr;
+            return false;
+        }
+
         m_repoManager->modifyRepository(alias, repo);
         return true;
     } catch (const zypp::Exception& e) {

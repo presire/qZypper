@@ -119,7 +119,7 @@ The bottom pane displays detailed information for the selected package across si
 
 A modal overlay displayed during repository refresh operations,  
 featuring a progress indicator, status message, and cancel button.  
-Press `Escape` or click the cancel button to gracefully abort the operation after the current repository finishes.  
+Press `Escape` or click the cancel button to cancel the operation; the refresh stops the in-progress repository's libzypp call as soon as it observes the cancellation request.  
 
 ## Architecture
 
@@ -234,6 +234,10 @@ cd build && cpack -G RPM
 | App icon | `/usr/share/icons/hicolor/{64x64,128x128,256x256,512x512,1024x1024}/apps/qZypper.png` |
 | SELinux policy | `/usr/share/selinux/packages/qzypper.pp` |
 
+### SELinux Policy Installation
+
+The SELinux files and the policy-load step belong to the `selinux` install component. When `cmake --install` runs as root, SELinux is enabled, and `semodule` and `restorecon` were found at configure time, the policy module is loaded (`semodule -i /usr/share/selinux/packages/qzypper.pp`) and the binaries are relabeled (`restorecon`). When `DESTDIR` is set (staging, as done by RPM packaging), the policy is not loaded or relabeled during install; the RPM `%post` script loads it instead. With `-DENABLE_SELINUX=OFF`, nothing SELinux-related is built or installed, and the RPM `%post`/`%postun` scripts are not registered.
+
 ## Directory Structure
 
 ```
@@ -288,11 +292,11 @@ The backend therefore starts with a deterministic environment rather than inheri
 The backend is auto-started by D-Bus activation. It has no explicit shutdown method; its lifetime is governed by an idle timer and by the session owner's connection:  
 
 - A single-shot 5-minute idle timer starts when the backend starts.  
-- The timer is stopped while a worker operation runs and restarted when the operation finishes.  
+- The timer is not stopped when a worker operation starts; it is restarted when the session owner's operation finishes.  
 - Calls from the session owner restart the timer.  
 - When the timer fires, the backend exits if no operation is running and no `Initialize` authorization is pending. Otherwise it re-arms and waits again.  
 
-When the session owner's D-Bus connection disappears (GUI exit or crash), the backend does not hand the session to another client. It exits immediately if idle, or right after the currently running operation completes.  
+When the session owner's D-Bus connection disappears (GUI exit or crash), the backend does not hand the session to another client. It releases the owner session and restarts the 5-minute idle timer; the process then exits when that timer fires, not immediately.  
 
 There is no "idle timer permanently stopped after long-running operations" mode.  
 
@@ -306,8 +310,8 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 - Every privileged method is authorized server-side again with Polkit for the caller's bus name: `org.presire.qzypper.refresh-repos`, `org.presire.qzypper.manage-repos`, `org.presire.qzypper.install-packages`, and `org.presire.qzypper.trust-key`.  
 - Mutating methods are owner-only. Only one operation runs at a time: a single worker thread executes it and the D-Bus reply is delayed until it finishes. Concurrent calls fail with `org.presire.qzypper.Error.Busy`. `CancelOperation()` (owner only) requests cooperative cancellation through a cancellation token.  
 - `Commit(t expectedRevision)`: the GUI reads the current selection revision with `GetSelectionRevision()` and passes it back. Dependencies must have been resolved for that exact revision, otherwise the call is rejected with `org.presire.qzypper.Error.SelectionChanged`.  
-- When a new GPG key is needed, the backend emits `UntrustedKeyDetected(a{sv})` carrying the fingerprint. Signature and digest problems are always rejected. The user approves the exact fingerprint in the GUI, which calls `TrustKey(s fingerprint)` (Polkit `trust-key`). This records a one-shot approval: the key is imported only when the user retries the operation (for example, refresh again).  
-- Progress and state signals (`ProgressChanged`, `CommitProgressChanged`, `RepoRefreshProgress`, `TransactionFinished`, `ErrorOccurred`, `PackageStateChanged`, `UntrustedKeyDetected`) are unicast: they are sent only to the session owner, not broadcast to the bus.  
+- When an operation hits a repository signing key that is not yet trusted, the backend sends `PromptRequested(id, "gpg-key", data)` (with the key ID, fingerprint, owner, and dates) to the session owner. The owner answers with `AnswerPrompt(id, {"action": ...})`: `trust-temporary` trusts the key for the current operation only, `trust-permanent` imports it into the keyring, and `reject` refuses it. Both trust actions additionally require Polkit `trust-key`; while that authorization is pending, the prompt's 60-second timeout is paused, and a denied authorization rejects the key. An unanswered, expired, or invalid prompt rejects the key. If no prompt handler is available, the backend emits `UntrustedKeyDetected(a{sv})` and refuses the key; the user can then pre-approve that exact fingerprint with `TrustKey(s fingerprint)` (Polkit `trust-key`), and the key is imported once the next time libzypp asks for it. Signature problems (unsigned files, unknown key IDs, verification failures) and digest problems are always rejected without any prompt; there is no accept-once for them.  
+- Progress and state signals (`ProgressChanged`, `CommitProgressChanged`, `RepoRefreshProgress`, `TransactionFinished`, `ErrorOccurred`, `PackageStateChanged`, `UntrustedKeyDetected`, `PromptRequested`, `PromptClosed`) are unicast: they are sent only to the session owner, not broadcast to the bus.  
 
 ### Polkit Actions
 
@@ -328,17 +332,20 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | | `RefreshRepos()` | Refresh all repositories |
 | | `RefreshSingleRepo(alias)` | Refresh a single repository |
 | | `TrustKey(fingerprint)` | Approve a repository signing key (one-shot) |
+| | `AnswerPrompt(id, answer)` | Answer an in-flight prompt such as a GPG key trust request (owner only) |
 | | `AddRepo(url, name)` | Add repository (simple) |
 | | `AddRepoFull(properties)` | Add repository (full properties) |
 | | `RemoveRepo(alias)` | Remove repository |
 | | `SetRepoEnabled(alias, enabled)` | Enable / disable repository |
 | | `ModifyRepo(alias, properties)` | Modify repository properties |
+| | `ParseRepoFile(content)` | Parse `.repo` file content (read-only, owner only) |
 | Service | `GetServices()` | Get service list |
 | | `AddService(url, alias)` | Add service |
 | | `RemoveService(alias)` | Remove service |
 | | `ModifyService(alias, properties)` | Modify service properties |
 | | `RefreshService(alias)` | Refresh service |
 | Package | `SearchPackages(query, flags)` | Literal, case-insensitive substring search (see below) |
+| | `SearchPackagesEx(options)` | Extended search: substring, exact, glob, or POSIX ERE regex (see below) |
 | | `GetPackageDetails(name)` | Get package details |
 | | `GetPackagesByRepo(repoAlias)` | Get packages by repository |
 | | `GetPatterns()` | Get pattern list |
@@ -351,14 +358,21 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | Update | `UpdateAllPackages()` | Update all packages (doUpdate) |
 | Solver | `ResolveDependencies()` | Run dependency resolver |
 | | `ApplySolution(problemIndex, solutionIndex)` | Apply conflict resolution |
-| Commit | `GetSelectionRevision()` | Get the current selection revision |
+| Commit | `GetSelectionRevision()` | Get the current selection revision (owner only) |
 | | `Commit(expectedRevision)` | Commit the confirmed selection revision |
 | State | `SaveState()` | Save selection state |
 | | `RestoreState()` | Restore selection state |
 | Other | `GetDiskUsage()` | Get disk usage info |
 | | `CancelOperation()` | Request cooperative cancellation (owner only) |
 
-Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are not owner-gated.
+Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are owner-gated as well: every query requires that `Initialize()` has authorized the caller as the session owner, including `ParseRepoFile` and `GetSelectionRevision`.
+
+### Repository and Package Operations
+
+- `RefreshRepos()` continues refreshing the remaining repositories when one fails, and at the end returns a failure carrying the list of failed repositories. `RefreshSingleRepo(alias)` reports the failure of that repository.
+- `ModifyRepo(alias, properties)` validates URL changes and checks the modified repository configuration against the repository policy before saving: the alias and name must not contain control characters, every base URL and GPG key URL must pass the URL validation below, a mirrorlist must use `https`, `file`, or `dir`, and service-originated repositories cannot inject mirrorlists or, while GPG checking is enabled in `zypp.conf`, weaken `gpgcheck`. A policy violation fails without changing the `.repo` file. Mirror endpoints are checked right before refresh or commit, not in `ModifyRepo`.
+- `InstallLocalRpms(files, fileNames)` copies local RPMs on the backend and is cancellable during the copy as well; a cancelled call returns `org.presire.qzypper.Error.Cancelled`.
+- Importing a `.repo` file accepts only regular files of 64 KiB or less: the GUI rejects anything that is not a regular file, and `ParseRepoFile` rejects content larger than 64 KiB.
 
 ### Package Search
 
@@ -376,9 +390,15 @@ The `flags` bitmask (`SearchFlag`) selects which fields are searched; all flags 
 | `Provides` | 32 | Provides dependencies |
 | `FileList` | 64 | File list (only files available in the loaded metadata / installed packages) |
 
+`SearchPackagesEx(options)` is an extended variant driven by an option map. Its `match` field selects the mode: `substring` (the default, ASCII-case-insensitive), `exact`, `glob`, or `regex`. `regex` is POSIX ERE, validated at the D-Bus boundary with the same flags used by libzypp (`StrMatcher`) and libsolv (`datamatcher`): `REG_EXTENDED | REG_NOSUB | REG_NEWLINE | REG_ICASE`. To bound compilation cost, patterns using back-references, nested or consecutive repetition, or a total of `{m,n}` upper bounds above 1,000 are rejected with `org.freedesktop.DBus.Error.InvalidArgs`. Both search methods reject a query longer than 256 bytes.
+
 ### Repository URL Validation
 
 Repository URLs are validated before use. The scheme must be one of `http`, `https`, `ftp`, `tftp`, `file`, `dir`, `hd`, `iso`, `cd`, `dvd`, `nfs`, `nfs4`, `smb`, or `cifs` (`plugin` and other schemes are rejected). For `iso` URLs, a nested `url` query parameter is validated recursively. Repository aliases allow at most 200 bytes, must not start with `.`, and must not contain `/`, `\`, `[`, `]`, or control characters. Display names allow at most 1024 bytes and must not contain control characters.
+
+### Operation History
+
+`GetHistory(options)` returns the operation history (newest first) read from the libzypp history file. `offset` and `limit` are validated so that `offset + limit` does not exceed 1,000,000, the history file is rejected if it exceeds 64 MiB, and it is also rejected if the number of valid lines scanned exceeds 1,000,000. Exceeding any of these limits returns an error, and a history read failure returns an error (`org.presire.qzypper.Error.Cancelled` when the operation was cancelled, otherwise `org.freedesktop.DBus.Error.Failed`). A missing history file yields an empty result.
 
 ### Signals
 
@@ -391,6 +411,8 @@ Repository URLs are validated before use. The scheme must be one of `http`, `htt
 | `ErrorOccurred(errorMessage)` | Error notification |
 | `PackageStateChanged(packageName, event)` | Package state transition during commit |
 | `UntrustedKeyDetected(keyInfo)` | Untrusted signing key detected (`a{sv}` including the fingerprint) |
+| `PromptRequested(id, type, data)` | In-flight prompt that needs an answer via `AnswerPrompt` (e.g. `gpg-key`) |
+| `PromptClosed(id)` | Prompt ended (answered, expired, or interrupted) |
 
 These signals are unicast: they are sent only to the session owner, not broadcast to all bus clients.
 

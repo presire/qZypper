@@ -1,4 +1,4 @@
-module qzypper 0.4.0;
+module qzypper 0.5.0;
 
 ########################################
 # qZypper SELinux Policy Module
@@ -132,7 +132,7 @@ require {
     role system_r;
 
     # Object classes
-    class process { fork signal signull sigkill sigstop sigchld transition setpgid getpgid getsched setsched setrlimit execmem execstack siginh rlimitinh noatsecure };
+    class process { fork signal signull sigkill sigstop sigchld transition setpgid getpgid getsched setsched setrlimit execmem siginh rlimitinh noatsecure };
     class file { getattr setattr open read write append execute execute_no_trans create unlink link rename lock ioctl map entrypoint execmod watch relabelfrom relabelto };
     class dir { getattr setattr open read write search add_name remove_name rename create rmdir ioctl watch watch_reads relabelfrom relabelto };
     class lnk_file { getattr read create unlink };
@@ -214,20 +214,24 @@ role system_r types qzypper_dbus_t;
 ########################################
 
 # Process operations.
-# AUDIT(qzypper_t execmem): no longer unconditional; granted only while the
-# boolean qzypper_gui_execmem (default: true) is on.
-#  - Qt QML (QV4) does not need execmem on Linux: its JIT allocates code
-#    pages from a memfd (tmpfs), and OSAllocator::canAllocateExecutableMemory()
-#    probes that path first and silently falls back to the bytecode
-#    interpreter when PROT_EXEC is refused (see the tmpfs rules below).
-#  - Mesa llvmpipe (software rendering on hosts without a usable GPU, e.g.
-#    VMs) JIT-compiles shaders into anonymous memory and has no fallback, so
-#    removing execmem by default would leave the GUI unable to render there.
-# Admins on hosts with hardware GL can run
-# `setsebool -P qzypper_gui_execmem off` to drop it.
-# execstack is retained (out of audit scope, needed for normal thread stacks).
-allow qzypper_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched execstack };
-bool qzypper_gui_execmem true;
+# AUDIT(qzypper_t execmem/execstack): both are OFF by default (D4).
+#  - execmem: granted only while the boolean qzypper_gui_execmem (default:
+#    false) is on. Qt QML (QV4) does not need execmem on Linux: its JIT
+#    allocates code pages from a memfd (tmpfs), and
+#    OSAllocator::canAllocateExecutableMemory() probes that path first and
+#    silently falls back to the bytecode interpreter when PROT_EXEC is refused
+#    (see the tmpfs rules below). Only Mesa llvmpipe (software rendering on
+#    hosts without a usable GPU, e.g. VMs) JIT-compiles shaders into anonymous
+#    memory and has no fallback. Hosts that rely on llvmpipe (or that see
+#    execmem denials) can run `setsebool -P qzypper_gui_execmem on`.
+#  - execstack: REMOVED. `readelf -lW` reports GNU_STACK "RW" (no RWE) for the
+#    qzypper GUI binary, the qzypper-backend binary, their linked libraries
+#    (Qt6 Qml/Quick included) and the Qt plugins / Mesa DRI drivers loaded at
+#    runtime, so no mapped object requests an executable stack. Ordinary
+#    pthread stacks are RW; execstack is only needed for objects built with a
+#    RWE GNU_STACK, which the distribution does not produce.
+allow qzypper_t self:process { fork signal signull sigkill sigstop sigchld setpgid getpgid getsched setsched };
+bool qzypper_gui_execmem false;
 if (qzypper_gui_execmem) {
     allow qzypper_t self:process execmem;
 }
@@ -591,43 +595,19 @@ optional {
     allow qzypper_t pulseaudio_home_t:file { getattr open read map lock };
 }
 
-# Browser domain transition (fallback path only).
-# The GUI opens links via the xdg-desktop-portal OpenURI D-Bus API
-# (PackageController::openExternalUrl), so the browser is started by the
-# portal in the user's own domain and never executed from qzypper_t; this
-# also covers browsers installed under $HOME (user_home_t), which qzypper_t
-# must not execute. Only when no portal is available does the GUI fall back
-# to QDesktopServices -> xdg-open/kde-open, which execs the browser as our
-# child; the transition below keeps that fallback working for system-wide
-# browsers (qzypper_t has no network access).
-# AUDIT(qzypper_t -> unconfined_t transition): kept, but narrowed:
-#  - The transition can only be taken through the type_transition rules
-#    below (browser executables). qzypper_t has neither process setexec nor
-#    dyntransition, so it cannot pick unconfined_t for any other program.
-#  - unconfined_t is the invoking user's own login domain; the transition
-#    gives no privileges beyond those of the user who started the GUI.
-#  - siginh and rlimitinh are no longer granted (dontaudit only), so the
-#    kernel resets signal state and resource limits at the transition and a
-#    compromised GUI cannot pass tampered ones to the browser.
-#  - noatsecure is kept: with AT_SECURE set, glibc and libraries using
-#    secure_getenv() (e.g. libdbus) ignore the session environment, which
-#    breaks session-bus integration of the launched browser.
-optional {
-    require {
-        type mozilla_exec_t;
-    }
-    allow qzypper_t mozilla_exec_t:file { getattr open read execute map };
-    type_transition qzypper_t mozilla_exec_t:process unconfined_t;
-}
-optional {
-    require {
-        type chromium_exec_t;
-    }
-    allow qzypper_t chromium_exec_t:file { getattr open read execute map };
-    type_transition qzypper_t chromium_exec_t:process unconfined_t;
-}
-allow qzypper_t unconfined_t:process { transition noatsecure };
-dontaudit qzypper_t unconfined_t:process { siginh rlimitinh };
+# Browser domain transition: REMOVED (D4).
+# PackageController::openExternalUrl opens links through the xdg-desktop-portal
+# OpenURI D-Bus API (session bus), so the browser is started by the portal in
+# the user's own session and is never executed from qzypper_t; this also covers
+# browsers installed under $HOME (user_home_t), which qzypper_t must not
+# execute. QDesktopServices -> xdg-open/kde-open remains only as a fallback for
+# hosts without a portal, and no longer gets a transition to unconfined_t:
+# qzypper_t is network-forbidden while unconfined_t is not, so the former
+# mozilla_exec_t/chromium_exec_t type_transitions let a compromised GUI escape
+# the confinement (and reach the network) simply by exec'ing a system-wide
+# browser. With the transitions gone the fallback fails closed (the browser
+# exec is denied) instead of silently leaving the domain. shell_exec_t execute
+# (below) is kept: xdg-open itself still runs inside qzypper_t for that attempt.
 
 # Home bin directory (~/bin, ~/.local/bin) - search for path resolution
 optional {
@@ -779,12 +759,31 @@ allow qzypper_dbus_t passwd_file_t:file { getattr open read };
 
 # /etc files (generic etc_t)
 # NOTE: /etc/zypp is NOT etc_t. It is labeled system_conf_t by the base policy
-# (file_contexts: /etc/zypp(/.*)?), see the rules below. The etc_t write access
-# here is pre-existing broad access to other /etc files and should be reduced
-# separately.
-allow qzypper_dbus_t etc_t:dir { getattr setattr open read search write add_name remove_name create rmdir watch relabelfrom relabelto };
-allow qzypper_dbus_t etc_t:file { getattr setattr open read write append create unlink rename link lock map relabelfrom relabelto };
-allow qzypper_dbus_t etc_t:lnk_file { getattr read create unlink };
+# (file_contexts: /etc/zypp(/.*)?), see the rules below.
+# AUDIT(etc_t write): the former broad write/create/relabel access is now
+# granted only while qzypper_rpm_helper_write (default: false) is on.
+# In the default classic_rpmtrans mode /usr/bin/rpm (rpm_exec_t) transitions
+# to rpm_t, which installs and relabels the /etc package files itself (base
+# policy), so the backend does not create or relabel package files under /etc.
+# Kept by default: unlink of etc_t files. After a classic commit libzypp
+# (TargetImpl::commit, 17.38.x) itself removes orphaned product files
+# /etc/products.d/<name>.prod (labeled etc_t) that are not owned by any
+# package; without dir write/remove_name and file unlink that cleanup fails
+# (it is only logged).
+allow qzypper_dbus_t etc_t:dir { getattr open read search write remove_name };
+allow qzypper_dbus_t etc_t:file { getattr open read unlink };
+allow qzypper_dbus_t etc_t:lnk_file { getattr read };
+# Opt-in for the RPM helper / direct-script file-write path, shared with the
+# /usr and lib_t blocks below. Needed for the single_rpmtrans mode and for
+# legacy update scripts (/var/adm/update-scripts) that write such files: in
+# both cases the code runs inside qzypper_dbus_t instead of rpm_t (see the
+# RPM scriptlet section).
+bool qzypper_rpm_helper_write false;
+if (qzypper_rpm_helper_write) {
+    allow qzypper_dbus_t etc_t:dir { setattr add_name create rmdir watch relabelfrom relabelto };
+    allow qzypper_dbus_t etc_t:file { setattr write append create rename link lock map relabelfrom relabelto };
+    allow qzypper_dbus_t etc_t:lnk_file { create unlink };
+}
 allow qzypper_dbus_t etc_runtime_t:file { getattr open read write };
 
 # /etc/zypp (repos.d, services.d, zypp.conf) - labeled system_conf_t by the base policy.
@@ -805,22 +804,47 @@ allow qzypper_dbus_t system_conf_t:file { getattr setattr open read write create
 allow qzypper_dbus_t passwd_file_t:file { getattr setattr open read write create rename link lock };
 
 # /usr files - RPM installs/removes files under /usr/{bin,lib,share,libexec,...}
-# Write access is needed for package file installation, icon/mime/desktop cache updates, etc.
-# relabelfrom/relabelto: rpm sets SELinux contexts during installation
-allow qzypper_dbus_t usr_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
-allow qzypper_dbus_t usr_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
-allow qzypper_dbus_t usr_t:lnk_file { getattr read create unlink };
-allow qzypper_dbus_t usr_t:fifo_file { getattr open read write create unlink };
+# AUDIT(usr_t/bin_t/lib_t write): read + execute are kept unconditionally
+# (the backend runs helpers such as /usr/libexec/zypp/zypp-rpm labeled bin_t
+# and reads package data under /usr). The former broad write/create/unlink and
+# relabel access is granted only while qzypper_rpm_helper_write (default:
+# false) is on. In the default classic_rpmtrans mode /usr/bin/rpm (rpm_exec_t)
+# transitions to rpm_t, which installs and relabels the package files itself
+# (base policy), so qzypper_dbus_t needs no write access under /usr. The write
+# path is only reachable when code runs inside qzypper_dbus_t: the
+# single_rpmtrans helper (non-default) and legacy update scripts that libzypp
+# runs directly with /bin/sh after a commit (RunUpdateScripts, scripts placed
+# in /var/adm/update-scripts by some packages/patches). Hosts that use either
+# must turn qzypper_rpm_helper_write on.
+allow qzypper_dbus_t usr_t:dir { getattr open read search };
+allow qzypper_dbus_t usr_t:file { getattr open read map execute execute_no_trans };
+allow qzypper_dbus_t usr_t:lnk_file { getattr read };
+allow qzypper_dbus_t usr_t:fifo_file { getattr open read write };
 
-# /usr/bin, /usr/sbin - binary installation and scriptlet execution
-allow qzypper_dbus_t bin_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
-allow qzypper_dbus_t bin_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
-allow qzypper_dbus_t bin_t:lnk_file { getattr read create unlink };
+# /usr/bin, /usr/sbin - binary execution (installation is handled by rpm_t)
+allow qzypper_dbus_t bin_t:dir { getattr open read search };
+allow qzypper_dbus_t bin_t:file { getattr open read map execute execute_no_trans };
+allow qzypper_dbus_t bin_t:lnk_file { getattr read };
 
-# Shared libraries - RPM installs .so files, ldconfig updates cache
-allow qzypper_dbus_t lib_t:file { getattr setattr open read write create unlink rename link lock map execute execute_no_trans relabelfrom relabelto };
-allow qzypper_dbus_t lib_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
-allow qzypper_dbus_t lib_t:lnk_file { getattr read create unlink };
+# Shared libraries - read/execute of .so files (the ldconfig cache is a separate type)
+allow qzypper_dbus_t lib_t:file { getattr open read map execute execute_no_trans };
+allow qzypper_dbus_t lib_t:dir { getattr open read search };
+allow qzypper_dbus_t lib_t:lnk_file { getattr read };
+
+# Broad write access under /usr and lib_t for the non-default single_rpmtrans /
+# direct-scriptlet path (see the AUDIT note above).
+if (qzypper_rpm_helper_write) {
+    allow qzypper_dbus_t usr_t:dir { setattr write add_name remove_name create rmdir relabelfrom relabelto };
+    allow qzypper_dbus_t usr_t:file { setattr write create unlink rename link lock relabelfrom relabelto };
+    allow qzypper_dbus_t usr_t:lnk_file { create unlink };
+    allow qzypper_dbus_t usr_t:fifo_file { create unlink };
+    allow qzypper_dbus_t bin_t:dir { setattr write add_name remove_name create rmdir relabelfrom relabelto };
+    allow qzypper_dbus_t bin_t:file { setattr write create unlink rename link lock relabelfrom relabelto };
+    allow qzypper_dbus_t bin_t:lnk_file { create unlink };
+    allow qzypper_dbus_t lib_t:dir { setattr write add_name remove_name create rmdir relabelfrom relabelto };
+    allow qzypper_dbus_t lib_t:file { setattr write create unlink rename link lock relabelfrom relabelto };
+    allow qzypper_dbus_t lib_t:lnk_file { create unlink };
+}
 
 # Execute shell (libzypp invokes shell scripts for RPM scriptlets, zypp plugins, etc.)
 allow qzypper_dbus_t shell_exec_t:file { getattr open read execute execute_no_trans map };
@@ -832,13 +856,18 @@ allow qzypper_dbus_t proc_t:lnk_file { getattr read };
 
 # Restart-needed detection after commit: scan /proc/<pid>/maps for deleted
 # files and map the pid to its systemd unit via /proc/<pid>/cgroup (read-only,
-# like `zypper ps`). Controlled by boolean qzypper_detect_restart; when off the
-# scan silently yields an empty list.
+# like `zypper ps`). Controlled by boolean qzypper_detect_restart (default:
+# false). When off the scan silently yields an empty list.
+# AUDIT(qzypper_detect_restart): OFF by default (D4). The on-branch grants
+# CAP_SYS_PTRACE (self:capability sys_ptrace) so the backend can read other
+# users' /proc/<pid>/maps; that is a cross-UID information-disclosure
+# primitive, so it is opt-in. `zypper ps`-style detection only works after
+# `setsebool -P qzypper_detect_restart on`.
 optional {
     require {
         attribute domain;
     }
-    bool qzypper_detect_restart true;
+    bool qzypper_detect_restart false;
     if (qzypper_detect_restart) {
         allow qzypper_dbus_t domain:dir { getattr open read search };
         allow qzypper_dbus_t domain:file { getattr open read };
@@ -926,11 +955,41 @@ allow qzypper_dbus_t root_t:lnk_file { getattr read create unlink };
 # qZypper-specific: Network access
 ########################################
 
-# Outbound TCP connections to HTTP/HTTPS ports (package download from repositories)
+# Outbound TCP connections to HTTP ports (package download from repositories).
+# HTTPS and FTP are handled by the optional blocks above; common proxy cache
+# ports (squid/privoxy/apt-cacher) are added just below.
 allow qzypper_dbus_t http_port_t:tcp_socket name_connect;
 
-# Generic port access (for non-standard repository ports)
-allow qzypper_dbus_t port_t:tcp_socket name_connect;
+# Proxy cache ports (e.g. 3128/8080) - a bounded set for hosts behind an HTTP
+# proxy. Together with the http/https/ftp types these cover the standard cases
+# that used to rely on the generic port_t allowance.
+optional {
+    require {
+        type http_cache_port_t;
+    }
+    allow qzypper_dbus_t http_cache_port_t:tcp_socket name_connect;
+}
+optional {
+    require {
+        type squid_port_t;
+    }
+    allow qzypper_dbus_t squid_port_t:tcp_socket name_connect;
+}
+
+# Unlabeled TCP ports (port_t).
+# AUDIT(port_t name_connect): OFF by default (D4). port_t is a single type:
+# it is the label of TCP ports that have no portcon entry, not an attribute
+# covering every port. Most non-standard ports already have a type
+# (1024-32767 and 61000-65535 are unreserved_port_t, 32768-60999 are
+# ephemeral_port_t), so this rule never covered them. The boolean
+# qzypper_nonstandard_port only restores the old port_t allowance. For a
+# repository or proxy on a non-standard port, label that port instead, e.g.
+# `semanage port -a -t http_port_t -p tcp 8443` (or `-m` if it already has a
+# type). FTP passive data connections are not guaranteed by these rules.
+bool qzypper_nonstandard_port false;
+if (qzypper_nonstandard_port) {
+    allow qzypper_dbus_t port_t:tcp_socket name_connect;
+}
 
 # Network interface and node access
 allow qzypper_dbus_t node_t:tcp_socket node_bind;

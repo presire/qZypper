@@ -5,7 +5,7 @@
 <policyconfig>
 
   <vendor>qZypper</vendor>
-  <vendor_url>https://github.com/user/qzypper</vendor_url>
+  <vendor_url>https://github.com/presire/qZypper</vendor_url>
 
   <!-- セッションの開始 (所有権の確立) -->
   <action id="org.presire.qzypper.initialize">

@@ -1053,13 +1053,13 @@
     </message>
     <message>
         <location line="+2"/>
-        <location line="+576"/>
+        <location line="+587"/>
         <location line="+4"/>
         <source>Patches</source>
         <translation>パッチ</translation>
     </message>
     <message>
-        <location line="-578"/>
+        <location line="-589"/>
         <source>Patches view</source>
         <translation>パッチ表示</translation>
     </message>
@@ -1134,7 +1134,7 @@
         <translation>処理中...</translation>
     </message>
     <message>
-        <location line="+58"/>
+        <location line="+61"/>
         <source>Select RPM Files to Install</source>
         <translation>インストールする RPM ファイルを選択</translation>
     </message>
@@ -1149,7 +1149,7 @@
         <translation>すべてのファイル (*)</translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location line="+10"/>
         <source>The RPM files could not be prepared for installation.</source>
         <translation>RPM ファイルのインストール準備ができませんでした。</translation>
     </message>
@@ -1174,7 +1174,7 @@
         <translation>パッケージデータベースが外部で変更されたため、再読み込みしました</translation>
     </message>
     <message>
-        <location line="+106"/>
+        <location line="+112"/>
         <source>Distribution Upgrade</source>
         <translation>ディストリビューションアップグレード</translation>
     </message>
@@ -1204,7 +1204,7 @@
         <translation>システムは整合しています。変更は不要です。</translation>
     </message>
     <message>
-        <location line="-390"/>
+        <location line="-401"/>
         <source>Apply</source>
         <translation>適用</translation>
     </message>
@@ -1224,7 +1224,7 @@
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="+175"/>
+        <location line="+186"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -2615,34 +2615,34 @@ Please wait.</source>
 <context>
     <name>qZypper::PackageController</name>
     <message>
-        <location filename="../src/gui/controllers/PackageController.cpp" line="+44"/>
-        <location line="+1365"/>
+        <location filename="../src/gui/controllers/PackageController.cpp" line="+65"/>
+        <location line="+1382"/>
         <location line="+37"/>
         <source>Repository refresh completed</source>
         <translation>リポジトリのリフレッシュが完了しました</translation>
     </message>
     <message>
-        <location line="-1400"/>
+        <location line="-1417"/>
         <source>Refreshing: %1 (%2%)</source>
         <translation>リフレッシュ中: %1 (%2%)</translation>
     </message>
     <message>
-        <location line="+1366"/>
+        <location line="+1383"/>
         <source>Refresh cancelled</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location line="-1323"/>
+        <location line="-1340"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
     <message>
-        <location line="+18"/>
+        <location line="+20"/>
         <source>Backend disconnected</source>
         <translation>バックエンドから切断されました</translation>
     </message>
     <message>
-        <location line="+56"/>
+        <location line="+59"/>
         <source>Initializing package manager...</source>
         <translation>パッケージマネージャを初期化中...</translation>
     </message>
@@ -2698,61 +2698,61 @@ Please wait.</source>
         <translation>パターンのパッケージを読み込み中...</translation>
     </message>
     <message>
-        <location line="+631"/>
+        <location line="+639"/>
         <source>Resolving dependencies...</source>
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="+35"/>
+        <location line="+37"/>
         <source>Dependencies resolved</source>
         <translation>依存関係を解決しました</translation>
     </message>
     <message>
-        <location line="-503"/>
-        <location line="+421"/>
-        <location line="+85"/>
-        <location line="+927"/>
+        <location line="-513"/>
+        <location line="+427"/>
+        <location line="+89"/>
+        <location line="+930"/>
         <source>Dependency problems found</source>
         <translation>依存関係の問題が見つかりました</translation>
     </message>
     <message>
-        <location line="-1052"/>
+        <location line="-1061"/>
         <source>Updating all packages...</source>
         <translation>すべてのパッケージを更新中...</translation>
     </message>
     <message>
-        <location line="-402"/>
-        <location line="+409"/>
-        <location line="+87"/>
+        <location line="-406"/>
+        <location line="+413"/>
+        <location line="+91"/>
         <source>Disconnected from backend. Reconnecting...</source>
         <translation>バックエンドとの接続が切断されました。再接続中...</translation>
     </message>
     <message>
-        <location line="-505"/>
+        <location line="-513"/>
         <source>Preparing distribution upgrade...</source>
         <translation>ディストリビューションアップグレードを準備中...</translation>
     </message>
     <message>
         <location line="+12"/>
-        <location line="+409"/>
-        <location line="+87"/>
+        <location line="+413"/>
+        <location line="+91"/>
         <source>Reconnected. Please try again</source>
         <translation>再接続しました。もう一度お試しください</translation>
     </message>
     <message>
-        <location line="-494"/>
-        <location line="+409"/>
-        <location line="+87"/>
+        <location line="-502"/>
+        <location line="+413"/>
+        <location line="+91"/>
         <source>Failed to reconnect to backend</source>
         <translation>バックエンドへの再接続に失敗しました</translation>
     </message>
     <message>
-        <location line="-482"/>
+        <location line="-490"/>
         <source>Distribution upgrade check completed</source>
         <translation>ディストリビューションアップグレードの確認が完了しました</translation>
     </message>
     <message>
-        <location line="+21"/>
+        <location line="+23"/>
         <source>Verifying system integrity...</source>
         <translation>システムの整合性を検証中...</translation>
     </message>
@@ -2772,22 +2772,22 @@ Please wait.</source>
         <translation>必要なパッチを選択中...</translation>
     </message>
     <message>
-        <location line="+333"/>
+        <location line="+335"/>
         <source>Update packages failed</source>
         <translation>パッケージの更新に失敗しました</translation>
     </message>
     <message>
-        <location line="+14"/>
+        <location line="+16"/>
         <source>Update check completed</source>
         <translation>更新確認が完了しました</translation>
     </message>
     <message>
-        <location line="+73"/>
+        <location line="+75"/>
         <source>Resolve dependencies failed</source>
         <translation>依存関係の解決に失敗しました</translation>
     </message>
     <message>
-        <location line="+74"/>
+        <location line="+78"/>
         <source>Failed to obtain a consistent selection state</source>
         <translation>選択状態を一貫して取得できませんでした</translation>
     </message>
@@ -2843,7 +2843,7 @@ Please wait.</source>
         <translation>リフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location line="+489"/>
+        <location line="+490"/>
         <source>Editing session ended</source>
         <translation>編集セッションが終了しました</translation>
     </message>
@@ -2864,12 +2864,12 @@ Please wait.</source>
     </message>
     <message>
         <location line="-28"/>
-        <location filename="../src/gui/controllers/RepoFilePreview.cpp" line="+49"/>
+        <location filename="../src/gui/controllers/RepoFilePreview.cpp" line="+50"/>
         <source>Cannot open file: %1</source>
         <translation>ファイルを開けません: %1</translation>
     </message>
     <message>
-        <location line="+65"/>
+        <location line="+104"/>
         <source>No valid repository definitions were found</source>
         <translation>有効なリポジトリ定義が見つかりませんでした</translation>
     </message>
@@ -2889,7 +2889,7 @@ Please wait.</source>
         <translation>リポジトリのインポートに失敗しました</translation>
     </message>
     <message>
-        <location line="-824"/>
+        <location line="-864"/>
         <source>Signing key approved. It will be imported when you retry the operation.</source>
         <translation>署名鍵を承認しました。操作を再実行したときにインポートされます。</translation>
     </message>
@@ -2935,18 +2935,18 @@ Please wait.</source>
     </message>
     <message>
         <location filename="../src/gui/controllers/RepoFilePreview.cpp" line="+7"/>
-        <location line="+28"/>
+        <location line="+31"/>
         <source>Cannot read file: %1</source>
         <translation>ファイルを読み込めません: %1</translation>
     </message>
     <message>
-        <location line="-21"/>
+        <location line="-24"/>
         <source>The selected item is not a regular file</source>
         <translation>選択した項目は通常のファイルではありません</translation>
     </message>
     <message>
         <location line="+6"/>
-        <location line="+24"/>
+        <location line="+27"/>
         <source>The file is too large (maximum 64 KiB)</source>
         <translation>ファイルが大きすぎます (最大 64 KiB)</translation>
     </message>

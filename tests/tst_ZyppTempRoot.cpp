@@ -26,10 +26,14 @@ private slots:
     void refreshContinuesAfterFailedRepo();
     void reinitializeDoesNotReportStaleError();
     void rejectedPatchStatusFails();
+    void modifyRepoRejectsPolicyViolation();
+    void modifyRepoRejectsDisallowedUrl();
+    void modifyRepoAcceptsValidUrl();
     void cleanupTestCase();
 
 private:
     static bool writeFile(const QString &path, const QByteArray &data);
+    static QByteArray readFile(const QString &path);
     QTemporaryDir m_root;
 };
 
@@ -43,7 +47,16 @@ bool ZyppTempRootTest::writeFile(const QString &path, const QByteArray &data)
     return file.write(data) == data.size();
 }
 
-/** @brief 到達不能なリポジトリと正常なリポジトリを持つ一時ルートで初期化する。 */
+/** @brief ファイル内容を読む (存在しなければ空)。 */
+QByteArray ZyppTempRootTest::readFile(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
+/** @brief 到達不能・正常・modifyRepo 用のリポジトリを持つ一時ルートで初期化する。 */
 void ZyppTempRootTest::initTestCase()
 {
     qputenv("ZYPP_READONLY_HACK", "1");
@@ -57,6 +70,14 @@ void ZyppTempRootTest::initTestCase()
         "baseurl=http://127.0.0.1:9/repo\ntype=rpm-md\ngpgcheck=1\n"));
     QVERIFY(writeFile(reposDir + QStringLiteral("/b-good.repo"),
         "[b-good]\nname=b-good\nenabled=1\nautorefresh=0\nbaseurl=dir:" + root.toUtf8()
+        + "/plain\ntype=plaindir\n"));
+    // modifyRepo 用 (無効化して更新対象から外す)。c-policy は https 以外の
+    // ミラーリストを持つためポリシー違反、d-modify はポリシー準拠。
+    QVERIFY(writeFile(reposDir + QStringLiteral("/c-policy.repo"),
+        "[c-policy]\nname=c-policy\nenabled=0\nautorefresh=0\nbaseurl=dir:" + root.toUtf8()
+        + "/plain\nmirrorlist=http://127.0.0.1:9/mirrors\ntype=plaindir\n"));
+    QVERIFY(writeFile(reposDir + QStringLiteral("/d-modify.repo"),
+        "[d-modify]\nname=d-modify\nenabled=0\nautorefresh=0\nbaseurl=dir:" + root.toUtf8()
         + "/plain\ntype=plaindir\n"));
 
     QVERIFY2(ZyppManager::instance().initialize(root.toStdString(), true),
@@ -153,6 +174,56 @@ void ZyppTempRootTest::rejectedPatchStatusFails()
     QVERIFY(!changed);
     QVERIFY2(QString::fromStdString(manager.lastError()).contains(QStringLiteral("Cannot change status")),
              manager.lastError().c_str());
+}
+
+/** @brief 保存済み設定がポリシー違反なら URL 変更を保存しない。 */
+void ZyppTempRootTest::modifyRepoRejectsPolicyViolation()
+{
+    // Given
+    const QString file = m_root.path() + QStringLiteral("/etc/zypp/repos.d/c-policy.repo");
+    const QByteArray before = readFile(file);
+    QVERIFY(!before.isEmpty());
+    RepoChanges changes;
+    changes.url = QStringLiteral("dir:") + m_root.path() + QStringLiteral("/plain2");
+    // When
+    const bool ok = ZyppManager::instance().modifyRepo("c-policy", changes);
+    // Then
+    const QString error = QString::fromStdString(ZyppManager::instance().lastError());
+    QVERIFY(!ok);
+    QVERIFY2(error.contains(QStringLiteral("violates policy")), qPrintable(error));
+    QVERIFY2(error.contains(QStringLiteral("mirrorlist")), qPrintable(error));
+    QCOMPARE(readFile(file), before);
+}
+
+/** @brief 許可されないスキームへの URL 変更は失敗し、設定を変えない。 */
+void ZyppTempRootTest::modifyRepoRejectsDisallowedUrl()
+{
+    // Given
+    const QString file = m_root.path() + QStringLiteral("/etc/zypp/repos.d/d-modify.repo");
+    const QByteArray before = readFile(file);
+    QVERIFY(!before.isEmpty());
+    RepoChanges changes;
+    changes.url = QStringLiteral("plugin:evil?x=1");
+    // When
+    const bool ok = ZyppManager::instance().modifyRepo("d-modify", changes);
+    // Then
+    QVERIFY(!ok);
+    QCOMPARE(readFile(file), before);
+}
+
+/** @brief ポリシー準拠の URL への変更は保存される。 */
+void ZyppTempRootTest::modifyRepoAcceptsValidUrl()
+{
+    // Given
+    const QString file = m_root.path() + QStringLiteral("/etc/zypp/repos.d/d-modify.repo");
+    const QString newUrl = QStringLiteral("dir:") + m_root.path() + QStringLiteral("/plain2");
+    RepoChanges changes;
+    changes.url = newUrl;
+    // When
+    const bool ok = ZyppManager::instance().modifyRepo("d-modify", changes);
+    // Then
+    QVERIFY2(ok, ZyppManager::instance().lastError().c_str());
+    QVERIFY2(readFile(file).contains(newUrl.toUtf8()), readFile(file).constData());
 }
 
 /** @brief libzypp の資源を解放する。 */
