@@ -6,10 +6,27 @@ import org.presire.qzypper.gui
 
             Pane {
                 id: detailPane
-                SplitView.preferredHeight: splitSettings.detailPaneHeight
-                SplitView.minimumHeight: 120
+                readonly property real minPaneHeight: 200
+                readonly property real defaultPaneHeight: 300
+                // 上部のパッケージ一覧の最小高 (200) + SplitView ハンドル (2) を残す
+                readonly property real reservedTopHeight: 202
+
+                // 過去に最小値付近の値が保存されている場合は既定値で補正する
+                SplitView.preferredHeight: splitSettings.detailPaneHeight >= minPaneHeight
+                                           ? splitSettings.detailPaneHeight : defaultPaneHeight
+                SplitView.minimumHeight: minPaneHeight
+                SplitView.maximumHeight: {
+                    const view = detailPane.SplitView.view
+                    return view ? Math.max(minPaneHeight, view.height - reservedTopHeight) : Infinity
+                }
                 padding: 0
-                onHeightChanged: splitSettings.detailPaneHeight = height
+                // 起動時のレイアウト確定前やウィンドウリサイズ時の高さを保存しないよう、
+                // ユーザがハンドルをドラッグした時のみ保存する
+                onHeightChanged: {
+                    const view = detailPane.SplitView.view
+                    if (view && view.resizing)
+                        splitSettings.detailPaneHeight = height
+                }
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -89,7 +106,7 @@ import org.presire.qzypper.gui
                     Settings {
                         id: splitSettings
                         category: "splitView"
-                        property real detailPaneHeight: 250
+                        property real detailPaneHeight: 300
                     }
                             id: versionPane
                             padding: 0
