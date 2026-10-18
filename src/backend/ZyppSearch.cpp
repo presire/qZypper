@@ -1,11 +1,15 @@
 #include "ZyppManager.h"
 #include "SearchOptions.h"
 
+#include <zypp/Locale.h>
 #include <zypp/PoolQuery.h>
 #include <zypp/ResKind.h>
+#include <zypp/ZConfig.h>
 #include <zypp/sat/SolvAttr.h>
 
 #include <algorithm>
+#include <string>
+#include <vector>
 
 namespace qZypper {
 
@@ -29,6 +33,43 @@ void applyMatchMode(zypp::PoolQuery &query, SearchMatchMode mode)
 }
 
 /**
+ * @brief 翻訳テキスト検索に用いる言語コード列を返す。
+ *
+ * ZConfig::textLocale() から fallback を空になるまで辿る (例: "ja_JP" → "ja" → "en")。
+ * libsolv の表示処理と同様に "en" も言語別属性として検索し、無印属性は呼び出し側で別途検索する。
+ * textLocale() が空の場合は libzypp と同じく "en" から開始する。
+ * @return 言語コードのベクタ (優先順)
+ */
+std::vector<std::string> localizedTextCodes()
+{
+    std::vector<std::string> codes;
+    zypp::Locale start = zypp::ZConfig::instance().textLocale();
+    if (!start)
+        start = zypp::Locale::enCode;
+    for (zypp::Locale locale = start; locale; locale = locale.fallback()) {
+        codes.push_back(locale.code());
+    }
+    return codes;
+}
+
+/**
+ * @brief 原文属性に加え、現在のテキストロケールの翻訳属性も検索対象へ追加する。
+ *
+ * libsolv は翻訳を "solvable:summary:ja" のような言語別キーに格納するため、
+ * 原文キーのみの検索では表示中の翻訳テキストに一致しない。
+ * @param query 対象クエリ
+ * @param attr 原文属性 (SolvAttr::summary / SolvAttr::description)
+ * @param value 検索文字列
+ */
+void addTextAttribute(zypp::PoolQuery &query, const zypp::sat::SolvAttr &attr,
+                      const std::string &value)
+{
+    query.addAttribute(attr, value);
+    for (const std::string &code : localizedTextCodes())
+        query.addAttribute(zypp::sat::SolvAttr(attr.asString() + ":" + code), value);
+}
+
+/**
  * @brief 1 つの SearchFlag に対応する属性検索をクエリへ追加する。
  * @param query 対象クエリ
  * @param flag 追加する検索フィールド
@@ -40,8 +81,8 @@ void addFlagField(zypp::PoolQuery &query, SearchFlag flag, const std::string &va
     switch (flag) {
         case SearchFlag::Name:        query.addAttribute(SolvAttr::name, value);        break;
         case SearchFlag::Keywords:    query.addAttribute(SolvAttr::keywords, value);    break;
-        case SearchFlag::Summary:     query.addAttribute(SolvAttr::summary, value);     break;
-        case SearchFlag::Description: query.addAttribute(SolvAttr::description, value); break;
+        case SearchFlag::Summary:     addTextAttribute(query, SolvAttr::summary, value);     break;
+        case SearchFlag::Description: addTextAttribute(query, SolvAttr::description, value); break;
         case SearchFlag::Requires:    query.addDependency(SolvAttr::dep_requires, value); break;
         case SearchFlag::Provides:    query.addDependency(SolvAttr::dep_provides, value); break;
         case SearchFlag::FileList:    query.addAttribute(SolvAttr::filelist, value);    break;
