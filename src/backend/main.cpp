@@ -2,6 +2,8 @@
 #include <iostream>
 #include <QDBusConnection>
 #include <QDBusError>
+#include <QDBusMetaType>
+#include <QDBusUnixFileDescriptor>
 #include "PackageManagerAdaptor.h"
 
 /**
@@ -17,6 +19,9 @@ int main(int argc, char *argv[])
     QCoreApplication app(argc, argv);
     app.setApplicationName("qzypper-backend");
     app.setApplicationVersion(APP_VERSION);
+
+    // InstallLocalRpms(ah, as) の記述子配列をデマーシャリングするため登録する
+    qDBusRegisterMetaType<QList<QDBusUnixFileDescriptor>>();
 
     // QDBusContext を持つオブジェクトを直接登録する。
     qZypper::PackageManagerAdaptor adaptor;

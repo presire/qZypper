@@ -17,15 +17,34 @@ Dialog {
     signal repoAdded()
 
     property int currentStep: 0
+    property bool awaiting: false        // 追加要求の応答待ち
+    property string errorMessage: ""     // 追加失敗時のエラー表示
 
     onOpened: {
         currentStep = 0
+        awaiting = false
+        errorMessage = ""
         urlSelector.clear()
         nameField.text = ""
         aliasField.text = ""
         prioritySpin.value = 99
         autoRefreshCheck.checked = true
         keepPkgCheck.checked = false
+    }
+
+    Connections {
+        target: PackageController
+        function onAddRepoFinished(success) {
+            if (!root.awaiting)
+                return
+            root.awaiting = false
+            if (success) {
+                root.repoAdded()
+                root.close()
+            } else {
+                root.errorMessage = qsTr("Failed to add repository.")
+            }
+        }
     }
 
     contentItem: StackLayout {
@@ -165,7 +184,7 @@ Dialog {
                 Button {
                     text: qsTr("Add")
                     highlighted: true
-                    enabled: nameField.text.length > 0 && aliasField.text.length > 0
+                    enabled: !root.awaiting && nameField.text.length > 0 && aliasField.text.length > 0
                     onClicked: {
                         var props = {
                             "url":          urlSelector.url,
@@ -179,17 +198,23 @@ Dialog {
                             "type":         ""
                         }
 
-                        var ok = PackageController.addRepoFull(props)
-                        if (ok) {
-                            root.repoAdded()
-                            root.close()
-                        }
+                        root.errorMessage = ""
+                        root.awaiting = true
+                        PackageController.addRepoFull(props)
                     }
                 }
                 Button {
                     text: qsTr("Cancel")
                     onClicked: root.close()
                 }
+            }
+
+            Label {
+                visible: root.errorMessage.length > 0
+                text: root.errorMessage
+                color: palette.brightText
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
         }
     }

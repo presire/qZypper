@@ -291,17 +291,31 @@ struct PatchInfo {
     QString version;                                    // バージョン
     int status = 0;                                     // パッケージ状態
     bool interactive = false;                           // 対話操作が必要か
+    QString id;                                         // 安定識別子 "name-edition.arch@repo"
+    bool isNeeded = false;                              // 適用が必要か
+    bool isRelevant = false;                            // 対象システムに関連するか
+    bool isSatisfied = false;                           // 既に満たされているか
+    bool rebootSuggested = false;                       // 再起動推奨
+    bool restartSuggested = false;                      // サービス再起動推奨
+    bool selected = false;                              // 適用が選択されているか
 
     /** @brief QVariantMap に変換する (D-Bus転送用)。 */
     QVariantMap toVariantMap() const {
         return {
-            {"name",        name},
-            {"summary",     summary},
-            {"category",    category},
-            {"severity",    severity},
-            {"version",     version},
-            {"status",      status},
-            {"interactive", interactive}
+            {"name",             name},
+            {"summary",          summary},
+            {"category",         category},
+            {"severity",         severity},
+            {"version",          version},
+            {"status",           status},
+            {"interactive",      interactive},
+            {"id",               id},
+            {"isNeeded",         isNeeded},
+            {"isRelevant",       isRelevant},
+            {"isSatisfied",      isSatisfied},
+            {"rebootSuggested",  rebootSuggested},
+            {"restartSuggested", restartSuggested},
+            {"selected",         selected}
         };
     }
 };

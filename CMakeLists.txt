@@ -14,6 +14,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Wall -Wextra)
+endif()
+include(CTest)
+
 # Qt6
 find_package(Qt6 6.5 REQUIRED COMPONENTS
     Core
@@ -52,6 +57,9 @@ find_package(Boost 1.86 REQUIRED COMPONENTS thread)
 add_subdirectory(src/common)
 add_subdirectory(src/backend)
 add_subdirectory(src/gui)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 
 # インストール設定
 include(GNUInstallDirs)

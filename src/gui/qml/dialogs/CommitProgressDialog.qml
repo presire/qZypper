@@ -41,6 +41,22 @@ Dialog {
     property string _prevStage: ""
     property bool _hasStateSignal: false
 
+    // RPM スクリプト出力 (メモリ肥大化を防ぐため最新 kMaxScriptLines 行のみ保持)
+    readonly property int kMaxScriptLines: 2000
+    property var scriptLines: []
+    property int scriptErrorCount: 0
+
+    function appendScriptLine(entry) {
+        var prefix = entry.package ? ("[" + entry.package + "] ") : ""
+        var lines = scriptLines
+        lines.push(prefix + (entry.line || ""))
+        if (lines.length > kMaxScriptLines)
+            lines.splice(0, lines.length - kMaxScriptLines)
+        if (entry.isError === true)
+            scriptErrorCount++
+        scriptLines = lines
+    }
+
     ListModel { id: pendingModel }
     ListModel { id: doneModel }
 
@@ -161,6 +177,8 @@ Dialog {
         _prevPkg = ""
         _prevStage = ""
         _hasStateSignal = false
+        scriptLines = []
+        scriptErrorCount = 0
 
         var sorted = pendingList.slice().sort(function(a, b) {
             return a.name.localeCompare(b.name)
@@ -368,6 +386,52 @@ Dialog {
             }
         }
 
+        // RPM スクリプト出力 (出力があった場合のみ表示)
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: commitProgressDialog.scriptLines.length > 0
+            spacing: 4
+
+            RowLayout {
+                Layout.fillWidth: true
+                ToolButton {
+                    id: scriptToggle
+                    checkable: true
+                    checked: false
+                    text: (checked ? "\u25BE " : "\u25B8 ")
+                          + qsTr("Package script output (%1 lines)").arg(commitProgressDialog.scriptLines.length)
+                    Accessible.name: qsTr("Show package script output")
+                }
+                Label {
+                    visible: commitProgressDialog.scriptErrorCount > 0
+                    text: qsTr("%1 error lines").arg(commitProgressDialog.scriptErrorCount)
+                    color: "#F44336"
+                    font.pixelSize: 12
+                }
+                Item { Layout.fillWidth: true }
+            }
+
+            ScrollView {
+                id: scriptScroll
+                visible: scriptToggle.checked
+                Layout.fillWidth: true
+                Layout.preferredHeight: 140
+
+                TextArea {
+                    id: scriptArea
+                    text: commitProgressDialog.scriptLines.join("\n")
+                    textFormat: TextEdit.PlainText
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.NoWrap
+                    font.family: "monospace"
+                    font.pixelSize: 12
+                    Accessible.name: qsTr("Package script output")
+                    onTextChanged: cursorPosition = length
+                }
+            }
+        }
+
         // コンパクトなフッター行: 全体進捗 + パーセント + キャンセル + サマリー表示
         RowLayout {
             Layout.fillWidth: true
@@ -391,6 +455,7 @@ Dialog {
 
             Button {
                 text: qsTr("Cancel")
+                Accessible.name: qsTr("Cancel the running operation")
                 onClicked: PackageController.cancelOperation()
             }
 
@@ -475,6 +540,11 @@ Dialog {
             commitProgressDialog._prevStage = stage
         }
 
+        function onScriptOutputReceived(entry) {
+            if (commitProgressDialog.visible)
+                commitProgressDialog.appendScriptLine(entry)
+        }
+
         function onCommitResultChanged() {
             // 残りの現在アクティビティを完了させる
             commitProgressDialog.finalizeCurrent()
@@ -483,10 +553,11 @@ Dialog {
             var cr = PackageController.commitResult
             resultDialog.resultSuccess = cr.success || false
             resultDialog.resultData = cr
-            if (commitProgressDialog.showSummaryPage)
+            // 失敗・再起動要求などがある場合は設定に関わらず結果を表示する
+            if (commitProgressDialog.showSummaryPage || resultDialog.needsAttention)
                 resultDialog.open()
             else
-                performSearch()
+                resultDialog.refreshRequested()
         }
     }
 }

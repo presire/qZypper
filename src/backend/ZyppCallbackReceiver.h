@@ -12,6 +12,7 @@
 #include <zypp/KeyRing.h>
 #include <zypp/Digest.h>
 #include <zypp/sat/Solvable.h>
+#include "KeyTrustPrompt.h"
 
 
 namespace qZypper {
@@ -238,12 +239,25 @@ public:
      * @param normalizedFingerprint 正規化済みフィンガープリント
      */
     void approveFingerprint(const std::string &normalizedFingerprint);
+    void clearApprovals();                               // セッション終了時の承認破棄
 
     /**
      * @brief 未信頼鍵通知コールバックを設定する (mutex 保護)。
      * @param cb 通知コールバック
      */
     void setUntrustedKeyCallback(UntrustedKeyCallbackFn cb);
+
+    /**
+     * @brief 未知鍵の in-flight 信頼プロンプトコールバックを設定する (mutex 保護)。
+     * @param cb 回答コールバック (ワーカースレッドで実行)。未設定時は従来動作。
+     */
+    void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
+
+    /**
+     * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する (mutex 保護)。
+     * @param cb 回答コールバック (ワーカースレッドで実行)。未設定時は fail-closed。
+     */
+    void setUnsignedFilePromptCallback(UnsignedFilePromptFn cb);
 
     /**
      * @brief GPG鍵を信頼するか確認 — 承認済みフィンガープリントのみ信頼する。
@@ -289,6 +303,8 @@ private:
     std::mutex m_mutex;
     std::set<std::string> m_approved;
     UntrustedKeyCallbackFn m_untrustedCb;
+    KeyTrustPromptFn m_keyTrustPrompt;
+    UnsignedFilePromptFn m_unsignedPrompt;
 };
 
 /**

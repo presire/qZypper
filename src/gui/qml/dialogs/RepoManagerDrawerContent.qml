@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtCore
+import QtQuick.Dialogs
 import org.presire.qzypper.gui
 import "../components" as Components
 
@@ -104,6 +105,13 @@ Pane {
                         onClicked: addRepoDialog.open()
                     }
                     Button {
+                        text: qsTr("Import .repo File...")
+                        icon.name: "document-import"
+                        enabled: !PackageController.busy
+                        Accessible.name: qsTr("Import repositories from a .repo file")
+                        onClicked: repoFileDialog.open()
+                    }
+                    Button {
                         text: qsTr("Remove")
                         icon.name: "list-remove"
                         enabled: repoTable.selectedRepo !== null
@@ -127,16 +135,12 @@ Pane {
                                 text: qsTr("Selected Repository")
                                 enabled: repoTable.selectedRepo !== null
                                 onTriggered: {
-                                    if (!PackageController.checkAuth("org.presire.qzypper.refresh-repos"))
-                                        return
                                     PackageController.refreshSingleRepo(repoTable.selectedRepo.alias)
                                 }
                             }
                             Action {
                                 text: qsTr("All Enabled Repositories")
                                 onTriggered: {
-                                    if (!PackageController.checkAuth("org.presire.qzypper.refresh-repos"))
-                                        return
                                     root.refreshAllRequested()
                                 }
                             }
@@ -395,8 +399,6 @@ Pane {
                         icon.name: "view-refresh"
                         enabled: serviceListView.currentIndex >= 0 && !PackageController.busy
                         onClicked: {
-                            if (!PackageController.checkAuth("org.presire.qzypper.manage-repos"))
-                                return
                             var svc = PackageController.services[serviceListView.currentIndex]
                             PackageController.refreshService(svc.alias)
                         }
@@ -415,8 +417,6 @@ Pane {
                 text: qsTr("Apply Changes")
                 enabled: repoTabActive && propsPanel.hasChanges
                 onClicked: {
-                    if (!PackageController.checkAuth("org.presire.qzypper.manage-repos"))
-                        return
                     propsPanel.applyRequested(propsPanel.getChanges())
                 }
             }
@@ -425,10 +425,6 @@ Pane {
                 text: qsTr("OK")
                 highlighted: true
                 onClicked: {
-                    if (root.hasRepoChanges()) {
-                        if (!PackageController.checkAuth("org.presire.qzypper.manage-repos"))
-                            return
-                    }
                     PackageController.loadRepos()
                     root.closeRequested()
                 }
@@ -441,6 +437,164 @@ Pane {
     }
 
     // ダイアログ類
+    FileDialog {
+        id: repoFileDialog
+        title: qsTr("Select a .repo File")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Repository files (*.repo)"), qsTr("All files (*)")]
+        onAccepted: PackageController.previewRepoFile(selectedFile)
+    }
+
+    Dialog {
+        id: repoImportDialog
+        title: qsTr("Import Repositories")
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(640, (parent ? parent.width : 640) - 40)
+
+        property var repos: []
+        property string content: ""
+        property string errorText: ""
+        property bool awaiting: false
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 8
+
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                visible: repoImportDialog.errorText === ""
+                text: qsTr("The following repositories will be added. Repositories with GPG check disabled or already existing aliases are skipped.")
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                visible: repoImportDialog.errorText !== ""
+                color: "#F44336"
+                text: repoImportDialog.errorText
+            }
+            ListView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(260, contentHeight)
+                clip: true
+                model: repoImportDialog.repos
+                Accessible.role: Accessible.List
+                Accessible.name: qsTr("Repositories in file")
+                delegate: ItemDelegate {
+                    width: ListView.view.width
+                    required property var modelData
+                    contentItem: ColumnLayout {
+                        spacing: 2
+                        Label {
+                            text: (modelData.name || modelData.alias || "") + "  (" + (modelData.alias || "") + ")"
+                            font.bold: true
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            text: modelData.url || ""
+                            font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                            Layout.fillWidth: true
+                        }
+                        Label {
+                            visible: modelData.gpgCheck === false
+                            text: qsTr("GPG check disabled — will be skipped")
+                            color: "#F44336"
+                            font.pixelSize: 11
+                        }
+                    }
+                    Accessible.name: (modelData.alias || "") + " " + (modelData.url || "")
+                }
+            }
+            BusyIndicator {
+                running: repoImportDialog.awaiting
+                visible: running
+                Layout.alignment: Qt.AlignHCenter
+            }
+        }
+
+        footer: DialogButtonBox {
+            Button {
+                text: qsTr("Import")
+                enabled: repoImportDialog.errorText === "" && repoImportDialog.repos.length > 0
+                         && !repoImportDialog.awaiting
+                DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole
+                Accessible.name: qsTr("Import the listed repositories")
+            }
+            Button {
+                text: qsTr("Cancel")
+                enabled: !repoImportDialog.awaiting
+                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
+            }
+            onAccepted: {
+                repoImportDialog.awaiting = true
+                PackageController.importRepoFile(repoImportDialog.content)
+            }
+            onRejected: repoImportDialog.close()
+        }
+        closePolicy: awaiting ? Popup.NoAutoClose : (Popup.CloseOnEscape | Popup.CloseOnPressOutside)
+    }
+
+    Dialog {
+        id: repoImportResultDialog
+        title: qsTr("Import Result")
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Ok
+        width: Math.min(560, (parent ? parent.width : 560) - 40)
+        property string message: ""
+        Label {
+            anchors.fill: parent
+            text: repoImportResultDialog.message
+            wrapMode: Text.WordWrap
+            textFormat: Text.PlainText
+        }
+    }
+
+    Connections {
+        target: PackageController
+        function onRepoFilePreviewReady(ok, entries, content, error) {
+            // 解析不能な節は {alias, error} で返る。単独の {error} はファイル全体の解析失敗。
+            var repos = []
+            for (var i = 0; i < entries.length; ++i) {
+                var e = entries[i]
+                if (e.error !== undefined && e.url === undefined) {
+                    if (e.alias === undefined) {
+                        ok = false
+                        error = e.error
+                    }
+                    continue
+                }
+                repos.push(e)
+            }
+            repoImportDialog.repos = repos
+            repoImportDialog.content = content
+            repoImportDialog.errorText = ok ? (repos.length === 0 ? qsTr("No repositories were found in the file.") : "")
+                                            : error
+            repoImportDialog.awaiting = false
+            repoImportDialog.open()
+        }
+        function onRepoFileImported(result) {
+            repoImportDialog.awaiting = false
+            repoImportDialog.close()
+            var lines = []
+            var added = result.added || []
+            var skipped = result.skipped || []
+            if (added.length > 0)
+                lines.push(qsTr("Added: %1").arg(added.join(", ")))
+            for (var i = 0; i < skipped.length; ++i)
+                lines.push(qsTr("Skipped %1: %2").arg(skipped[i].alias || "?").arg(skipped[i].reason || ""))
+            if (!result.success && result.errorMessage)
+                lines.push(result.errorMessage)
+            if (lines.length === 0)
+                lines.push(qsTr("No repositories were added."))
+            repoImportResultDialog.message = lines.join("\n")
+            repoImportResultDialog.open()
+        }
+    }
+
     AddRepoDialog {
         id: addRepoDialog
         onRepoAdded: PackageController.loadRepos()

@@ -588,16 +588,18 @@ optional {
         type pulseaudio_home_t;
     }
     allow qzypper_t pulseaudio_home_t:dir { getattr open read search };
-    allow qzypper_t pulseaudio_home_t:file { getattr open read map };
+    allow qzypper_t pulseaudio_home_t:file { getattr open read map lock };
 }
 
-# Browser domain transition (Qt.openUrlExternally -> xdg-open -> browser).
-# On SUSE 16, mozilla_t/chromium_t process domains are not used -- browsers
-# normally run as unconfined_t. Outside Flatpak/Snap, Qt does not use the
-# xdg-desktop-portal OpenURI API; it execs xdg-open/kde-open, which execs
-# the browser as our child, so a transition is required for links (package
-# URL, About dialogs) to open in a working browser (qzypper_t has no
-# network access).
+# Browser domain transition (fallback path only).
+# The GUI opens links via the xdg-desktop-portal OpenURI D-Bus API
+# (PackageController::openExternalUrl), so the browser is started by the
+# portal in the user's own domain and never executed from qzypper_t; this
+# also covers browsers installed under $HOME (user_home_t), which qzypper_t
+# must not execute. Only when no portal is available does the GUI fall back
+# to QDesktopServices -> xdg-open/kde-open, which execs the browser as our
+# child; the transition below keeps that fallback working for system-wide
+# browsers (qzypper_t has no network access).
 # AUDIT(qzypper_t -> unconfined_t transition): kept, but narrowed:
 #  - The transition can only be taken through the type_transition rules
 #    below (browser executables). qzypper_t has neither process setexec nor
@@ -827,6 +829,29 @@ allow qzypper_dbus_t shell_exec_t:file { getattr open read execute execute_no_tr
 allow qzypper_dbus_t proc_t:dir { getattr open read search };
 allow qzypper_dbus_t proc_t:file { getattr open read write };
 allow qzypper_dbus_t proc_t:lnk_file { getattr read };
+
+# Restart-needed detection after commit: scan /proc/<pid>/maps for deleted
+# files and map the pid to its systemd unit via /proc/<pid>/cgroup (read-only,
+# like `zypper ps`). Controlled by boolean qzypper_detect_restart; when off the
+# scan silently yields an empty list.
+optional {
+    require {
+        attribute domain;
+    }
+    bool qzypper_detect_restart true;
+    if (qzypper_detect_restart) {
+        allow qzypper_dbus_t domain:dir { getattr open read search };
+        allow qzypper_dbus_t domain:file { getattr open read };
+        allow qzypper_dbus_t domain:lnk_file { getattr read };
+        # 他 UID のプロセスの /proc/<pid>/maps は ptrace 読取り検査で CAP_SYS_PTRACE を要する
+        allow qzypper_dbus_t self:capability sys_ptrace;
+    } else {
+        dontaudit qzypper_dbus_t domain:dir { getattr open read search };
+        dontaudit qzypper_dbus_t domain:file { getattr open read };
+        dontaudit qzypper_dbus_t domain:lnk_file { getattr read };
+        dontaudit qzypper_dbus_t self:capability sys_ptrace;
+    }
+}
 
 # /sys filesystem (device enumeration, module loading info)
 allow qzypper_dbus_t sysfs_t:dir { getattr open read search write };
@@ -1259,6 +1284,9 @@ optional {
         type snapperd_data_t;
     }
     allow qzypper_dbus_t snapperd_data_t:dir { getattr open read search ioctl };
+    # Commit report: read /.snapshots/<num>/info.xml (read-only; snapshots are
+    # created by the zypp snapper plugin, never by qzypper-backend itself)
+    allow qzypper_dbus_t snapperd_data_t:file { getattr open read };
 }
 
 # Snapper configuration directory (/etc/snapper)
@@ -1724,3 +1752,16 @@ type_transition qzypper_dbus_t tmp_t:dir qzypper_tmp_t;
 
 # Tmpfs files (shared memory for X11/Wayland/Qt Quick)
 type_transition qzypper_t tmpfs_t:file qzypper_tmpfs_t;
+
+########################################
+# Local RPM installation via fd passing (InstallLocalRpms(ah, as))
+########################################
+# The GUI opens user-selected RPM files with the user's own credentials and
+# passes the read-only file descriptors over the system bus. The backend never
+# opens paths in user home directories itself; it only reads the passed fds.
+allow qzypper_dbus_t qzypper_t:fd use;
+allow qzypper_dbus_t unconfined_t:fd use;
+allow qzypper_dbus_t { user_home_t user_tmp_t }:file { getattr read map };
+allow system_dbusd_t qzypper_t:fd use;
+allow system_dbusd_t unconfined_t:fd use;
+allow system_dbusd_t { user_home_t user_tmp_t }:file { getattr read };

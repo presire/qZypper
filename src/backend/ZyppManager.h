@@ -22,10 +22,19 @@
 #include <zypp/ServiceInfo.h>
 #include "PackageInfo.h"
 #include "RepoInfo.h"
+#include "ZyppLocks.h"
+#include "ZyppHistory.h"
 #include "ZyppCallbackReceiver.h"
+#include "CommitOutcome.h"
+#include "OperationState.h"
+#include "CommitInteraction.h"
+#include "SnapshotInfo.h"
+#include "LocalRpm.h"
 
 
 namespace qZypper {
+
+struct SearchOptions;   // 拡張検索オプション (SearchOptions.h)
 
 /**
  * @brief libzypp のラッパークラス (シングルトン)。
@@ -38,9 +47,11 @@ public:
     static ZyppManager& instance();                       // シングルトン取得
 
     // 初期化・終了
-    bool initialize(const std::string& root = "/");       // libzypp初期化
+    bool initialize(const std::string& root = "/", bool cacheOnly = false); // libzypp初期化
     void shutdown();                                      // リソース解放
     bool isInitialized() const { return m_initialized; }  // 初期化済みか
+    bool reloadIfChanged();                             // 外部RPM DB変更時に再読込
+    OperationState &operationState() { return m_operation; } // libzypp非依存の共有制御
 
     // リポジトリ管理
     std::vector<RepoInfo> getRepos() const;                              // リポジトリ一覧取得
@@ -61,6 +72,7 @@ public:
 
     // パッケージ検索・一覧
     std::vector<PackageInfo> searchPackages(const std::string& query, int flags) const;  // パッケージ検索
+    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options) const;       // 拡張検索 (PoolQuery)
     PackageDetails getPackageDetails(const std::string& name) const;                     // パッケージ詳細取得
     std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;      // リポ別パッケージ
 
@@ -68,9 +80,25 @@ public:
     std::vector<PatternInfo> getPatterns() const;                                         // パターン一覧取得
     std::vector<PackageInfo> getPackagesByPattern(const std::string& patternName) const;  // パターン別パッケージ
     std::vector<PatchInfo> getPatches(int category = -1) const;                           // パッチ一覧取得
+    bool setPatchStatus(const std::string& id, int status);                               // パッチ選択状態変更
 
     // 変更予定パッケージ一覧 (全プール横断)
     std::vector<PackageInfo> getPendingChanges() const;          // 変更予定一覧取得
+
+    // 永続ロック (zypper al/rl 互換、/etc/zypp/locks)
+    std::vector<LockInfo> getLocks() const;                      // ロック一覧取得
+    bool addLock(const LockInfo& info);                          // ロック追加 (永続化)
+    bool removeLock(const LockInfo& info);                       // ロック削除 (永続化)
+
+    // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/
+    //                  retracted/retractedInstalled/ptf/locked)
+    std::vector<PackageInfo> getPackagesByClassification(const std::string& cls) const;
+
+    // zypp ヒストリ (/var/log/zypp/history、新しい順)
+    std::vector<HistoryEntry> getHistory(const HistoryOptions& options) const;
+
+    // ソルバーテストケース生成 (戻り値は作成したディレクトリパス)
+    std::string createSolverTestcase();                          // /var/log 配下に出力
 
     // 状態管理
     bool setPackageStatus(const std::string& name, int status);  // パッケージ状態変更
@@ -89,15 +117,31 @@ public:
     struct SolverResult {
         bool success;                                            // 解決成功フラグ
         std::vector<ConflictInfo> problems;                      // 衝突問題リスト
+        QVariantMap summary;                                     // リスクサマリ (TransactionSummary)
+    };
+
+    /** @brief ローカルRPMインストールの解決結果 */
+    struct LocalRpmInstallResult {
+        bool success;                                        // 解決成功フラグ
+        std::vector<ConflictInfo> problems;                  // 衝突問題リスト
+        QVariantMap summary;                                 // リスクサマリ (TransactionSummary)
+        std::vector<std::string> packages;                   // 追加対象パッケージ名
+        std::vector<std::string> unsignedPackages;           // 未署名パッケージ名 (GUI 警告用)
     };
 
     SolverResult resolveDependencies();                          // ソルバー実行
     SolverResult updateAllPackages();                            // 全パッケージ更新 (doUpdate + 依存解決)
+    SolverResult verifySystem();                                 // システム整合性検証 (zypper verify 相当)
     bool applySolution(int problemIndex, int solutionIndex);     // 解決策適用
+    SolverResult distUpgrade(bool allowVendorChange);            // ディストリビューション更新 (doUpgrade, zypper dup)
+    SolverResult selectAllNeededPatches(bool securityOnly, bool includeOptional,
+                                        bool skipInteractive);   // 必要パッチ一括選択 (zypper patch)
+    QVariantMap getTransactionSummary();                         // 現在のプール状態のリスクサマリ取得
 
     // コミット
     /** @brief コミット結果 */
     struct CommitResult {
+        CommitClassification classification;            // 未実行を含む実行結果
         bool success = false;                           // コミット成功フラグ
         int installed = 0;                              // インストール件数
         int updated = 0;                                // 更新件数
@@ -110,10 +154,19 @@ public:
         quint64 totalDownloadSize = 0;                  // ダウンロードサイズ合計 (bytes)
         double elapsedSeconds = 0.0;                    // 経過時間 (秒)
         std::string errorMessage;                       // エラーメッセージ
+        QStringList scriptOutput;                       // スクリプト出力 (最新 500 行)
+        QStringList rpmMessages;                        // rpm メッセージ (最新 500 行)
+        bool scriptOutputTruncated = false;             // 出力が上限で切り捨てられたか
+        bool rebootNeeded = false;                      // 再起動が必要か
+        bool restartSuggested = false;                  // 再起動が推奨されるか (パッチ)
+        QStringList servicesToRestart;                  // 再起動が必要な systemd ユニット
+        std::vector<SnapshotEntry> snapshots;           // コミットで作成されたスナップショット
     };
 
     CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミット実行
-                        StateEventCallbackFn stateCallback = nullptr);
+                        StateEventCallbackFn stateCallback = nullptr,
+                        PromptAskFn askCallback = nullptr,
+                        ScriptOutputFn scriptOutputCallback = nullptr);
 
     // ディスク使用量
     std::vector<DiskUsageInfo> getDiskUsage() const;       // ディスク使用量取得
@@ -125,6 +178,7 @@ public:
     void clearCancelRequest() { m_cancelRequested = false; m_lastOpCancelled = false; }  // 操作開始前にキャンセル要求と取消し結果を消去
     bool isCancelRequested() const { return m_cancelRequested.load(); }  // キャンセル状態取得
     bool lastOperationCancelled() const { return m_lastOpCancelled.load(); }  // 直前の操作が取消し要求で中断されたか
+    void beginOperation() { m_lastOpCancelled = false; }
 
     // エラー情報
     std::string lastError() const {                        // 最新エラーメッセージ
@@ -147,12 +201,47 @@ public:
      */
     void setUntrustedKeyCallback(UntrustedKeyCallbackFn cb);
 
+    /**
+     * @brief 未知鍵の in-flight 信頼プロンプトコールバックを設定する。
+     * @param cb 回答コールバック (ワーカースレッドで実行)
+     */
+    void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
+
+    /**
+     * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する。
+     * @param cb 回答コールバック (ワーカースレッドで実行)
+     */
+    void setUnsignedFilePromptCallback(UnsignedFilePromptFn cb);
+
+    /**
+     * @brief 検証済みローカルRPMを一時 plaindir リポジトリ経由で選択・解決する。
+     *
+     * 各パスは LocalRpm::validatePath で検証 (絶対パス/非シンボリックリンク/
+     * .rpm/サイズ上限/呼出元可読) したうえで、root 所有 0700 の一時ディレクトリへ
+     * TOCTOU-safe にコピーする。plaindir リポジトリは /etc/zypp/repos.d へは
+     * 永続化せず、Pool へロードして S_Install を選択後ソルバーを実行する。
+     * 未署名 RPM は許可するが unsignedPackages に列挙する。
+     * @param paths インストール対象のローカルRPMパス
+     * @param callerUid 呼出元の UID (所有者/権限検査用)
+     * @return 解決結果。失敗時は success=false かつ m_lastError を設定する。
+     */
+    LocalRpmInstallResult installLocalRpms(std::vector<LocalRpmFile> files);
+
+    /**
+     * @brief 一時ローカルRPMリポジトリとコピー済みファイルを破棄する。
+     */
+    void cleanupLocalRpms();
+
 private:
     ZyppManager() = default;                                                  // コンストラクタ (private)
     ~ZyppManager() = default;                                                 // デストラクタ (private)
     ZyppManager(const ZyppManager&) = delete;                                 // コピー禁止
     ZyppManager& operator=(const ZyppManager&) = delete;                      // 代入禁止
     PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;  // PackageInfo生成
+    QVariantMap computeTransactionSummary() const;                            // リスクサマリ生成 (内部でロック)
+    QVariantMap computeTransactionSummaryLocked() const;                      // リスクサマリ生成 (m_mutex 保持中に呼ぶ)
+    static std::string makePatchId(const std::string& name, const std::string& version,
+                                   const std::string& arch, const std::string& repoAlias); // パッチ安定識別子生成
     static int fromZyppStatus(zypp::ui::Status status);                       // zypp --> qZypperステータス変換
     static bool toZyppStatus(int status, zypp::ui::Status &out);              // qZypper --> zyppステータス変換 (範囲外は false)
     void markCancelled() { m_lastError = "Operation cancelled"; m_lastOpCancelled = true; }  // 取消し要求による中断を記録 (m_mutex 保持中に呼ぶ)
@@ -163,6 +252,7 @@ private:
      * @param allowIsoNesting iso スキームの url クエリパラメータ再帰検証を許可するか
      * @return 有効時 true
      */
+public:
     static bool validateUrl(const std::string &url, std::string &err,
                             bool allowIsoNesting = true);
     /**
@@ -172,6 +262,7 @@ private:
      * @return 有効時 true
      */
     static bool validateAlias(const std::string &alias, std::string &err);
+private:
     /**
      * @brief リポジトリポリシーを検査する。
      *
@@ -263,17 +354,28 @@ private:
      * @param err 失敗時のエラー詳細
      * @return 有効時 true
      */
+public:
     static bool validateName(const std::string &name, std::string &err);
+private:
+    void recordDatabaseStamp();
     zypp::ZYpp::Ptr m_zypp;                                                   // ZYppシングルトン
     std::unique_ptr<zypp::RepoManager> m_repoManager;                         // リポジトリマネージャ
     bool m_initialized = false;                                               // 初期化済みフラグ
+    bool m_distUpgradeMode = false;                                           // DistUpgrade の選択を保持中 (再解決も dup で行う)
+    bool m_dupAllowVendorChange = false;                                      // DistUpgrade の vendor 変更許可
+    std::string m_rpmStamp;                                                   // RPM DB変更検知用
     mutable std::string m_lastError;                                          // 最新エラーメッセージ
     mutable std::mutex m_mutex;                                               // スレッド排他ロック
-    std::atomic<bool> m_cancelRequested{false};                               // キャンセル要求フラグ
+    OperationState m_operation;                                              // 操作状態と取消要求
+    std::atomic<bool> &m_cancelRequested = m_operation.cancelFlag();           // キャンセル要求フラグ
     std::atomic<bool> m_lastOpCancelled{false};                               // 直前の操作が取消しで中断された
     zypp::ResolverProblemList m_problems;                                     // ソルバー問題リスト
     KeyRingReceiver m_keyRingReceiver;                                        // GPG鍵信頼コールバック
     DigestReceiver m_digestReceiver;                                          // ダイジェスト検証コールバック
+    std::set<std::string> m_acceptedLicenses;                                 // 承認済みライセンス (pkg|version)
+    void cleanupLocalRpmsLocked();                                            // 一時リポジトリ破棄 (m_mutex 保持中)
+    std::string m_localRpmAlias;                                              // 一時ローカルRPMリポジトリのエイリアス
+    std::string m_localRpmDir;                                                // 一時コピー先ディレクトリ
 };
 
 } // namespace qZypper

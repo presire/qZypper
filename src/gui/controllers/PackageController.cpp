@@ -1,11 +1,22 @@
 #include <QDebug>
-#include <QCoreApplication>
+#include <QFile>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
+#include <cerrno>
+#include <QFileInfo>
+#include <QUrl>
 #include <QGuiApplication>
+#include <QDesktopServices>
 #include <QDBusConnection>
-#include <PolkitQt1/Authority>
-#include <PolkitQt1/Subject>
+#include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
+#include <utility>
 #include "PackageController.h"
 #include "DBusClient.h"
+#include "PackageListModel.h"
+#include "PackageFilterProxyModel.h"
 
 
 namespace qZypper {
@@ -21,6 +32,10 @@ PackageController::PackageController(QObject *parent)
 {
     m_dbus = new DBusClient(this);
 
+    m_packageModel = new PackageListModel(this);
+    m_packageProxy = new PackageFilterProxyModel(this);
+    m_packageProxy->setSourceModel(m_packageModel);
+
     // D-Busシグナルを中継
     connect(m_dbus, &DBusClient::repoRefreshProgress,
             this, [this](const QString &alias, int pct) {
@@ -29,86 +44,59 @@ PackageController::PackageController(QObject *parent)
         else
             setStatusMessage(tr("Refreshing: %1 (%2%)").arg(alias).arg(pct));
     });
-    connect(m_dbus, &DBusClient::refreshReposFinished,
-            this, [this](bool success, bool cancelled) {
-        if (success) {
-            setStatusMessage(tr("Repository refresh completed"));
-            loadRepos();
-        } else if (cancelled) {
-            setStatusMessage(tr("Refresh cancelled"));
-        } else {
-            setStatusMessage(tr("Refresh failed"));
-            emit errorOccurred(m_dbus->lastError());
-        }
-        setBusy(false);
-        emit refreshFinished(success);
-    });
-    connect(m_dbus, &DBusClient::refreshSingleRepoFinished,
-            this, [this](bool success) {
-        if (success) {
-            setStatusMessage(tr("Repository refresh completed"));
-            loadRepos();
-        } else {
-            setStatusMessage(tr("Refresh failed"));
-            emit errorOccurred(m_dbus->lastError());
-        }
-        setBusy(false);
-        emit refreshFinished(success);
-    });
-    connect(m_dbus, &DBusClient::refreshServiceFinished,
-            this, [this](bool success) {
-        if (success) {
-            loadServices();
-            loadRepos();
-            setStatusMessage(tr("Service refreshed"));
-        } else {
-            setStatusMessage(tr("Failed to refresh service"));
-            emit errorOccurred(m_dbus->lastError());
-        }
-        setBusy(false);
-        emit refreshFinished(success);
-    });
     connect(m_dbus, &DBusClient::progressChanged,
             this, &PackageController::progressChanged);
     connect(m_dbus, &DBusClient::commitProgressChanged,
             this, &PackageController::commitProgressChanged);
     connect(m_dbus, &DBusClient::packageStateChanged,
             this, &PackageController::packageStateChanged);
-    connect(m_dbus, &DBusClient::commitFinished,
-            this, [this](const QVariantMap &result) {
-        m_commitResult = result;
-        emit commitResultChanged();
-
-        if (result["success"].toBool())
-            setStatusMessage(tr("Changes applied successfully"));
-        else
-            setStatusMessage(tr("Some operations encountered errors"));
-
-        // コミット後は一覧の内容が大きく変わるため、新しい世代として通知する
-        refreshPackageStatuses(true);
-        loadPatterns();
-        setBusy(false);
-    });
     connect(m_dbus, &DBusClient::transactionFinished,
             this, &PackageController::transactionFinished);
     connect(m_dbus, &DBusClient::errorOccurred,
             this, &PackageController::errorOccurred);
     connect(m_dbus, &DBusClient::untrustedKeyDetected,
             this, &PackageController::untrustedKeyDetected);
+    connect(m_dbus, &DBusClient::operationStateChanged,
+            this, &PackageController::setOperationState);
+    connect(m_dbus, &DBusClient::promptRequested,
+            this, &PackageController::enqueuePrompt);
+    // タイムアウト・取消等でバックエンド側が終了したプロンプトは表示から外す
+    connect(m_dbus, &DBusClient::promptClosed,
+            this, &PackageController::removePrompt);
+    connect(m_dbus, &DBusClient::poolReloaded,
+            this, [this]() {
+        refreshPackageStatuses(true);
+        refreshPendingChanges();
+        loadPatterns();
+        emit poolReloaded();
+    });
+    connect(m_dbus, &DBusClient::packageLocked,
+            this, &PackageController::handlePackageLocked);
+    connect(m_dbus, &DBusClient::scriptOutput,
+            this, &PackageController::scriptOutputReceived);
 
     // バックエンドが再起動した場合、接続状態と一覧を復元する
     connect(m_dbus, &DBusClient::backendReconnected,
             this, [this]() {
         m_connected = true;
+        m_initialized = true;
         emit connectedChanged();
+        emit initializedChanged();
         setStatusMessage(tr("Backend reconnected"));
+        // 新しいバックエンドは prompt ID を 1 から再利用するため、旧プロンプトは破棄する
+        clearPrompts();
         loadRepos();
+        refreshPendingChanges();
     });
     connect(m_dbus, &DBusClient::backendDisconnected,
             this, [this]() {
+        // 切断したバックエンドのプロンプトへの回答が別プロセスの同一IDへ届かないよう全破棄
+        clearPrompts();
         if (m_connected) {
             m_connected = false;
+            m_initialized = false;
             emit connectedChanged();
+            emit initializedChanged();
             setStatusMessage(tr("Backend disconnected"));
         }
     });
@@ -153,52 +141,64 @@ void PackageController::setStatusMessage(const QString &msg)
 // -- 初期化 --
 
 /**
- * @brief パッケージマネージャを初期化する。
+ * @brief パッケージマネージャを初期化する (非同期)。
  *
- * D-Busバックエンドに接続し、libzypp を初期化する。
- * @return 初期化成功時 true
+ * D-Busバックエンドに接続し、libzypp を非同期で初期化する。
+ * 完了すると initializedChanged シグナルが発行され、成功時は
+ * m_initialized が true になる。GUIスレッドはブロックしない。
  */
-bool PackageController::initialize()
+void PackageController::initialize()
 {
     if (m_busy)
-        return false;
+        return;
+    m_retryAction = [this]() { initialize(); };
     setBusy(true);
     setStatusMessage(tr("Initializing package manager..."));
 
     if (!m_dbus->connectToBackend()) {
         m_connected = false;
+        m_initialized = false;
         emit connectedChanged();
-        QString err = m_dbus->lastError();
+        emit initializedChanged();
+        const QString err = m_dbus->lastError();
         setStatusMessage(tr("Failed to connect to backend: %1").arg(err));
         emit errorOccurred(err);
         qWarning() << "D-Bus backend connection failed:" << err;
         setBusy(false);
-        return false;
+        return;
     }
 
-    if (!m_dbus->initializeBackend()) {
-        m_connected = false;
-        emit connectedChanged();
-        QString err = m_dbus->lastError();
-        setStatusMessage(tr("Failed to initialize backend: %1").arg(err));
-        emit errorOccurred(err);
-        qWarning() << "D-Bus backend initialization failed:" << err;
+    m_dbus->initializeBackend([this](bool ok, const QString &, const QString &, const QVariantList &) {
+        if (ok) {
+            m_connected = true;
+            m_initialized = true;
+            emit connectedChanged();
+            emit initializedChanged();
+            setStatusMessage(tr("Ready"));
+            refreshPendingChanges();
+            m_dbus->getOperationState([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+                if (ok && !args.isEmpty())
+                    setOperationState(args.at(0).toMap());
+            });
+            qDebug() << "D-Bus backend initialized successfully";
+        } else {
+            m_connected = false;
+            m_initialized = false;
+            emit connectedChanged();
+            emit initializedChanged();
+            const QString err = m_dbus->lastError();
+            setStatusMessage(tr("Failed to initialize backend: %1").arg(err));
+            emit errorOccurred(err);
+            qWarning() << "D-Bus backend initialization failed:" << err;
+        }
         setBusy(false);
-        return false;
-    }
-
-    m_connected = true;
-    emit connectedChanged();
-    setStatusMessage(tr("Ready"));
-    qDebug() << "D-Bus backend initialized successfully";
-    setBusy(false);
-    return true;
+    });
 }
 
 // -- パッケージ検索・一覧 --
 
 /**
- * @brief パッケージを検索する。
+ * @brief パッケージを検索する (非同期)。
  * @param query 検索クエリ文字列
  * @param flags 検索フラグ (SearchFlag のビットマスク)
  */
@@ -216,27 +216,109 @@ void PackageController::searchPackages(const QString &query, int flags)
     m_lastSource = PackageSource::Search;
     m_lastSourceParam = query;
     m_lastSearchFlags = flags;
+    m_useExSearch = false;
+    m_lastSearchMatch = QStringLiteral("substring");
+    m_lastSearchInstalledOnly = false;
+    setSearchError(QString());
 
-    m_packages = m_dbus->searchPackages(query, flags);
-    ++m_listGeneration;
-
-    emit packagesChanged();
-    setStatusMessage(tr("%1 packages found").arg(m_packages.size()));
-    setBusy(false);
+    requestPackageList(true, [this](bool ok, const QVariantList &list) {
+        setBusy(false);
+        if (ok)
+            setStatusMessage(tr("%1 packages found").arg(list.size()));
+    });
 }
 
 /**
- * @brief リポジトリ一覧を読み込む。
+ * @brief 現在のソースに応じてパッケージ一覧を非同期で再取得する。
+ *
+ * リクエストシリアルを進め、古い応答は破棄する。要求の連打は
+ * 最新の要求のみが適用されるため UI への反映が乱れない。
+ * @param newGeneration 取得後に世代カウンタを進める場合 true
+ * @param onDone 完了コールバック (成功可否と取得済みリスト)
+ */
+void PackageController::requestPackageList(bool newGeneration,
+                                           std::function<void(bool, const QVariantList &)> onDone)
+{
+    ++m_listRequestSerial;
+    const quint64 serial = m_listRequestSerial;
+
+    auto apply = [this, serial, newGeneration, onDone](
+                     bool ok, const QString &errorName, const QString &errorText, const QVariantList &args) {
+        if (serial != m_listRequestSerial) {
+            if (onDone) onDone(false, QVariantList());
+            return;
+        }
+        if (!ok) {
+            if (m_lastSource == PackageSource::Search
+                && errorName.contains(QStringLiteral("InvalidArgs")))
+                setSearchError(errorText);
+            if (onDone) onDone(false, QVariantList());
+            return;
+        }
+        setSearchError(QString());
+        m_packages = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        m_packageModel->applyPackages(m_packages);
+        if (newGeneration)
+            ++m_listGeneration;
+        emit packagesChanged();
+        if (onDone) onDone(true, m_packages);
+    };
+
+    switch (m_lastSource) {
+    case PackageSource::Search:
+        if (m_useExSearch) {
+            QVariantMap opts;
+            opts[QStringLiteral("query")] = m_lastSourceParam;
+            opts[QStringLiteral("flags")] = m_lastSearchFlags;
+            opts[QStringLiteral("match")] = m_lastSearchMatch;
+            opts[QStringLiteral("installedOnly")] = m_lastSearchInstalledOnly;
+            m_dbus->searchPackagesEx(opts, apply);
+        } else {
+            m_dbus->searchPackages(m_lastSourceParam, m_lastSearchFlags, apply);
+        }
+        break;
+    case PackageSource::Repo:
+        m_dbus->getPackagesByRepo(m_lastSourceParam, apply);
+        break;
+    case PackageSource::Pattern:
+        m_dbus->getPackagesByPattern(m_lastSourceParam, apply);
+        break;
+    case PackageSource::Patches:
+        m_dbus->getPatches(m_lastSourceParam.toInt(), apply);
+        break;
+    case PackageSource::Classification:
+        m_dbus->getPackagesByClassification(m_lastSourceParam, apply);
+        break;
+    case PackageSource::None:
+        break;
+    }
+}
+
+/**
+ * @brief パッケージ一覧を現在のソースで再取得する (サイレント)。
+ * @param newGeneration 取得後に世代カウンタを進める場合 true
+ */
+void PackageController::refreshPackageStatuses(bool newGeneration)
+{
+    requestPackageList(newGeneration, nullptr);
+}
+
+/**
+ * @brief リポジトリ一覧を読み込む (非同期)。
  */
 void PackageController::loadRepos()
 {
-    m_repos = m_dbus->getRepos();
-    emit reposChanged();
-    qDebug() << "Loaded" << m_repos.size() << "repositories";
+    m_dbus->getRepos([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok)
+            return;
+        m_repos = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit reposChanged();
+        qDebug() << "Loaded" << m_repos.size() << "repositories";
+    });
 }
 
 /**
- * @brief 指定リポジトリのパッケージ一覧を読み込む。
+ * @brief 指定リポジトリのパッケージ一覧を読み込む (非同期)。
  * @param repoAlias リポジトリエイリアス
  */
 void PackageController::loadPackagesByRepo(const QString &repoAlias)
@@ -250,33 +332,42 @@ void PackageController::loadPackagesByRepo(const QString &repoAlias)
     m_lastSource = PackageSource::Repo;
     m_lastSourceParam = repoAlias;
 
-    m_packages = m_dbus->getPackagesByRepo(repoAlias);
-    ++m_listGeneration;
-
-    emit packagesChanged();
-    setStatusMessage(tr("%1 packages loaded").arg(m_packages.size()));
-    setBusy(false);
+    requestPackageList(true, [this](bool ok, const QVariantList &list) {
+        setBusy(false);
+        if (ok)
+            setStatusMessage(tr("%1 packages loaded").arg(list.size()));
+    });
 }
 
 /**
- * @brief パッケージの詳細情報を読み込む。
+ * @brief パッケージの詳細情報を読み込む (非同期)。
  * @param name パッケージ名
  */
 void PackageController::loadPackageDetails(const QString &name)
 {
     if (!m_connected) return;
 
-    m_currentDetails = m_dbus->getPackageDetails(name);
-    emit currentPackageDetailsChanged();
+    ++m_detailsRequestSerial;
+    const quint64 serial = m_detailsRequestSerial;
+
+    m_dbus->getPackageDetails(name, [this, serial](
+                                   bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (serial != m_detailsRequestSerial || !ok)
+            return;
+        m_currentDetails = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+        emit currentPackageDetailsChanged();
+    });
 }
 
 /**
  * @brief 選択中パッケージの詳細表示をクリアする。
  *
  * パッケージ一覧から選択中のパッケージが無くなった場合に使用する。
+ * 保留中の詳細応答は無効化する。
  */
 void PackageController::clearPackageDetails()
 {
+    ++m_detailsRequestSerial;
     if (m_currentDetails.isEmpty()) return;
 
     m_currentDetails.clear();
@@ -284,18 +375,22 @@ void PackageController::clearPackageDetails()
 }
 
 /**
- * @brief パターン一覧を読み込む。
+ * @brief パターン一覧を読み込む (非同期)。
  */
 void PackageController::loadPatterns()
 {
     if (!m_connected) return;
 
-    m_patterns = m_dbus->getPatterns();
-    emit patternsChanged();
+    m_dbus->getPatterns([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok)
+            return;
+        m_patterns = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit patternsChanged();
+    });
 }
 
 /**
- * @brief 指定パターンに属するパッケージ一覧を読み込む。
+ * @brief 指定パターンに属するパッケージ一覧を読み込む (非同期)。
  * @param patternName パターン名
  */
 void PackageController::loadPackagesByPattern(const QString &patternName)
@@ -309,193 +404,440 @@ void PackageController::loadPackagesByPattern(const QString &patternName)
     m_lastSource = PackageSource::Pattern;
     m_lastSourceParam = patternName;
 
-    m_packages = m_dbus->getPackagesByPattern(patternName);
-    ++m_listGeneration;
-
-    emit packagesChanged();
-    setStatusMessage(tr("%1 packages loaded").arg(m_packages.size()));
-    setBusy(false);
+    requestPackageList(true, [this](bool ok, const QVariantList &list) {
+        setBusy(false);
+        if (ok)
+            setStatusMessage(tr("%1 packages loaded").arg(list.size()));
+    });
 }
 
 /**
- * @brief パッチ一覧を読み込む。
+ * @brief パッチ一覧を読み込む (非同期)。
  * @param category パッチカテゴリ (PatchCategory)
  */
 void PackageController::loadPatches(int category)
 {
     if (!m_connected) return;
 
-    m_lastSource = PackageSource::Patches;
-    m_lastSourceParam = QString::number(category);
+    // パッチはパッケージ一覧モデルとは別に保持する (パッケージ表へ混入させない)
+    m_patchCategory = category;
+    m_dbus->getPatches(category, [this, category](bool ok, const QString &, const QString &errorText,
+                                                  const QVariantList &args) {
+        if (category != m_patchCategory)
+            return;   // 古い応答は破棄
+        if (!ok) {
+            emit errorOccurred(errorText);
+            return;
+        }
+        m_patches = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit patchesChanged();
+    });
+}
 
-    m_packages = m_dbus->getPatches(category);
-    ++m_listGeneration;
-    emit packagesChanged();
+/**
+ * @brief 検索パラメータエラーを設定して通知する。
+ * @param err エラー文言 (空文字列でクリア)
+ */
+void PackageController::setSearchError(const QString &err)
+{
+    if (m_searchError == err)
+        return;
+    m_searchError = err;
+    emit searchErrorChanged();
+}
+
+/**
+ * @brief ソルバー結果に含まれるトランザクション概要をキャッシュする。
+ * @param result distUpgrade / updateAll / selectAll 等の結果マップ (summary キー込み)
+ */
+void PackageController::cacheTransactionSummary(const QVariantMap &result)
+{
+    const QVariantMap summary = result.value(QStringLiteral("summary")).toMap();
+    if (summary.isEmpty())
+        return;
+    m_transactionSummary = summary;
+    emit transactionSummaryChanged();
+}
+
+/**
+ * @brief 高度なパッケージ検索を行う (非同期)。
+ *
+ * マッチ方式 (substring/exact/glob/regex) とインストール済み限定を指定できる。
+ * 正則表現エラー等の InvalidArgs は searchError プロパティへ通知される。
+ * @param query 検索クエリ文字列
+ * @param flags 検索フラグ (SearchFlag のビットマスク)
+ * @param match マッチ方式
+ * @param installedOnly true でインストール済みパッケージのみ
+ */
+void PackageController::searchPackagesEx(const QString &query, int flags,
+                                          const QString &match, bool installedOnly)
+{
+    if (!m_connected) {
+        emit errorOccurred(tr("Package manager is not initialized"));
+        return;
+    }
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Searching packages..."));
+
+    m_lastSource = PackageSource::Search;
+    m_lastSourceParam = query;
+    m_lastSearchFlags = flags;
+    m_lastSearchMatch = match;
+    m_lastSearchInstalledOnly = installedOnly;
+    m_useExSearch = true;
+    setSearchError(QString());
+
+    requestPackageList(true, [this](bool ok, const QVariantList &list) {
+        setBusy(false);
+        if (ok)
+            setStatusMessage(tr("%1 packages found").arg(list.size()));
+    });
+}
+
+/**
+ * @brief 分類別パッケージ一覧を読み込む (非同期)。
+ * @param classification 分類名 (recommended/suggested/orphaned/unneeded/multiversion/retracted/retractedInstalled/ptf/locked)
+ */
+void PackageController::loadClassification(const QString &classification)
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Loading packages..."));
+
+    m_lastSource = PackageSource::Classification;
+    m_lastSourceParam = classification;
+    m_useExSearch = false;
+
+    requestPackageList(true, [this](bool ok, const QVariantList &list) {
+        setBusy(false);
+        if (ok)
+            setStatusMessage(tr("%1 packages loaded").arg(list.size()));
+    });
+}
+
+/**
+ * @brief ディストリビューション更新 (dist-upgrade) を非同期で実行する。
+ *
+ * 結果は updateAllFinished と同様に distUpgradeFinished で通知され、
+ * QML 側でコンフリクト/概要確認フローへ同じ経路で渡される。
+ * @param allowVendorChange ベンダー変更を許可する場合 true
+ */
+void PackageController::distUpgrade(bool allowVendorChange)
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Preparing distribution upgrade..."));
+
+    QVariantMap options;
+    options[QStringLiteral("allowVendorChange")] = allowVendorChange;
+
+    m_dbus->distUpgrade(options, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+
+        if (!m_dbus->isConnected()) {
+            setStatusMessage(tr("Disconnected from backend. Reconnecting..."));
+            reconnectBackend([this, result](bool reconnected) mutable {
+                if (reconnected)
+                    setStatusMessage(tr("Reconnected. Please try again"));
+                else
+                    setStatusMessage(tr("Failed to reconnect to backend"));
+                setBusy(false);
+                QVariantMap failed = result;
+                failed[QStringLiteral("success")] = false;
+                failed[QStringLiteral("backendCrashed")] = true;
+                emit distUpgradeFinished(failed);
+            });
+            return;
+        }
+
+        refreshPackageStatuses(true);
+        cacheTransactionSummary(result);
+
+        if (result[QStringLiteral("success")].toBool())
+            setStatusMessage(tr("Distribution upgrade check completed"));
+        else
+            setStatusMessage(tr("Dependency problems found"));
+
+        setBusy(false);
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit distUpgradeFinished(result); });
+    });
+}
+
+/**
+ * @brief システムの依存関係整合性検証 (zypper verify 相当) を非同期で実行する。
+ *
+ * 結果は verifyFinished で通知される (problems / toClean を含む)。
+ */
+void PackageController::verifySystem()
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Verifying system integrity..."));
+
+    m_dbus->verifySystem([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
+        setBusy(false);
+        if (!ok) {
+            emit errorOccurred(errorText.isEmpty() ? tr("Verify system failed") : errorText);
+            return;
+        }
+        const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+        refreshPackageStatuses(true);
+        setStatusMessage(tr("System verification completed"));
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit verifyFinished(result); });
+    });
+}
+
+/**
+ * @brief パッチの選択状態を変更する (非同期)。
+ * @param patchId パッチ ID
+ * @param status 新ステータス (Install=1 / NoInst=0)
+ */
+void PackageController::setPatchStatus(const QString &patchId, int status)
+{
+    if (!m_connected) return;
+
+    m_dbus->setPatchStatus(patchId, status, [this](bool ok, const QString &, const QString &errorText, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(errorText);
+            return;
+        }
+        refreshPendingChanges();
+        refreshPackageStatuses();
+        loadPatches(m_patchCategory);
+    });
+}
+
+/**
+ * @brief 必要なパッチを一括選択する (非同期)。
+ *
+ * 対話型パッチは skipInteractive で自動スキップし、選択不可とする。
+ * 結果は selectPatchesFinished で通知され、QML 側で概要確認フローへ渡す。
+ * @param securityOnly セキュリティパッチのみ選択する場合 true
+ * @param includeOptional オプションパッチも選択する場合 true
+ */
+void PackageController::selectAllNeededPatches(bool securityOnly, bool includeOptional)
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Selecting needed patches..."));
+
+    QVariantMap options;
+    options[QStringLiteral("securityOnly")] = securityOnly;
+    options[QStringLiteral("includeOptional")] = includeOptional;
+    options[QStringLiteral("skipInteractive")] = true;
+
+    m_dbus->selectAllNeededPatches(options, [this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
+        setBusy(false);
+        if (!ok) {
+            emit errorOccurred(errorText);
+            return;
+        }
+        QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+        refreshPackageStatuses(true);
+        cacheTransactionSummary(result);
+        loadPatches(m_patchCategory);
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit selectPatchesFinished(result); });
+    });
+}
+
+/**
+ * @brief パッケージロック一覧を読み込む (非同期)。
+ */
+void PackageController::loadLocks()
+{
+    if (!m_connected) return;
+
+    m_dbus->getLocks([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
+        if (!ok) {
+            emit errorOccurred(errorText);
+            return;
+        }
+        m_locks = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit locksChanged();
+    });
+}
+
+/**
+ * @brief パッケージロックを追加する (非同期)。
+ * @param lock ロック定義マップ (name/kind/match/repoAlias/arch/version/comment)
+ */
+void PackageController::addLock(const QVariantMap &lock)
+{
+    if (!m_connected) return;
+
+    m_dbus->addLock(lock, [this](bool ok, const QString &, const QString &errorText, const QVariantList &) {
+        if (!ok)
+            emit errorOccurred(errorText);
+        emit lockFinished(ok);
+        if (ok)
+            loadLocks();
+    });
+}
+
+/**
+ * @brief パッケージロックを削除する (非同期)。
+ * @param lock 削除対象のロック定義マップ
+ */
+void PackageController::removeLock(const QVariantMap &lock)
+{
+    if (!m_connected) return;
+
+    m_dbus->removeLock(lock, [this](bool ok, const QString &, const QString &errorText, const QVariantList &) {
+        if (!ok)
+            emit errorOccurred(errorText);
+        emit lockFinished(ok);
+        if (ok)
+            loadLocks();
+    });
+}
+
+/**
+ * @brief zypp インストール履歴を読み込む (非同期)。
+ * @param filter フィルタマップ (since/until/limit/offset/actions)
+ */
+void PackageController::loadHistory(const QVariantMap &filter)
+{
+    if (!m_connected) return;
+
+    m_dbus->getHistory(filter, [this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
+        if (!ok) {
+            emit errorOccurred(errorText);
+            emit historyResultReady(QVariantList());
+            return;
+        }
+        emit historyResultReady(args.isEmpty() ? QVariantList() : args.at(0).toList());
+    });
+}
+
+/**
+ * @brief サーバー側のトランザクション概要を取得する (非同期)。
+ *
+ * 取得結果は transactionSummary プロパティへキャッシュされる。
+ */
+void PackageController::requestTransactionSummary()
+{
+    if (!m_connected) return;
+
+    m_dbus->getTransactionSummary([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        // 取得失敗時も空マップで通知する (QML 側は概要不明として明示承認を要求する)
+        m_transactionSummary = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        emit transactionSummaryChanged();
+    });
+}
+
+/**
+ * @brief ソルバーテストケースを作成してパスを通知する (非同期)。
+ */
+void PackageController::saveSolverTestcase()
+{
+    if (!m_connected) return;
+
+    m_dbus->createSolverTestcase([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
+        if (!ok) {
+            emit errorOccurred(errorText);
+            return;
+        }
+        emit solverTestcaseCreated(args.isEmpty() ? QString() : args.at(0).toString());
+    });
 }
 
 // -- 状態変更 --
 
 /**
- * @brief パッケージのステータスを変更し、依存関係を解決する。
+ * @brief パッケージのステータスを変更し、依存関係を非同期で解決する。
  *
- * ステータス変更後にソルバーを実行し、衝突がある場合は conflictsDetected を発行する。
+ * 変更後はソルバーを実行し、成功時にパッケージ一覧と変更予定を再取得する。
  * @param name パッケージ名
  * @param status 新しいステータス (PackageStatus)
- * @return 変更成功時 true
  */
-bool PackageController::setPackageStatus(const QString &name, int status)
+void PackageController::setPackageStatus(const QString &name, int status)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
-    setStatusMessage(tr("Resolving dependencies..."));
-
-    if (!m_dbus->setPackageStatus(name, status)) {
-        setBusy(false);
-        setStatusMessage({});
-        return false;
-    }
-
-    // ソルバー実行 (fork保護済み — 依存パッケージの自動選択/衝突検出)
-    auto result = m_dbus->resolveDependencies();
-
-    if (!m_dbus->isConnected()) {
-        // バックエンドがクラッシュした場合、ローカルのみ更新
-        qWarning() << "Backend disconnected during resolve";
-        for (int i = 0; i < m_packages.size(); ++i) {
-            auto map = m_packages[i].toMap();
-            if (map["name"].toString() == name) {
-                map["status"] = status;
-                m_packages[i] = map;
-                break;
-            }
+    m_dbus->setPackageStatus(name, status, [this](
+                                 bool ok, const QString &, const QString &, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(m_dbus->lastError());
+            setBusy(false);
+            return;
         }
-        emit packagesChanged();
-        setBusy(false);
-        return true;
-    }
-
-    if (result.value("success").toBool()) {
-        // 成功 — 自動依存パッケージのステータスを含むリストを再取得
-        refreshPackageStatuses();
-        setStatusMessage(tr("Dependencies resolved"));
-    } else {
-        // 衝突あり — リストを再取得してからコンフリクトダイアログを表示
-        refreshPackageStatuses();
-        setStatusMessage(tr("Dependency problems found"));
-        auto problems = result.value("problems").toList();
-        if (!problems.isEmpty()) {
-            emit conflictsDetected(problems);
-        }
-    }
-
-    setBusy(false);
-    return true;
+        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &, const QVariantList &) {
+            if (!rok)
+                emit errorOccurred(m_dbus->lastError());
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            setBusy(false);
+        });
+    });
 }
 
 /**
- * @brief パッケージのバージョンを変更し、依存関係を解決する。
+ * @brief パッケージのバージョン/アーキテクチャ/リポジトリを変更する (非同期)。
  *
- * 指定バージョンを候補に設定し、インストール済みパッケージは S_Update に変更する。
- * ソルバー実行後にパッケージリストとパッケージ詳細を再取得する。
+ * 変更後はソルバーを実行し、成功時に一覧と変更予定を再取得する。
  * @param name パッケージ名
- * @param version 選択バージョン (edition 文字列)
+ * @param version バージョン
  * @param arch アーキテクチャ
- * @param repoAlias リポジトリエイリアス
- * @return 変更成功時 true
+ * @param repoAlias リポジトリアリアス
  */
-bool PackageController::setPackageVersion(const QString &name, const QString &version,
-                                           const QString &arch, const QString &repoAlias)
+void PackageController::setPackageVersion(const QString &name,
+                                          const QString &version,
+                                          const QString &arch,
+                                          const QString &repoAlias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
-    setStatusMessage(tr("Changing version..."));
-
-    if (!m_dbus->setPackageVersion(name, version, arch, repoAlias)) {
-        setBusy(false);
-        setStatusMessage({});
-        return false;
-    }
-
-    // ソルバー実行
-    auto result = m_dbus->resolveDependencies();
-
-    if (!m_dbus->isConnected()) {
-        qWarning() << "Backend disconnected during resolve";
-        emit packagesChanged();
-        setBusy(false);
-        return true;
-    }
-
-    if (result.value("success").toBool()) {
-        refreshPackageStatuses();
-        loadPackageDetails(name);
-        setStatusMessage(tr("Version changed"));
-    } else {
-        refreshPackageStatuses();
-        loadPackageDetails(name);
-        setStatusMessage(tr("Dependency problems found"));
-        auto problems = result.value("problems").toList();
-        if (!problems.isEmpty()) {
-            emit conflictsDetected(problems);
+    m_dbus->setPackageVersion(name, version, arch, repoAlias,
+                              [this](bool ok, const QString &, const QString &, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(m_dbus->lastError());
+            setBusy(false);
+            return;
         }
-    }
-
-    setBusy(false);
-    return true;
+        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &, const QVariantList &) {
+            if (!rok)
+                emit errorOccurred(m_dbus->lastError());
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            setBusy(false);
+        });
+    });
 }
 
 /**
- * @brief 現在のソースに基づいてパッケージリストを再取得する。
+ * @brief パターンのステータスをトグルし、依存関係を非同期で解決する。
  *
- * ソルバー実行後、自動ステータスを反映するために使用する。
- * ステータス変更のみの再取得では世代を進めない (QML 側は表示集合を維持する)。
- * @param newGeneration true の場合は一覧の世代を進める (QML 側で表示集合を作り直す)
- */
-void PackageController::refreshPackageStatuses(bool newGeneration)
-{
-    switch (m_lastSource) {
-    case PackageSource::Search:
-        m_packages = m_dbus->searchPackages(m_lastSourceParam, m_lastSearchFlags);
-        break;
-    case PackageSource::Repo:
-        m_packages = m_dbus->getPackagesByRepo(m_lastSourceParam);
-        break;
-    case PackageSource::Pattern:
-        m_packages = m_dbus->getPackagesByPattern(m_lastSourceParam);
-        break;
-    case PackageSource::Patches:
-        m_packages = m_dbus->getPatches(m_lastSourceParam.toInt());
-        break;
-    default:
-        return;
-    }
-    if (newGeneration)
-        ++m_listGeneration;
-    emit packagesChanged();
-}
-
-/**
- * @brief パターンのステータスをトグルする。
- *
- * YaSTのcycleStatus()と同じロジックでステータスを切り替え、ソルバーを実行して依存関係を解決する。
+ * YaSTのcycleStatus()と同じロジックでステータスを切り替え、ソルバーを実行する。
  * @param patternName パターン名
- * @return 変更成功時 true
  */
-bool PackageController::togglePatternStatus(const QString &patternName)
+void PackageController::togglePatternStatus(const QString &patternName)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
     // 現在のパターンステータスを取得
     int currentStatus = 0;
     for (const auto &p : std::as_const(m_patterns)) {
         auto map = p.toMap();
-        if (map["name"].toString() == patternName) {
-            currentStatus = map["status"].toInt();
+        if (map[QStringLiteral("name")].toString() == patternName) {
+            currentStatus = map[QStringLiteral("status")].toInt();
             break;
         }
     }
@@ -519,242 +861,297 @@ bool PackageController::togglePatternStatus(const QString &patternName)
             newStatus = 3;
             break;
         default:
-            return false;
+            return;
     }
-
-    // パターンステータスを変更
-    if (!m_dbus->setPatternStatus(patternName, newStatus))
-        return false;
-
-    // パターンリストのローカルステータスを即座に更新
-    for (int i = 0; i < m_patterns.size(); ++i) {
-        auto map = m_patterns[i].toMap();
-        if (map["name"].toString() == patternName) {
-            map["status"] = newStatus;
-            m_patterns[i] = map;
-            break;
-        }
-    }
-    emit patternsChanged();
 
     // ソースが別のパターンへ切り替わる場合は新しい世代として通知する
     const bool sourceChanged = m_lastSource != PackageSource::Pattern
                             || m_lastSourceParam != patternName;
-
-    // ソースを更新 (refreshPackageStatuses で使用)
     m_lastSource      = PackageSource::Pattern;
     m_lastSourceParam = patternName;
 
-    // ソルバー実行 (fork保護済み — 依存パッケージの自動選択/衝突検出)
-    auto result = m_dbus->resolveDependencies();
+    setBusy(true);
 
-    if (!m_dbus->isConnected()) {
-        // バックエンドがクラッシュした場合、パッケージリストのみ再取得
-        qWarning() << "Backend disconnected during pattern resolve";
-        m_packages = {};
-        if (sourceChanged)
-            ++m_listGeneration;
-        emit packagesChanged();
-        return true;
-    }
-
-    if (result.value("success").toBool()) {
-        // 成功 — 自動依存パッケージのステータスを含むリストを再取得
-        refreshPackageStatuses(sourceChanged);
-    } else {
-        // 衝突あり — リストを再取得してからコンフリクトダイアログを表示
-        refreshPackageStatuses(sourceChanged);
-        auto problems = result.value("problems").toList();
-        if (!problems.isEmpty()) {
-            emit conflictsDetected(problems);
+    m_dbus->setPatternStatus(patternName, newStatus,
+                             [this, patternName, newStatus, sourceChanged](
+                                 bool ok, const QString &, const QString &, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(m_dbus->lastError());
+            setBusy(false);
+            return;
         }
-    }
 
-    // パターン一覧もソルバー結果を反映して再取得
-    m_patterns = m_dbus->getPatterns();
-    emit patternsChanged();
+        // パターンリストのローカルステータスを即座に更新
+        for (int i = 0; i < m_patterns.size(); ++i) {
+            auto map = m_patterns[i].toMap();
+            if (map[QStringLiteral("name")].toString() == patternName) {
+                map[QStringLiteral("status")] = newStatus;
+                m_patterns[i] = map;
+                break;
+            }
+        }
+        emit patternsChanged();
 
-    return true;
+        // ソルバー実行 (fork保護済み — 依存パッケージの自動選択/衝突検出)
+        m_dbus->resolveDependencies(
+            [this, sourceChanged](bool rok, const QString &, const QString &, const QVariantList &rargs) {
+            QVariantMap result = (rok && !rargs.isEmpty()) ? rargs.at(0).toMap() : QVariantMap();
+
+            if (!m_dbus->isConnected()) {
+                // バックエンドがクラッシュした場合、パッケージリストのみ再取得
+                qWarning() << "Backend disconnected during pattern resolve";
+                m_packages = QVariantList();
+                if (sourceChanged)
+                    ++m_listGeneration;
+                emit packagesChanged();
+                setBusy(false);
+                return;
+            }
+
+            if (result.value(QStringLiteral("success")).toBool()) {
+                // 成功 — 自動依存パッケージのステータスを含むリストを再取得
+                refreshPackageStatuses(sourceChanged);
+            } else {
+                // 衝突あり — リストを再取得してからコンフリクトダイアログを表示
+                refreshPackageStatuses(sourceChanged);
+                auto problems = result.value(QStringLiteral("problems")).toList();
+                if (!problems.isEmpty())
+                    emit conflictsDetected(problems);
+            }
+
+            // パターン一覧もソルバー結果を反映して再取得
+            loadPatterns();
+            refreshPendingChanges();
+            setBusy(false);
+        });
+    });
 }
 
 /**
- * @brief 全パッケージの更新を実行する。
+ * @brief 全パッケージを非同期で更新する。
  *
- * バックエンドの doUpdate() を呼び出し、全更新可能パッケージをマークして依存解決を行う。
- * バックエンドがクラッシュした場合は自動再接続を試みる。
- * @return 解決結果 (success, problems, backendCrashed)
+ * 完了すると updateAllFinished シグナルで結果を通知する。
+ * バックエンドがクラッシュした場合は再接続を試み、
+ * backendCrashed=true を含む結果を通知する。
  */
-QVariantMap PackageController::updateAllPackages()
+void PackageController::updateAllPackages()
 {
-    if (!m_connected) return {};
-    if (m_busy) return {};
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Updating all packages..."));
 
-    QVariantMap result = m_dbus->updateAllPackages();
+    m_dbus->updateAllPackages([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
 
-    // バックエンドがクラッシュした場合の復旧
-    if (!m_dbus->isConnected()) {
-        setStatusMessage(tr("Disconnected from backend. Reconnecting..."));
-        if (m_dbus->connectToBackend() && m_dbus->initializeBackend()) {
-            m_connected = true;
-            emit connectedChanged();
-            setStatusMessage(tr("Reconnected. Please try again"));
-        } else {
-            m_connected = false;
-            emit connectedChanged();
-            setStatusMessage(tr("Failed to reconnect to backend"));
+        // バックエンドがクラッシュした場合の復旧
+        if (!m_dbus->isConnected()) {
+            setStatusMessage(tr("Disconnected from backend. Reconnecting..."));
+            reconnectBackend([this, result](bool reconnected) mutable {
+                if (reconnected)
+                    setStatusMessage(tr("Reconnected. Please try again"));
+                else
+                    setStatusMessage(tr("Failed to reconnect to backend"));
+                setBusy(false);
+                QVariantMap failed = result;
+                failed[QStringLiteral("success")] = false;
+                failed[QStringLiteral("backendCrashed")] = true;
+                emit updateAllFinished(failed);
+            });
+            return;
         }
+
+        refreshPackageStatuses(true);
+        cacheTransactionSummary(result);
+
+        if (result[QStringLiteral("success")].toBool())
+            setStatusMessage(tr("Update check completed"));
+        else
+            setStatusMessage(tr("Dependency problems found"));
+
         setBusy(false);
-        result["success"] = false;
-        result["backendCrashed"] = true;
-        return result;
-    }
-
-    // ソルバー実行後、パッケージリストを再読み込みしてステータスを反映 (新しい世代として通知)
-    refreshPackageStatuses(true);
-
-    if (result["success"].toBool()) {
-        setStatusMessage(tr("Update check completed"));
-    } else {
-        setStatusMessage(tr("Dependency problems found"));
-    }
-
-    setBusy(false);
-    return result;
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit updateAllFinished(result); });
+    });
 }
 
 /**
- * @brief 依存関係を解決する。
- *
- * バックエンドがクラッシュした場合は自動再接続を試みる。
- * @return 解決結果 (success, problems, backendCrashed)
+ * @brief バックエンド切断時に再接続と再初期化を非同期で試みる。
+ * @param onDone 完了コールバック (再接続・初期化成功時 true)
  */
-QVariantMap PackageController::resolveDependencies()
+void PackageController::reconnectBackend(std::function<void(bool)> onDone)
 {
-    if (!m_connected) return {};
-    if (m_busy) return {};
+    clearPrompts();  // 旧バックエンドの prompt ID は新プロセスで再利用されるため破棄
+    if (!m_dbus->connectToBackend()) {
+        m_connected = false;
+        m_initialized = false;
+        emit connectedChanged();
+        emit initializedChanged();
+        if (onDone) onDone(false);
+        return;
+    }
+
+    m_dbus->initializeBackend([this, onDone](bool ok, const QString &, const QString &, const QVariantList &) {
+        m_connected = ok;
+        m_initialized = ok;
+        emit connectedChanged();
+        emit initializedChanged();
+        if (ok)
+            refreshPendingChanges();
+        if (onDone) onDone(ok);
+    });
+}
+
+/**
+ * @brief 依存関係を非同期で解決する。
+ *
+ * 完了すると resolveFinished シグナルで結果を通知する。
+ * 成功時にパッケージ一覧と変更予定を再取得する。
+ */
+void PackageController::resolveDependencies()
+{
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Resolving dependencies..."));
 
-    QVariantMap result = m_dbus->resolveDependencies();
+    m_dbus->resolveDependencies([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
 
-    // バックエンドがクラッシュした場合の復旧
-    if (!m_dbus->isConnected()) {
-        setStatusMessage(tr("Disconnected from backend. Reconnecting..."));
-        // D-Bus activation により自動再起動される — 再初期化を試みる
-        if (m_dbus->connectToBackend() && m_dbus->initializeBackend()) {
-            m_connected = true;
-            emit connectedChanged();
-            setStatusMessage(tr("Reconnected. Please try again"));
+        // バックエンドがクラッシュした場合の復旧
+        if (!m_dbus->isConnected()) {
+            setStatusMessage(tr("Disconnected from backend. Reconnecting..."));
+            reconnectBackend([this, result](bool reconnected) mutable {
+                if (reconnected)
+                    setStatusMessage(tr("Reconnected. Please try again"));
+                else
+                    setStatusMessage(tr("Failed to reconnect to backend"));
+                setBusy(false);
+                QVariantMap failed = result;
+                failed[QStringLiteral("success")] = false;
+                failed[QStringLiteral("backendCrashed")] = true;
+                emit resolveFinished(failed);
+            });
+            return;
+        }
+
+        if (result[QStringLiteral("success")].toBool()) {
+            setStatusMessage(tr("Dependencies resolved"));
+            refreshPackageStatuses();
         } else {
-            m_connected = false;
-            emit connectedChanged();
-            setStatusMessage(tr("Failed to reconnect to backend"));
+            setStatusMessage(tr("Dependency problems found"));
         }
         setBusy(false);
-        result["success"] = false;
-        result["backendCrashed"] = true;
-        return result;
-    }
-
-    if (result["success"].toBool()) {
-        setStatusMessage(tr("Dependencies resolved"));
-        // ソルバー実行後、パッケージリストを再読み込みして自動ステータスを反映
-        refreshPackageStatuses();
-    } else {
-        setStatusMessage(tr("Dependency problems found"));
-    }
-
-    setBusy(false);
-    return result;
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit resolveFinished(result); });
+    });
 }
 
 /**
- * @brief 依存関係の衝突に対する解決策を適用する。
+ * @brief 依存関係の衝突に対する解決策を非同期で適用する。
  * @param problemIndex 問題のインデックス
  * @param solutionIndex 解決策のインデックス
- * @return 適用成功時 true
  */
-bool PackageController::applySolution(int problemIndex, int solutionIndex)
+void PackageController::applySolution(int problemIndex, int solutionIndex)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
-    return m_dbus->applySolution(problemIndex, solutionIndex);
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    m_dbus->applySolution(problemIndex, solutionIndex,
+                          [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok || args.isEmpty() || !args.at(0).toBool())
+            emit errorOccurred(m_dbus->lastError());
+    });
 }
 
 /**
- * @brief パッケージの変更をコミットする。
+ * @brief 確認済み選択に Commit を束縛するためのリビジョンを非同期で取得する。
  *
- * m_commitRevision に束縛してバックエンドの Commit を呼ぶ。
- * 呼び出し後はリビジョンを0に戻す。
- * @return コミット結果 (success 等)
+ * 取得したリビジョンは commitAsync() で消費される。
+ * 完了すると commitPrepared シグナルで成功可否を通知する。
  */
-QVariantMap PackageController::commit()
-{
-    if (!m_connected) return {};
-    if (m_busy) return {};
-
-    if (m_commitRevision == 0) {
-        const QString msg = tr("Changes must be confirmed before applying");
-        emit errorOccurred(msg);
-        QVariantMap result;
-        result["success"] = false;
-        result["errorMessage"] = msg;
-        return result;
-    }
-
-    setBusy(true);
-    setStatusMessage(tr("Applying changes..."));
-
-    QVariantMap result = m_dbus->commit(m_commitRevision);
-    m_commitRevision = 0;
-
-    if (result["success"].toBool())
-        setStatusMessage(tr("Changes applied successfully"));
-    else
-        setStatusMessage(tr("Some operations encountered errors"));
-
-    setBusy(false);
-    return result;
-}
-
-/**
- * @brief 確認済み選択に Commit を束縛するためのリビジョンを取得する。
- *
- * resolveDependencies() 成功直後、確認サマリ構築の前に呼ぶこと。
- * 取得したリビジョンは commit()/commitAsync() で消費される。
- * @return 取得成功時 true
- */
-bool PackageController::prepareCommit()
+void PackageController::prepareCommit()
 {
     if (!m_connected) {
         m_commitRevision = 0;
-        return false;
+        emit commitPrepared(false);
+        return;
     }
+    fetchCommitRevision(3);
+}
 
-    bool ok = false;
-    const quint64 rev = m_dbus->getSelectionRevision(&ok);
-    m_commitRevision = ok ? rev : 0;
-    if (!ok)
-        emit errorOccurred(m_dbus->lastError());
-    return ok;
+/**
+ * @brief 確認画面に表示する変更予定とコミット revision を同じ選択状態に揃える。
+ *
+ * revision 取得 → 変更予定取得 → revision 再取得を行い、前後の revision が
+ * 一致した場合のみ確定する。不一致 (途中で選択が変わった) なら再試行する。
+ * @param attemptsLeft 残り試行回数
+ */
+void PackageController::fetchCommitRevision(int attemptsLeft)
+{
+    auto parseRevision = [](bool ok, const QVariantList &args, quint64 &rev) {
+        if (!ok || args.isEmpty())
+            return false;
+        bool conv = false;
+        rev = args.at(0).toULongLong(&conv);
+        return conv;
+    };
+    auto fail = [this]() {
+        m_commitRevision = 0;
+        emit errorOccurred(m_dbus->lastError().isEmpty()
+                               ? tr("Failed to obtain a consistent selection state")
+                               : m_dbus->lastError());
+        emit commitPrepared(false);
+    };
+
+    m_dbus->getSelectionRevision([this, attemptsLeft, parseRevision, fail](
+                                     bool ok, const QString &, const QString &, const QVariantList &args) {
+        quint64 before = 0;
+        if (!parseRevision(ok, args, before)) {
+            fail();
+            return;
+        }
+        refreshPendingChangesThen([this, attemptsLeft, before, parseRevision, fail](bool refreshed) {
+            // 変更予定を取得できなければ確認画面の一覧が古いままなので確認を中止する
+            if (!refreshed || !m_connected) {
+                fail();
+                return;
+            }
+            m_dbus->getSelectionRevision([this, attemptsLeft, before, parseRevision, fail](
+                                             bool ok2, const QString &, const QString &, const QVariantList &args2) {
+                quint64 after = 0;
+                if (!parseRevision(ok2, args2, after)) {
+                    fail();
+                    return;
+                }
+                if (after != before) {
+                    if (attemptsLeft > 1)
+                        fetchCommitRevision(attemptsLeft - 1);
+                    else
+                        fail();
+                    return;
+                }
+                m_commitRevision = after;
+                emit commitPrepared(true);
+            });
+        });
+    });
 }
 
 /**
  * @brief パッケージの変更を非同期でコミットする。
  *
- * GUIスレッドをブロックしないため、進捗シグナルをリアルタイムで受信できる。
  * m_commitRevision に束縛して Commit を呼び、呼び出し後は0に戻す。
  * リビジョン未確定時は進捗ダイアログ整合のため失敗結果を設定して終了する。
- * 結果は commitResultChanged シグナルと transactionFinished シグナルで通知される。
+ * 結果は commitResultChanged シグナルで通知される。
  */
 void PackageController::commitAsync()
 {
     if (!m_connected) return;
     if (m_busy) return;
+    m_retryAction = [this]() { prepareCommit(); };
 
     if (m_commitRevision == 0) {
         const QString msg = tr("Changes must be confirmed before applying");
@@ -772,25 +1169,51 @@ void PackageController::commitAsync()
     setStatusMessage(tr("Applying changes..."));
     const quint64 rev = m_commitRevision;
     m_commitRevision = 0;
-    m_dbus->commitAsync(rev);
+
+    m_dbus->commitAsync(rev, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        m_commitResult = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!m_commitResult.contains(QStringLiteral("success")))
+            m_commitResult[QStringLiteral("success")] = false;
+        emit commitResultChanged();
+
+        if (m_commitResult[QStringLiteral("success")].toBool())
+            setStatusMessage(tr("Changes applied successfully"));
+        else
+            setStatusMessage(tr("Some operations encountered errors"));
+
+        // コミット後は一覧の内容が大きく変わるため、新しい世代として通知する
+        refreshPackageStatuses(true);
+        loadPatterns();
+        refreshPendingChanges();
+        setBusy(false);
+    });
 }
 
 /**
- * @brief GPG署名鍵の指紋を承認する (鍵の取込は操作の再試行時)。
+ * @brief GPG署名鍵の指紋を非同期で承認する (鍵の取込は操作の再試行時)。
+ *
+ * 完了すると keyTrustFinished シグナルで成功可否を通知する。
  * @param fingerprint 鍵フィンガープリント
- * @return 承認成功時 true
  */
-bool PackageController::trustKey(const QString &fingerprint)
+void PackageController::trustKey(const QString &fingerprint)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
-
-    if (!m_dbus->trustKey(fingerprint)) {
-        emit errorOccurred(m_dbus->lastError());
-        return false;
+    if (!m_connected) {
+        emit keyTrustFinished(false);
+        return;
     }
-    setStatusMessage(tr("Signing key approved. It will be imported when you retry the operation."));
-    return true;
+    if (m_busy) {
+        emit keyTrustFinished(false);
+        return;
+    }
+
+    m_dbus->trustKey(fingerprint, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success)
+            setStatusMessage(tr("Signing key approved. It will be imported when you retry the operation."));
+        else
+            emit errorOccurred(m_dbus->lastError());
+        emit keyTrustFinished(success);
+    });
 }
 
 /**
@@ -806,108 +1229,125 @@ void PackageController::cancelOperation()
 // -- リポジトリ管理 --
 
 /**
- * @brief リポジトリを追加する。
+ * @brief リポジトリを非同期で追加する。
+ *
+ * 完了すると addRepoFinished シグナルで成功可否を通知する。
  * @param url リポジトリURL
  * @param name リポジトリ名
- * @return 追加成功時 true
  */
-bool PackageController::addRepo(const QString &url, const QString &name)
+void PackageController::addRepo(const QString &url, const QString &name)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) {
+        emit addRepoFinished(false);
+        return;
+    }
+    if (m_busy) {
+        emit addRepoFinished(false);
+        return;
+    }
 
-    auto result = m_dbus->addRepo(url, name);
-    bool ok = result["success"].toBool();
-    if (ok)
-        loadRepos();
-    else
-        emit errorOccurred(result["errorMessage"].toString());
-    return ok;
+    m_dbus->addRepo(url, name, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toMap().value(QStringLiteral("success")).toBool();
+        if (success)
+            loadRepos();
+        else
+            emit errorOccurred(m_dbus->lastError());
+        emit addRepoFinished(success);
+    });
 }
 
 /**
- * @brief 全プロパティを指定してリポジトリを追加する。
+ * @brief 全プロパティを指定してリポジトリを非同期で追加する。
+ *
+ * 完了すると addRepoFinished シグナルで成功可否を通知する。
  * @param properties リポジトリプロパティ
- * @return 追加成功時 true
  */
-bool PackageController::addRepoFull(const QVariantMap &properties)
+void PackageController::addRepoFull(const QVariantMap &properties)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) {
+        emit addRepoFinished(false);
+        return;
+    }
+    if (m_busy) {
+        emit addRepoFinished(false);
+        return;
+    }
 
     setBusy(true);
     setStatusMessage(tr("Adding repository..."));
 
-    auto result = m_dbus->addRepoFull(properties);
-    bool ok = result["success"].toBool();
+    m_dbus->addRepoFull(properties,
+                        [this, properties](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        const bool success = result.value(QStringLiteral("success")).toBool();
 
-    if (ok) {
-        loadRepos();
-        setStatusMessage(tr("Repository added: %1").arg(properties["name"].toString()));
-    } else {
-        setStatusMessage(tr("Failed to add repository"));
-        emit errorOccurred(result["errorMessage"].toString());
-    }
+        if (success) {
+            loadRepos();
+            setStatusMessage(tr("Repository added: %1").arg(properties.value(QStringLiteral("name")).toString()));
+        } else {
+            setStatusMessage(tr("Failed to add repository"));
+            emit errorOccurred(m_dbus->lastError());
+        }
 
-    setBusy(false);
-    return ok;
+        setBusy(false);
+        emit addRepoFinished(success);
+    });
 }
 
 /**
- * @brief リポジトリを削除する。
+ * @brief リポジトリを非同期で削除する。
  * @param alias 削除対象のリポジトリエイリアス
- * @return 削除成功時 true
  */
-bool PackageController::removeRepo(const QString &alias)
+void PackageController::removeRepo(const QString &alias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
-    bool ok = m_dbus->removeRepo(alias);
-    if (ok)
-        loadRepos();
-    else
-        emit errorOccurred(m_dbus->lastError());
-    return ok;
+    m_dbus->removeRepo(alias, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success)
+            loadRepos();
+        else
+            emit errorOccurred(m_dbus->lastError());
+    });
 }
 
 /**
- * @brief リポジトリの有効/無効を切り替える。
+ * @brief リポジトリの有効/無効を非同期で切り替える。
  * @param alias 対象のリポジトリエイリアス
  * @param enabled 有効にする場合 true
- * @return 変更成功時 true
  */
-bool PackageController::setRepoEnabled(const QString &alias, bool enabled)
+void PackageController::setRepoEnabled(const QString &alias, bool enabled)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
-    bool ok = m_dbus->setRepoEnabled(alias, enabled);
-    if (ok) {
-        loadRepos();
-    } else {
-        emit errorOccurred(m_dbus->lastError());
-    }
-    return ok;
+    m_dbus->setRepoEnabled(alias, enabled, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success)
+            loadRepos();
+        else
+            emit errorOccurred(m_dbus->lastError());
+    });
 }
 
 /**
- * @brief リポジトリのプロパティを変更する。
+ * @brief リポジトリのプロパティを非同期で変更する。
  * @param alias 対象のリポジトリエイリアス
  * @param properties 変更するプロパティ
- * @return 変更成功時 true
  */
-bool PackageController::modifyRepo(const QString &alias, const QVariantMap &properties)
+void PackageController::modifyRepo(const QString &alias, const QVariantMap &properties)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
-    bool ok = m_dbus->modifyRepo(alias, properties);
-    if (ok)
-        loadRepos();
-    else
-        emit errorOccurred(m_dbus->lastError());
-    return ok;
+    m_dbus->modifyRepo(alias, properties, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success)
+            loadRepos();
+        else
+            emit errorOccurred(m_dbus->lastError());
+    });
 }
 
 /**
@@ -920,9 +1360,26 @@ void PackageController::refreshReposAsync()
     if (!m_connected) return;
     if (m_busy) return;
 
+    m_retryAction = [this]() { refreshReposAsync(); };
     setBusy(true);
     setStatusMessage(tr("Refreshing repositories..."));
-    m_dbus->refreshReposAsync();
+
+    m_dbus->refreshReposAsync([this](bool ok, const QString &errorName, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        const bool cancelled = !ok && errorName == QLatin1String("org.presire.qzypper.Error.Cancelled");
+
+        if (success) {
+            setStatusMessage(tr("Repository refresh completed"));
+            loadRepos();
+        } else if (cancelled) {
+            setStatusMessage(tr("Refresh cancelled"));
+        } else {
+            setStatusMessage(tr("Refresh failed"));
+            emit errorOccurred(m_dbus->lastError());
+        }
+        setBusy(false);
+        emit refreshFinished(success);
+    });
 }
 
 /**
@@ -936,182 +1393,239 @@ void PackageController::cancelRefresh()
 
 /**
  * @brief 指定リポジトリを非同期でリフレッシュする。
- *
- * 完了時の後処理 (ステータス表示・一覧再読込・エラー通知) は
- * refreshSingleRepoFinished シグナルのハンドラが行う。
  * @param alias リフレッシュ対象のリポジトリエイリアス
- * @return 要求開始時 true (実行中の場合は false)
  */
-bool PackageController::refreshSingleRepo(const QString &alias)
+void PackageController::refreshSingleRepo(const QString &alias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Refreshing repository: %1").arg(alias));
 
-    m_dbus->refreshSingleRepoAsync(alias);
-    return true;
+    m_dbus->refreshSingleRepoAsync(alias, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success) {
+            setStatusMessage(tr("Repository refresh completed"));
+            loadRepos();
+        } else {
+            setStatusMessage(tr("Refresh failed"));
+            emit errorOccurred(m_dbus->lastError());
+        }
+        setBusy(false);
+        emit refreshFinished(success);
+    });
 }
 
 // -- サービス管理 --
 
 /**
- * @brief サービス一覧を読み込む。
+ * @brief サービス一覧を読み込む (非同期)。
  */
 void PackageController::loadServices()
 {
-    m_services = m_dbus->getServices();
-    emit servicesChanged();
+    m_dbus->getServices([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok)
+            return;
+        m_services = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit servicesChanged();
+    });
 }
 
 /**
- * @brief サービスを追加する。
+ * @brief サービスを非同期で追加する。
+ *
+ * 完了すると addServiceFinished シグナルで成功可否を通知する。
  * @param url サービスURL
  * @param alias サービスエイリアス
- * @return 追加成功時 true
  */
-bool PackageController::addService(const QString &url, const QString &alias)
+void PackageController::addService(const QString &url, const QString &alias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) {
+        emit addServiceFinished(false);
+        return;
+    }
+    if (m_busy) {
+        emit addServiceFinished(false);
+        return;
+    }
 
     setBusy(true);
     setStatusMessage(tr("Adding service..."));
 
-    bool ok = m_dbus->addService(url, alias);
+    m_dbus->addService(url, alias, [this, alias](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
 
-    if (ok) {
-        loadServices();
-        loadRepos();
-        setStatusMessage(tr("Service added: %1").arg(alias));
-    } else {
-        setStatusMessage(tr("Failed to add service"));
-        emit errorOccurred(m_dbus->lastError());
-    }
+        if (success) {
+            loadServices();
+            loadRepos();
+            setStatusMessage(tr("Service added: %1").arg(alias));
+        } else {
+            setStatusMessage(tr("Failed to add service"));
+            emit errorOccurred(m_dbus->lastError());
+        }
 
-    setBusy(false);
-    return ok;
+        setBusy(false);
+        emit addServiceFinished(success);
+    });
 }
 
 /**
- * @brief サービスを削除する。
+ * @brief サービスを非同期で削除する。
  * @param alias 削除対象のサービスエイリアス
- * @return 削除成功時 true
  */
-bool PackageController::removeService(const QString &alias)
+void PackageController::removeService(const QString &alias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
-    bool ok = m_dbus->removeService(alias);
-    if (ok) {
-        loadServices();
-        loadRepos();
-    } else {
-        emit errorOccurred(m_dbus->lastError());
-    }
-    return ok;
+    m_dbus->removeService(alias, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success) {
+            loadServices();
+            loadRepos();
+        } else {
+            emit errorOccurred(m_dbus->lastError());
+        }
+    });
 }
 
 /**
- * @brief サービスのプロパティを変更する。
+ * @brief サービスのプロパティを非同期で変更する。
  * @param alias 対象のサービスエイリアス
  * @param properties 変更するプロパティ
- * @return 変更成功時 true
  */
-bool PackageController::modifyService(const QString &alias, const QVariantMap &properties)
+void PackageController::modifyService(const QString &alias, const QVariantMap &properties)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
-    bool ok = m_dbus->modifyService(alias, properties);
-    if (ok)
-        loadServices();
-    else
-        emit errorOccurred(m_dbus->lastError());
-    return ok;
+    m_dbus->modifyService(alias, properties, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success)
+            loadServices();
+        else
+            emit errorOccurred(m_dbus->lastError());
+    });
 }
 
 /**
  * @brief サービスを非同期でリフレッシュする。
- *
- * 完了時の後処理 (ステータス表示・一覧再読込・エラー通知) は
- * refreshServiceFinished シグナルのハンドラが行う。
  * @param alias リフレッシュ対象のサービスエイリアス
- * @return 要求開始時 true (実行中の場合は false)
  */
-bool PackageController::refreshService(const QString &alias)
+void PackageController::refreshService(const QString &alias)
 {
-    if (!m_connected) return false;
-    if (m_busy) return false;
+    if (!m_connected) return;
+    if (m_busy) return;
 
     setBusy(true);
     setStatusMessage(tr("Refreshing service: %1").arg(alias));
 
-    if (!m_dbus->refreshServiceAsync(alias)) {
-        setStatusMessage(tr("Failed to refresh service"));
-        emit errorOccurred(m_dbus->lastError());
+    m_dbus->refreshServiceAsync(alias, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (success) {
+            loadServices();
+            loadRepos();
+            setStatusMessage(tr("Service refreshed"));
+        } else {
+            setStatusMessage(tr("Failed to refresh service"));
+            emit errorOccurred(m_dbus->lastError());
+        }
         setBusy(false);
-        return false;
-    }
-    return true;
+        emit refreshFinished(success);
+    });
 }
 
 // -- 状態保存・復元 --
 
 /**
- * @brief 変更予定のパッケージ一覧を取得する。
- * @return 変更予定パッケージ情報のリスト
- */
-QVariantList PackageController::getPendingChanges()
-{
-    if (!m_connected) return {};
-    return m_dbus->getPendingChanges();
-}
-
-/**
- * @brief ディスク使用量を取得する。
- * @return ディスク使用量情報のリスト (QVariantMap の QVariantList)
- */
-QVariantList PackageController::getDiskUsage()
-{
-    if (!m_connected) return {};
-    return m_dbus->getDiskUsage();
-}
-
-/**
- * @brief 変更予定のパッケージがあるか確認する。
- * @return 変更予定がある場合 true
- */
-bool PackageController::hasPendingChanges()
-{
-    if (!m_connected) return false;
-    return !m_dbus->getPendingChanges().isEmpty();
-}
-
-/**
- * @brief Polkit 認証のUX事前チェックを実行する。
+ * @brief 変更予定のパッケージ一覧を非同期で再取得する (キャッシュ更新)。
  *
- * 認証ダイアログを早期に表示するためのUX目的のみであり、
- * セキュリティ境界ではない。バックエンドが呼び出し元のバス名に対して
- * Polkit認可を強制するため、クライアント側の結果は認可判断に使わないこと。
- * @param actionId Polkit アクションID
- * @return 認証成功時 true
+ * 実行中に再度呼ばれた場合は合体 (coalesce) し、二重要求を抑止する。
+ * hasPendingChanges は本処理でのみ更新され、ゲッターは I/O を行わない。
  */
-bool PackageController::checkAuth(const QString &actionId)
+void PackageController::refreshPendingChanges()
 {
-    PolkitQt1::SystemBusNameSubject subject(
-        QDBusConnection::systemBus().baseService());
-    auto result = PolkitQt1::Authority::instance()->checkAuthorizationSync(
-        actionId, subject,
-        PolkitQt1::Authority::AllowUserInteraction
-    );
-    return result == PolkitQt1::Authority::Yes;
+    if (!m_connected) {
+        m_pendingRefreshInFlight = false;
+        m_pendingRefreshQueued = false;
+        if (!m_pendingChanges.isEmpty() || m_hasPendingChanges) {
+            m_pendingChanges.clear();
+            m_hasPendingChanges = false;
+            emit pendingChangesChanged();
+        }
+        auto waiters = std::move(m_pendingRefreshWaiters);
+        m_pendingRefreshWaiters.clear();
+        for (auto &waiter : waiters)
+            waiter(false);
+        return;
+    }
+
+    if (m_pendingRefreshInFlight) {
+        m_pendingRefreshQueued = true;
+        return;
+    }
+
+    m_pendingRefreshInFlight = true;
+    m_dbus->getPendingChanges([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        m_pendingRefreshInFlight = false;
+
+        if (ok) {
+            m_pendingChanges = args.isEmpty() ? QVariantList() : args.at(0).toList();
+            m_hasPendingChanges = !m_pendingChanges.isEmpty();
+            emit pendingChangesChanged();
+        }
+
+        if (m_pendingRefreshQueued) {
+            m_pendingRefreshQueued = false;
+            refreshPendingChanges();
+            return;
+        }
+
+        // 最新の要求まで反映済み — 待機者へ取得成否を通知
+        auto waiters = std::move(m_pendingRefreshWaiters);
+        m_pendingRefreshWaiters.clear();
+        for (auto &waiter : waiters)
+            waiter(ok);
+    });
 }
 
 /**
- * @brief パッケージの選択状態を保存する。
+ * @brief 変更予定を再取得し、呼出し時点以降の状態が反映された後に onDone を呼ぶ。
+ *
+ * 取得中の要求は呼出し前の選択状態を返す可能性があるため、その場合は
+ * 再取得を予約し、予約分の完了まで待機する。
+ * @param onDone 完了時に呼ばれるコールバック (引数は取得成否。失敗・切断時は false)
+ */
+void PackageController::refreshPendingChangesThen(std::function<void(bool)> onDone)
+{
+    if (onDone)
+        m_pendingRefreshWaiters.push_back(std::move(onDone));
+    if (m_pendingRefreshInFlight)
+        m_pendingRefreshQueued = true;
+    else
+        refreshPendingChanges();
+}
+
+/**
+ * @brief ディスク使用量を非同期で再取得する (キャッシュ更新)。
+ *
+ * 完了すると diskUsageChanged シグナルが発行される。
+ */
+void PackageController::requestDiskUsage()
+{
+    if (!m_connected) return;
+
+    m_dbus->getDiskUsage([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok)
+            return;
+        m_diskUsage = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        emit diskUsageChanged();
+    });
+}
+
+/**
+ * @brief パッケージの選択状態を保存する (非同期・fire-and-forget)。
  */
 void PackageController::saveState()
 {
@@ -1120,13 +1634,18 @@ void PackageController::saveState()
 }
 
 /**
- * @brief 保存された選択状態を復元し、パッケージリストを再取得する。
+ * @brief 保存された選択状態を非同期で復元し、パッケージリストを再取得する。
  */
 void PackageController::restoreState()
 {
     if (m_busy) return;
-    m_dbus->restoreState();
-    refreshPackageStatuses();
+
+    m_dbus->restoreState([this](bool ok, const QString &, const QString &, const QVariantList &) {
+        if (!ok && !m_dbus->lastError().isEmpty())
+            emit errorOccurred(m_dbus->lastError());
+        refreshPackageStatuses();
+        refreshPendingChanges();
+    });
 }
 
 /**
@@ -1217,6 +1736,339 @@ void PackageController::applyDarkMode(bool dark)
     p.setColor(QPalette::Disabled, QPalette::ToolTipText,     disToolTipText);
 
     QGuiApplication::setPalette(p);
+}
+
+// -- 操作状態 / プロンプト / セッション (Wave1) --
+
+/**
+ * @brief パッケージ一覧モデルを返す (QML公開用)。
+ * @return PackageListModel への QObject ポインタ
+ */
+QObject *PackageController::packageModel() const
+{
+    return m_packageModel;
+}
+
+/**
+ * @brief フィルタ/ソートプロキシモデルを返す (QML公開用)。
+ * @return PackageFilterProxyModel への QObject ポインタ
+ */
+QObject *PackageController::packageProxy() const
+{
+    return m_packageProxy;
+}
+
+/**
+ * @brief 先頭の未応答プロンプトを返す。
+ * @return プロンプトマップ (キューが空なら空マップ)
+ */
+QVariantMap PackageController::currentPrompt() const
+{
+    return m_prompts.isEmpty() ? QVariantMap() : m_prompts.first().toMap();
+}
+
+/**
+ * @brief 操作状態を更新し、変更があれば operationStateChanged を発行する。
+ * @param state バックエンドから受信した状態マップ
+ */
+void PackageController::setOperationState(const QVariantMap &state)
+{
+    if (m_operationState == state)
+        return;
+    m_operationState = state;
+    emit operationStateChanged();
+}
+
+/**
+ * @brief 対話プロンプトをキューへ追加し、QMLへ通知する。
+ * @param promptId プロンプトID
+ * @param type プロンプト種別
+ * @param data プロンプトデータ
+ */
+void PackageController::enqueuePrompt(uint promptId, const QString &type, const QVariantMap &data)
+{
+    // prompt ID はバックエンドプロセス内で単調増加する。既存以下の ID が届いた場合は
+    // 切断通知より先に新プロセスから届いたものと判断し、旧世代のプロンプトを破棄する。
+    for (const QVariant &entry : std::as_const(m_prompts)) {
+        if (entry.toMap().value(QStringLiteral("promptId")).toUInt() >= promptId) {
+            clearPrompts();
+            break;
+        }
+    }
+
+    QVariantMap prompt;
+    prompt[QStringLiteral("promptId")] = promptId;
+    prompt[QStringLiteral("type")] = type;
+    prompt[QStringLiteral("data")] = data;
+    m_prompts.append(prompt);
+    emit pendingPromptsChanged();
+    emit promptRequested(prompt);
+}
+
+/**
+ * @brief Zyppロック検出をQMLへ通知する。
+ * @param lockerName ロック保持プロセス名
+ * @param lockerPid ロック保持プロセスID
+ * @param message バックエンドのエラーメッセージ
+ */
+void PackageController::handlePackageLocked(const QString &lockerName, int lockerPid, const QString &message)
+{
+    QVariantMap info;
+    info[QStringLiteral("name")] = lockerName;
+    info[QStringLiteral("pid")] = lockerPid;
+    info[QStringLiteral("message")] = message;
+    emit packageLocked(info);
+}
+
+/**
+ * @brief 対話プロンプトへ応答し、キューから除去する。
+ * @param promptId 応答対象のプロンプトID
+ * @param action 選択されたアクション名
+ */
+void PackageController::answerPrompt(uint promptId, const QString &action)
+{
+    if (!m_connected)
+        return;
+
+    // 現在のキューに存在するプロンプトにのみ回答する (破棄済み・旧バックエンドのIDは送らない)
+    if (!removePrompt(promptId))
+        return;
+
+    QVariantMap answer;
+    answer[QStringLiteral("action")] = action;
+    m_dbus->answerPrompt(promptId, answer, nullptr);
+}
+
+/**
+ * @brief 未応答のプロンプトを全て破棄する (バックエンド切断・再接続時)。
+ */
+void PackageController::clearPrompts()
+{
+    if (m_prompts.isEmpty())
+        return;
+    m_prompts.clear();
+    emit pendingPromptsChanged();
+}
+
+/**
+ * @brief 指定IDのプロンプトをキューから除去する (存在しなければ何もしない)。
+ * @param promptId 除去するプロンプトID
+ * @return キューに存在して除去した場合 true
+ */
+bool PackageController::removePrompt(uint promptId)
+{
+    QVariantList remaining;
+    bool found = false;
+    for (const QVariant &entry : std::as_const(m_prompts)) {
+        const QVariantMap map = entry.toMap();
+        if (!found && map.value(QStringLiteral("promptId")).toUInt() == promptId) {
+            found = true;
+            continue;
+        }
+        remaining.append(entry);
+    }
+    if (found) {
+        m_prompts = remaining;
+        emit pendingPromptsChanged();
+    }
+    return found;
+}
+
+/**
+ * @brief 編集セッションを解放し、切断状態へ戻す。
+ *
+ * 応答時またはタイムアウト時に sessionReleased を発行する。
+ * その後は initialize() により再度セッションを開始できる。
+ */
+void PackageController::releaseSession()
+{
+    if (!m_connected) {
+        emit sessionReleased(false);
+        return;
+    }
+
+    m_dbus->releaseSession([this](bool ok, const QString &, const QString &, const QVariantList &) {
+        m_connected = false;
+        m_initialized = false;
+        m_prompts.clear();
+        m_commitRevision = 0;
+        emit connectedChanged();
+        emit initializedChanged();
+        emit pendingPromptsChanged();
+        setStatusMessage(tr("Editing session ended"));
+        emit sessionReleased(ok);
+    });
+}
+
+/**
+ * @brief Zyppロック等で失敗した直近の操作を再試行する。
+ */
+void PackageController::retryOperation()
+{
+    if (m_retryAction)
+        m_retryAction();
+}
+
+
+/**
+ * @brief ローカルRPMファイルをインストール対象として選択し、依存関係を解決する。
+ *
+ * 結果は localRpmsFinished で通知される (success / problems / summary / unsignedPackages)。
+ * @param fileUrls ファイルダイアログで選択された file:// URL の一覧
+ */
+void PackageController::installLocalRpms(const QVariantList &fileUrls)
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    // ファイルはユーザー権限で GUI が開き、記述子だけをバックエンドへ渡す
+    // (root プロセスにユーザー指定パスを開かせない)。O_NONBLOCK で FIFO による停止を防ぐ。
+    QList<QDBusUnixFileDescriptor> files;
+    QStringList fileNames;
+    for (const QVariant &value : fileUrls) {
+        const QUrl url = value.toUrl();
+        const QString path = url.isLocalFile() ? url.toLocalFile() : value.toString();
+        if (path.isEmpty())
+            continue;
+        const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+        if (fd < 0) {
+            QVariantMap failed;
+            failed[QStringLiteral("success")] = false;
+            failed[QStringLiteral("errorMessage")] =
+                tr("Cannot open file: %1").arg(path) + QStringLiteral(" (") + QString::fromLocal8Bit(std::strerror(errno)) + QStringLiteral(")");
+            emit localRpmsFinished(failed);
+            return;
+        }
+        files.append(QDBusUnixFileDescriptor(fd));   // 記述子は複製される
+        ::close(fd);
+        fileNames.append(QFileInfo(path).fileName());
+    }
+    if (files.isEmpty())
+        return;
+
+    setBusy(true);
+    setStatusMessage(tr("Adding local RPM files..."));
+
+    m_dbus->installLocalRpms(files, fileNames, [this](bool ok, const QString &, const QString &message,
+                                           const QVariantList &args) {
+        QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!ok) {
+            result[QStringLiteral("success")] = false;
+            result[QStringLiteral("errorMessage")] = message;
+        }
+
+        refreshPackageStatuses(true);
+        cacheTransactionSummary(result);
+
+        if (result.value(QStringLiteral("success")).toBool())
+            setStatusMessage(tr("Local RPM files selected for installation"));
+        else if (!ok)
+            setStatusMessage(tr("Failed to add local RPM files"));
+        else
+            setStatusMessage(tr("Dependency problems found"));
+
+        setBusy(false);
+        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+        refreshPendingChangesThen([this, result](bool) { emit localRpmsFinished(result); });
+    });
+}
+
+/**
+ * @brief .repo ファイルを読み込み、バックエンドで解析してプレビューを通知する。
+ *
+ * ファイルはユーザ権限で GUI 側が読み込み、内容のみをバックエンドへ渡す
+ * (root プロセスにユーザ指定パスを開かせないため)。
+ * @param fileUrl 選択された .repo ファイルの URL
+ */
+void PackageController::previewRepoFile(const QUrl &fileUrl)
+{
+    if (!m_connected) return;
+
+    constexpr qint64 kMaxRepoFileSize = 64 * 1024;
+    QFile file(fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString());
+    if (!file.open(QIODevice::ReadOnly)) {
+        emit repoFilePreviewReady(false, {}, QString(), tr("Cannot open file: %1").arg(file.errorString()));
+        return;
+    }
+    if (file.size() > kMaxRepoFileSize) {
+        emit repoFilePreviewReady(false, {}, QString(), tr("The file is too large (maximum 64 KiB)"));
+        return;
+    }
+    const QString content = QString::fromUtf8(file.readAll());
+
+    m_dbus->parseRepoFile(content, [this, content](bool ok, const QString &, const QString &message,
+                                                   const QVariantList &args) {
+        const QVariantList repos = (ok && !args.isEmpty()) ? args.at(0).toList() : QVariantList();
+        if (!ok)
+            emit repoFilePreviewReady(false, {}, content, message);
+        else if (repos.isEmpty())
+            emit repoFilePreviewReady(false, {}, content, tr("No valid repository definitions were found"));
+        else
+            emit repoFilePreviewReady(true, repos, content, QString());
+    });
+}
+
+/**
+ * @brief プレビュー済みの .repo 内容を取り込み、リポジトリを追加する。
+ * @param content previewRepoFile で読み込んだ .repo の内容
+ */
+void PackageController::importRepoFile(const QString &content)
+{
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Importing repositories..."));
+
+    m_dbus->importRepoFile(content, [this](bool ok, const QString &, const QString &message,
+                                           const QVariantList &args) {
+        QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!ok) {
+            result[QStringLiteral("success")] = false;
+            result[QStringLiteral("errorMessage")] = message;
+        }
+        setBusy(false);
+        if (!result.value(QStringLiteral("added")).toList().isEmpty())
+            loadRepos();
+        setStatusMessage(result.value(QStringLiteral("success")).toBool()
+                             ? tr("Repositories imported")
+                             : tr("Repository import failed"));
+        emit repoFileImported(result);
+    });
+}
+
+void PackageController::openExternalUrl(const QString &url)
+{
+    const QUrl target(url.trimmed());
+    const QString scheme = target.scheme().toLower();
+    if (!target.isValid() || target.host().isEmpty()
+        || (scheme != QLatin1String("http") && scheme != QLatin1String("https"))) {
+        qWarning() << "Refusing to open non-http(s) URL:" << url;
+        return;
+    }
+
+    // GUI は SELinux の qzypper_t ドメインで動作するため、ブラウザを子プロセスとして
+    // exec せず、ユーザセッションの xdg-desktop-portal に URL を開かせる。
+    // ポータルが無い環境のみ従来の QDesktopServices (xdg-open) にフォールバックする。
+    QDBusMessage msg = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.OpenURI"),
+        QStringLiteral("OpenURI"));
+    msg << QString() << target.toString(QUrl::FullyEncoded) << QVariantMap();
+
+    auto *watcher = new QDBusPendingCallWatcher(
+        QDBusConnection::sessionBus().asyncCall(msg), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [target](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<QDBusObjectPath> reply = *w;
+        if (reply.isError()) {
+            qWarning() << "xdg-desktop-portal OpenURI failed:" << reply.error().message()
+                       << "- falling back to QDesktopServices";
+            QDesktopServices::openUrl(target);
+        }
+    });
 }
 
 } // namespace qZypper

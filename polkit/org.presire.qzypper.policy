@@ -59,6 +59,19 @@
     </defaults>
   </action>
 
+  <!-- パッケージロックの追加・削除 (/etc/zypp/locks) -->
+  <action id="org.presire.qzypper.manage-locks">
+    <description>Manage package locks</description>
+    <description xml:lang="ja">パッケージロックの管理</description>
+    <message>Authentication is required to add or remove package locks.</message>
+    <message xml:lang="ja">パッケージロックを追加・削除するには認証が必要です。</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
   <!-- リポジトリ署名鍵の信頼 (認証を保持しない) -->
   <action id="org.presire.qzypper.trust-key">
     <description>Trust a repository signing key</description>

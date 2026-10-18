@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtCore
+import QtQuick.Dialogs
 import org.presire.qzypper.gui
 import "dialogs" as Dialogs
 
@@ -17,6 +18,9 @@ ApplicationWindow {
     // -- テーマ切り替え --
     // 初回起動時はシステム設定に従い、以降はユーザ選択を永続化
     property bool darkMode: themeSettings.darkMode
+    property bool applyPendingCommit: false   // Apply Changes 起点の resolve かを追跡 (非同期チェーン用)
+    property bool quitting: false             // 終了時に releaseSession の応答を待っているか
+    readonly property int patchesTabIndex: 4
 
     Settings {
         id: themeSettings
@@ -41,21 +45,12 @@ ApplicationWindow {
         id: splitSettings
         category: "splitView"
         property real leftPaneWidth: 280
-        property real detailPaneHeight: 250
         property real statusFilterHeight: 330
     }
 
     Settings {
         category: "statusFilter"
         property alias mask: statusFilterPanel.statusMask
-    }
-
-    Settings {
-        category: "packageTable"
-        property alias colName: pkgPane.colName
-        property alias colSummary: pkgPane.colSummary
-        property alias colInstalled: pkgPane.colInstalled
-        property alias colAvailable: pkgPane.colAvailable
     }
 
     // -- グローバルショートカット --
@@ -71,158 +66,24 @@ ApplicationWindow {
     }
 
     // -- ナビゲーションDrawer (ハンバーガーメニュー) --
-    Drawer {
+    NavDrawer {
         id: navDrawer
-        width: 300
         height: root.height
-        edge: Qt.LeftEdge
-
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 0
-
-            // ヘッダ
-            Pane {
-                Layout.fillWidth: true
-                padding: 16
-                background: Rectangle { color: palette.highlight }
-
-                Label {
-                    text: "qZypper"
-                    font.pixelSize: 18
-                    font.bold: true
-                    color: palette.highlightedText
-                }
-            }
-
-            // -- パッケージセクション --
-            Label {
-                text: qsTr("Packages")
-                font.bold: true
-                font.pixelSize: 11
-                color: palette.placeholderText
-                Layout.fillWidth: true
-                Layout.topMargin: 12
-                Layout.leftMargin: 16
-                Layout.bottomMargin: 4
-            }
-
-            ItemDelegate {
-                text: qsTr("Update All Packages")
-                icon.name: "system-software-update"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                enabled: !PackageController.busy
-                onClicked: {
-                    navDrawer.close()
-                    if (!PackageController.checkAuth("org.presire.qzypper.install-packages"))
-                        return
-                    updateAllPackages()
-                }
-            }
-            ItemDelegate {
-                text: qsTr("Apply Changes")
-                icon.name: "dialog-ok-apply"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                enabled: !PackageController.busy && PackageController.hasPendingChanges
-                onClicked: {
-                    navDrawer.close()
-                    applyChanges()
-                }
-            }
-
-            MenuSeparator { Layout.fillWidth: true }
-
-            // -- 設定セクション --
-            Label {
-                text: qsTr("Settings")
-                font.bold: true
-                font.pixelSize: 11
-                color: palette.placeholderText
-                Layout.fillWidth: true
-                Layout.topMargin: 8
-                Layout.leftMargin: 16
-                Layout.bottomMargin: 4
-            }
-
-            ItemDelegate {
-                text: qsTr("Manage Repositories")
-                icon.name: "repository"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                onClicked: {
-                    navDrawer.close()
-                    repoDrawer.open()
-                    if (repoDrawerLoader.item)
-                        repoDrawerLoader.item.loadData()
-                }
-            }
-
-            ItemDelegate {
-                text: qsTr("Refresh Repositories")
-                icon.name: "view-refresh"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                enabled: !PackageController.busy
-                onClicked: {
-                    navDrawer.close()
-                    if (!PackageController.checkAuth("org.presire.qzypper.refresh-repos"))
-                        return
-                    refreshOverlay.open()
-                    PackageController.refreshReposAsync()
-                }
-            }
-
-            MenuSeparator { Layout.fillWidth: true }
-
-            // -- ヘルプセクション --
-            Label {
-                text: qsTr("Help")
-                font.bold: true
-                font.pixelSize: 11
-                color: palette.placeholderText
-                Layout.fillWidth: true
-                Layout.topMargin: 8
-                Layout.leftMargin: 16
-                Layout.bottomMargin: 4
-            }
-
-            ItemDelegate {
-                text: qsTr("About qZypper")
-                icon.name: "help-about"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                onClicked: {
-                    navDrawer.close()
-                    aboutqZypperDialog.open()
-                }
-            }
-
-            ItemDelegate {
-                text: qsTr("About Qt")
-                icon.name: "qt"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                onClicked: {
-                    navDrawer.close()
-                    aboutQtDialog.open()
-                }
-            }
-
-            Item { Layout.fillHeight: true }
-
-            // -- 終了 --
-            MenuSeparator { Layout.fillWidth: true }
-
-            ItemDelegate {
-                text: qsTr("Quit")
-                icon.name: "application-exit"
-                icon.color: palette.text
-                Layout.fillWidth: true
-                onClicked: Qt.quit()
-            }
+        onUpdateAllRequested: root.updateAllPackages()
+        onApplyChangesRequested: root.applyChanges()
+        onManageReposRequested: repoDrawer.open()
+        onRefreshReposRequested: {
+            refreshOverlay.open()
+            PackageController.refreshReposAsync()
         }
+        onAboutqZypperRequested: aboutqZypperDialog.open()
+        onAboutQtRequested: aboutQtDialog.open()
+        onEndSessionRequested: PackageController.releaseSession()
+        onDistUpgradeRequested: distUpgradeDialog.open()
+        onPackageLocksRequested: locksDialog.open()
+        onHistoryRequested: historyDialog.open()
+        onVerifySystemRequested: PackageController.verifySystem()
+        onInstallLocalRpmsRequested: localRpmFileDialog.open()
     }
 
     // -- リポジトリ管理ドロワー (全画面) --
@@ -232,6 +93,14 @@ ApplicationWindow {
         height: root.height
         edge: Qt.RightEdge
         interactive: false  // スワイプで閉じない (Escまたはボタンで閉じる)
+
+        // モーダルなドロワー表示中はウィンドウ直下の Shortcut がブロックされるため、
+        // Esc はドロワー内の Shortcut で扱う (子ダイアログ表示中はそちらが優先される)
+        Shortcut {
+            sequence: "Escape"
+            enabled: repoDrawer.visible && !refreshOverlay.visible
+            onActivated: repoDrawer.close()
+        }
 
         Loader {
             id: repoDrawerLoader
@@ -267,86 +136,24 @@ ApplicationWindow {
                 repoDrawer.close()
             } else if (navDrawer.visible) {
                 navDrawer.close()
-            } else if (pkgSearchBuffer.length > 0) {
-                pkgSearchBuffer = ""
-                pkgSearchClearTimer.stop()
+            } else if (packageTablePane.pkgSearchBuffer.length > 0) {
+                packageTablePane.pkgSearchBuffer = ""
+                packageTablePane.pkgSearchClearTimer.stop()
             }
         }
     }
 
     // -- リフレッシュ進捗オーバーレイ --
-    Popup {
+    RefreshOverlay {
         id: refreshOverlay
-        anchors.centerIn: parent
-        width: parent.width
-        height: parent.height
-        modal: true
-        closePolicy: Popup.NoAutoClose
+    }
 
-        background: Rectangle {
-            color: palette.window
-            opacity: 0.85
-        }
-
-        property bool cancelling: false
-
-        // Popup内のShortcutはモーダル中でもウィンドウレベルで動作する
-        Shortcut {
-            sequence: "Escape"
-            enabled: refreshOverlay.visible && !refreshOverlay.cancelling
-            onActivated: refreshOverlay.doCancel()
-        }
-
-        contentItem: Item {
-            id: refreshOverlayRoot
-
-            Column {
-                anchors.centerIn: parent
-                spacing: 16
-
-                BusyIndicator {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    running: refreshOverlay.visible
-                }
-
-                Label {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: PackageController.statusMessage
-                    textFormat: Text.PlainText
-                    font.pixelSize: 16
-                }
-
-                Label {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: refreshOverlay.cancelling
-                          ? qsTr("Will be cancelled after the current repository finishes")
-                          : qsTr("Press Esc or button to cancel")
-                    opacity: 0.6
-                    font.pixelSize: 13
-                }
-
-                Button {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    text: qsTr("Cancel")
-                    visible: !refreshOverlay.cancelling
-                    onClicked: refreshOverlay.doCancel()
-                }
-            }
-        }
-
-        function doCancel() {
-            cancelling = true
-            PackageController.cancelRefresh()
-        }
-
-        onClosed: cancelling = false
-
-        Connections {
-            target: PackageController
-            function onRefreshFinished(success) {
-                refreshOverlay.close()
-            }
-        }
+    // 終了時に releaseSession の応答を待つためのタイマ (応答が無ければ強制終了)
+    Timer {
+        id: quitTimer
+        interval: 3000
+        repeat: false
+        onTriggered: Qt.quit()
     }
 
     // -- ヘッダツールバー --
@@ -378,10 +185,17 @@ ApplicationWindow {
                 TabButton { text: qsTr("Installation Summary"); width: Math.max(140, implicitWidth) }
                 TabButton { text: qsTr("Repository"); width: Math.max(90, implicitWidth) }
                 TabButton { text: qsTr("Patterns"); width: Math.max(80, implicitWidth) }
+                TabButton {
+                    text: qsTr("Patches")
+                    width: Math.max(80, implicitWidth)
+                    Accessible.name: qsTr("Patches view")
+                }
 
                 onCurrentIndexChanged: {
                     if (currentIndex === 3) {
                         PackageController.loadPatterns()
+                    } else if (currentIndex === root.patchesTabIndex) {
+                        patchView.reload()
                     }
                 }
             }
@@ -410,165 +224,6 @@ ApplicationWindow {
         }
     }
 
-    // -- ソート状態 --
-    property int sortColumn: -1       // -1=なし, 0=チェックボックス, 1=パッケージ名
-    property bool sortAscending: true
-
-    // -- パッケージ一覧の typeahead 検索バッファ --
-    property string pkgSearchBuffer: ""
-
-    Timer {
-        id: pkgSearchClearTimer
-        interval: 5000
-        repeat: false
-        onTriggered: pkgSearchBuffer = ""
-    }
-
-    function performPkgSearch() {
-        var q = pkgSearchBuffer.toLowerCase()
-        if (q.length === 0) return
-        var m = packageListView.model
-        var n = (m && m.length !== undefined) ? m.length : packageListView.count
-        for (var i = 0; i < n; ++i) {
-            var name = (m[i].name || "").toLowerCase()
-            if (name.startsWith(q)) {
-                packageListView.currentIndex = i
-                packageListView.positionViewAtIndex(i, ListView.Center)
-                break
-            }
-        }
-    }
-
-    // -- ステータスフィルタと一覧モデル --
-    // PackageController.packages のキャッシュ (変更通知ごとに 1 回だけ取得する)
-    property var pkgCache: []
-    // 表示集合 (パッケージ名 → true)。ステータス変更 (sticky) では作り直さない
-    property var visibleNameSet: ({})
-    // 最後に表示集合を作り直した時の PackageController.listGeneration
-    property int lastListGeneration: -1
-
-    // 配列をソート列に従って並べ替える (引数の配列を並べ替えて返す)
-    function sortPackages(arr) {
-        if (sortColumn === 0) {
-            arr.sort(function(a, b) {
-                var aChecked = PackageStatusInfo.isChecked(a.status) ? 1 : 0
-                var bChecked = PackageStatusInfo.isChecked(b.status) ? 1 : 0
-                return sortAscending ? (aChecked - bChecked) : (bChecked - aChecked)
-            })
-        }
-        else if (sortColumn === 1) {
-            arr.sort(function(a, b) {
-                var na = (a.name || "").toLowerCase()
-                var nb = (b.name || "").toLowerCase()
-                var cmp = na < nb ? -1 : (na > nb ? 1 : 0)
-                return sortAscending ? cmp : -cmp
-            })
-        }
-        return arr
-    }
-
-    // 一覧モデルを再構築する (フィルタ → ソートの順に適用)
-    // resetVisibleSet: true ならステータスフィルタで表示集合を作り直す。false なら現在の表示集合を維持する (sticky)
-    // keepView: true なら選択パッケージとスクロール位置を保持する。false なら先頭を選択する
-    function rebuildPackageModel(resetVisibleSet, keepView) {
-        var src = pkgCache || []
-        var filtered = []
-        var i
-        if (resetVisibleSet) {
-            var mask = statusFilterPanel.statusMask
-            var set = {}
-            for (i = 0; i < src.length; ++i) {
-                var p = src[i]
-                if (PackageStatusInfo.maskHas(mask, p.status)) {
-                    filtered.push(p)
-                    set[p.name] = true
-                }
-            }
-            visibleNameSet = set
-        }
-        else {
-            var visible = visibleNameSet
-            for (i = 0; i < src.length; ++i) {
-                if (visible[src[i].name] === true) filtered.push(src[i])
-            }
-        }
-        var newModel = sortPackages(filtered)
-
-        if (!keepView) {
-            // モデル差し替え前に currentIndex を -1 へ戻し、onCurrentIndexChanged を発火させて詳細を再読込する
-            packageListView.currentIndex = -1
-            packageListView.model = newModel
-            if (packageListView.count > 0) packageListView.currentIndex = 0
-            return
-        }
-
-        var savedContentY = packageListView.contentY
-        var oldModel = packageListView.model
-        var oldIndex = packageListView.currentIndex
-        var selectedName = (oldIndex >= 0 && oldModel && oldModel[oldIndex]) ? (oldModel[oldIndex].name || "") : ""
-
-        var newIndex = -1
-        if (selectedName.length > 0) {
-            for (i = 0; i < newModel.length; ++i) {
-                if (newModel[i].name === selectedName) {
-                    newIndex = i
-                    break
-                }
-            }
-        }
-
-        // モデル差し替え時に ListView が currentIndex を 0 へ戻すため、その間の詳細読込を抑止する
-        packageListView.suppressDetailsLoad = true
-        packageListView.model = newModel
-        packageListView.currentIndex = newIndex
-        packageListView.suppressDetailsLoad = false
-
-        if (resetVisibleSet) {
-            // 表示集合が変わった場合は、選択パッケージが見える位置へ移動する (無ければ先頭)
-            if (newIndex >= 0) packageListView.positionViewAtIndex(newIndex, ListView.Contain)
-            else packageListView.contentY = packageListView.originY
-        }
-        else {
-            // モデル差し替えで先頭に戻ったスクロール位置を復元する (currentIndex 設定後に行う)
-            var maxContentY = packageListView.originY + Math.max(0, packageListView.contentHeight - packageListView.height)
-            packageListView.contentY = Math.min(Math.max(savedContentY, packageListView.originY), maxContentY)
-        }
-
-        if (newIndex >= 0) PackageController.loadPackageDetails(selectedName)
-        else PackageController.clearPackageDetails()  // 選択パッケージが一覧から消えた
-    }
-
-    function toggleSort(col) {
-        if (sortColumn === col) {
-            sortAscending = !sortAscending
-        }
-        else {
-            sortColumn = col
-            sortAscending = true
-        }
-        // ソート変更では表示集合を作り直さない
-        rebuildPackageModel(false, false)
-    }
-
-    // パッケージリスト更新時: 新しい世代なら表示集合を作り直し、ステータス変更のみなら表示集合を維持する (sticky)
-    Connections {
-        target: PackageController
-        function onPackagesChanged() {
-            root.pkgCache = PackageController.packages
-            var generation = PackageController.listGeneration
-            if (generation !== root.lastListGeneration) {
-                root.lastListGeneration = generation
-                root.rebuildPackageModel(true, false)
-                root.pkgSearchBuffer = ""
-                pkgSearchClearTimer.stop()
-            }
-            else {
-                root.rebuildPackageModel(false, true)
-            }
-        }
-    }
-
-    // -- メインコンテンツ --
     SplitView {
         anchors.fill: parent
         orientation: Qt.Horizontal
@@ -592,288 +247,59 @@ ApplicationWindow {
                     SplitView.minimumHeight: 180   // ウィンドウ最小高 600 でもリポジトリ一覧が数行表示できる高さ
                     currentIndex: filterTabBar.currentIndex
 
-                    // 検索フィルタ (左ペインを縮めた時にコントロールが重ならないようスクロール可能にする)
+                    SearchView {
+                        id: searchView
+                    }
+
+                    SummaryView {
+                        id: summaryView
+                    }
+
+                    RepositoryView {
+                        id: repositoryView
+                    }
+
+                    PatternView {
+                        id: patternView
+                    }
+
+                    // パッチタブ: 左ペインには必要パッチの件数概要を表示 (一覧は右ペイン)
                     Pane {
+                        id: patchSummaryPane
                         padding: 12
 
-                        ScrollView {
-                            id: searchScroll
-                            anchors.fill: parent
-                            contentWidth: availableWidth
-                            clip: true
-
-                            ColumnLayout {
-                                width: searchScroll.availableWidth
-                                spacing: 8
-
-                                // 検索入力
-                                RowLayout {
-                                    Layout.fillWidth: true
-
-                                    TextField {
-                                        id: searchField
-                                        Layout.fillWidth: true
-                                        placeholderText: qsTr("Search packages...")
-                                        onAccepted: performSearch()
-                                    }
-
-                                    Button {
-                                        text: qsTr("Search")
-                                        onClicked: performSearch()
-                                    }
+                        readonly property var counts: {
+                            var c = { needed: 0, security: 0, selected: 0, reboot: 0 }
+                            var list = PackageController.patches
+                            for (var i = 0; i < list.length; ++i) {
+                                var p = list[i]
+                                if (p.isNeeded) {
+                                    c.needed++
+                                    if (String(p.category).toLowerCase() === "security")
+                                        c.security++
+                                    if (p.rebootSuggested)
+                                        c.reboot++
                                 }
-
-                                // 検索対象チェックボックス
-                                GroupBox {
-                                    title: qsTr("Search Criteria")
-                                    Layout.fillWidth: true
-
-                                    ColumnLayout {
-                                        anchors.fill: parent
-
-                                        component ElidedCheckBox : CheckBox {
-                                            Layout.fillWidth: true
-                                            contentItem: Label {
-                                                text: parent.text
-                                                leftPadding: parent.indicator.width + parent.spacing
-                                                elide: Text.ElideRight
-                                                verticalAlignment: Text.AlignVCenter
-                                            }
-                                        }
-
-                                        ElidedCheckBox { id: cbName;     text: qsTr("Name (&E)");                    checked: true }
-                                        ElidedCheckBox { id: cbKeyword;  text: qsTr("Keywords (&K)");                 checked: true }
-                                        ElidedCheckBox { id: cbSummary;  text: qsTr("Summary (&M)");                  checked: true }
-                                        ElidedCheckBox { id: cbDesc;     text: qsTr("Description (&I)") }
-                                        ElidedCheckBox { id: cbProvides; text: qsTr("RPM \"Provides\" (&R)") }
-                                        ElidedCheckBox { id: cbRequires; text: qsTr("RPM \"Requires\" (&Q)") }
-                                    }
-                                }
+                                if (p.selected)
+                                    c.selected++
                             }
+                            return c
                         }
-                    }
 
-                    // インストールの概要
-                    Pane {
-                        padding: 0
-
-                        ListView {
-                            id: summaryListView
+                        ColumnLayout {
                             anchors.fill: parent
-                            clip: true
-                            model: buildSummaryModel()
+                            spacing: 6
 
-                            section.property: "category"
-                            section.delegate: Rectangle {
-                                width: summaryListView.width
-                                height: 28
-                                color: section === "install" ? "#4caf50"
-                                     : section === "update"  ? "#2196f3"
-                                     : section === "delete"  ? "#f44336" : "#9e9e9e"
-
-                                Label {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 8
-                                    font.bold: true
-                                    color: "white"
-                                    text: section === "install" ? qsTr("Install")
-                                        : section === "update"  ? qsTr("Update")
-                                        : section === "delete"  ? qsTr("Delete") : section
-                                }
-                            }
-
-                            delegate: ItemDelegate {
-                                width: summaryListView.width
-                                height: 24
-
-                                required property var modelData
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 16
-                                    spacing: 8
-
-                                    Label {
-                                        text: modelData.name || ""
-                                        textFormat: Text.PlainText
-                                        Layout.preferredWidth: 200
-                                        elide: Text.ElideRight
-                                    }
-
-                                    Label {
-                                        text: modelData.version || ""
-                                        textFormat: Text.PlainText
-                                        Layout.fillWidth: true
-                                        color: palette.placeholderText
-                                    }
-                                }
-                            }
-
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
+                            Label { text: qsTr("Patch Overview"); font.bold: true }
+                            Label { text: qsTr("Needed patches: %1").arg(patchSummaryPane.counts.needed) }
+                            Label { text: qsTr("Needed security patches: %1").arg(patchSummaryPane.counts.security) }
+                            Label { text: qsTr("Selected for installation: %1").arg(patchSummaryPane.counts.selected) }
                             Label {
-                                anchors.centerIn: parent
-                                text: qsTr("No pending package changes")
-                                color: palette.placeholderText
-                                visible: summaryListView.count === 0
+                                visible: patchSummaryPane.counts.reboot > 0
+                                text: qsTr("Needed patches suggesting a reboot: %1").arg(patchSummaryPane.counts.reboot)
+                                color: "#F44336"
                             }
-                        }
-                    }
-
-                    // リポジトリフィルタ
-                    Pane {
-                        padding: 0
-
-                        ListView {
-                            id: repoListView
-                            anchors.fill: parent
-                            clip: true
-                            model: PackageController.repos
-                            delegate: ItemDelegate {
-                                id: repoDelegate
-                                width: repoListView.width
-                                text: modelData.name || modelData.alias || ""
-                                highlighted: ListView.isCurrentItem
-                                // リポジトリ名はメタデータ由来のため PlainText で表示する
-                                // (既定の IconLabel は AutoText で HTML を解釈する)
-                                contentItem: Text {
-                                    text: repoDelegate.text
-                                    textFormat: Text.PlainText
-                                    font: repoDelegate.font
-                                    color: repoDelegate.highlighted ? repoDelegate.palette.highlightedText
-                                                                    : repoDelegate.palette.text
-                                    elide: Text.ElideRight
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                onClicked: {
-                                    repoListView.currentIndex = index
-                                    PackageController.loadPackagesByRepo(modelData.alias)
-                                }
-                            }
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-                        }
-                    }
-
-                    // パターン
-                    Pane {
-                        padding: 0
-
-                        // スクロール位置保存用
-                        property real savedContentY: 0
-                        property int  savedIndex: -1
-                        property bool restorePending: false
-
-                        ListView {
-                            id: patternListView
-                            anchors.fill: parent
-                            model: PackageController.patterns
-                            clip: true
-
-                            onModelChanged: {
-                                if (parent.restorePending) {
-                                    parent.restorePending = false
-                                    patternListView.currentIndex = parent.savedIndex
-                                    patternListView.contentY = parent.savedContentY
-                                }
-                            }
-
-                            // パターンのチェック状態をトグル (スクロール位置を保持)
-                            function togglePattern(name) {
-                                parent.savedContentY = patternListView.contentY
-                                parent.savedIndex    = patternListView.currentIndex
-                                parent.restorePending = true
-                                PackageController.togglePatternStatus(name)
-                            }
-
-                            section.property: "category"
-                            section.delegate: Rectangle {
-                                width: patternListView.width
-                                height: 28
-                                color: palette.alternateBase
-
-                                Label {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 8
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: section
-                                    textFormat: Text.PlainText
-                                    font.bold: true
-                                    font.pixelSize: 13
-                                }
-                            }
-
-                            delegate: ItemDelegate {
-                                id: patternDelegate
-                                width: patternListView.width
-                                highlighted: ListView.isCurrentItem
-
-                                readonly property int pStatus: modelData.status || 0
-                                readonly property bool pChecked:
-                                    pStatus === 1 || pStatus === 2 || pStatus === 3 ||
-                                    pStatus === 4 || pStatus === 5 || pStatus === 9
-                                readonly property color statusColor: {
-                                    if (pStatus === 3 || pStatus === 9) return "#4CAF50"  // KeepInstalled/Protected
-                                    if (pStatus === 1 || pStatus === 2) return "#2196F3"  // Install/AutoInstall
-                                    if (pStatus === 4 || pStatus === 5) return "#FF9800"  // Update/AutoUpdate
-                                    if (pStatus === 6 || pStatus === 7) return "#F44336"  // Del/AutoDel
-                                    return palette.mid
-                                }
-
-                                contentItem: RowLayout {
-                                    spacing: 6
-
-                                    // カスタムチェックボックス
-                                    Rectangle {
-                                        width: 18; height: 18
-                                        radius: 3
-                                        color: patternDelegate.pChecked ? patternDelegate.statusColor : "transparent"
-                                        border.color: patternDelegate.pChecked ? patternDelegate.statusColor : palette.mid
-                                        border.width: patternDelegate.pChecked ? 0 : 1.5
-
-                                        // チェックマーク
-                                        Label {
-                                            anchors.centerIn: parent
-                                            text: "\u2713"
-                                            font.pixelSize: 13
-                                            font.bold: true
-                                            color: "white"
-                                            visible: patternDelegate.pChecked
-                                        }
-
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            anchors.margins: -4
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: {
-                                                patternListView.togglePattern(modelData.name)
-                                            }
-                                        }
-                                    }
-
-                                    Label {
-                                        text: modelData.summary || modelData.name || ""
-                                        textFormat: Text.PlainText
-                                        Layout.fillWidth: true
-                                        elide: Text.ElideRight
-                                        color: patternDelegate.highlighted ? palette.highlightedText : palette.text
-                                    }
-                                }
-
-                                onClicked: {
-                                    patternListView.currentIndex = index
-                                    PackageController.loadPackagesByPattern(modelData.name)
-                                }
-                            }
-
-                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                            Label {
-                                anchors.centerIn: parent
-                                text: qsTr("Loading patterns...")
-                                color: palette.placeholderText
-                                visible: patternListView.count === 0
-                            }
+                            Item { Layout.fillHeight: true }
                         }
                     }
                 }
@@ -886,8 +312,8 @@ ApplicationWindow {
                     SplitView.maximumHeight: Math.max(150, leftSplit.height - 180)
                     // 起動時のレイアウト確定前の高さを保存しないよう、ユーザがハンドルをドラッグした時のみ保存する
                     onHeightChanged: if (leftSplit.resizing) splitSettings.statusFilterHeight = height
-                    onMaskEdited: root.rebuildPackageModel(true, true)
-                    onRefreshRequested: root.rebuildPackageModel(true, true)
+                    onMaskEdited: PackageController.packageProxy.statusMask = statusFilterPanel.statusMask
+                    onRefreshRequested: PackageController.packageProxy.statusMask = statusFilterPanel.statusMask
                 }
             }
         }
@@ -897,1069 +323,25 @@ ApplicationWindow {
             SplitView.fillWidth: true
             orientation: Qt.Vertical
 
-            // パッケージリスト (上部)
-            Pane {
-                id: pkgPane
+            // パッケージリスト (上部)。パッチタブ選択時はパッチ一覧に切り替える
+            StackLayout {
                 SplitView.fillHeight: true
                 SplitView.minimumHeight: 200
-                padding: 0
-
-                // リサイズ可能な列幅プロパティ
-                readonly property real minColName: 120
-                readonly property real minColSummary: 120
-                readonly property real minColInstalled: 100
-                readonly property real minColAvailable: 100
-                property real colName: 200
-                property real colSummary: 200
-                property real colInstalled: 140
-                property real colAvailable: 120
-
-                // 全列の合計幅 (動的計算)
-                property real pkgMinRowWidth: 4 + 36 + 1 + colName + 1 + colSummary + 1 + colInstalled + 1 + colAvailable + 1 + 88
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
-
-                    // テーブルヘッダ (横スクロール同期)
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 32
-                        color: palette.button
-                        clip: true
-
-                        Flickable {
-                            id: headerFlickable
-                            anchors.fill: parent
-                            contentX: packageFlickable.contentX
-                            contentWidth: packageFlickable.contentWidth
-                            interactive: false
-
-                            Row {
-                                x: 4
-                                width: Math.max(headerFlickable.width, pkgPane.pkgMinRowWidth) - 4
-                                height: 32
-                                spacing: 0
-
-                                // チェックボックス列ヘッダ (ソート可能)
-                                Item {
-                                    width: 36
-                                    height: parent.height
-
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: toggleSort(0)
-                                    }
-
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: sortColumn === 0 ? (sortAscending ? "▲" : "▼") : ""
-                                        font.pixelSize: 10
-                                    }
-                                }
-
-                                Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                // パッケージ列ヘッダ (ソート可能・リサイズ可能)
-                                Item {
-                                    width: pkgPane.colName
-                                    height: parent.height
-                                    clip: true
-
-                                    MouseArea {
-                                        anchors.left: parent.left
-                                        anchors.top: parent.top
-                                        anchors.bottom: parent.bottom
-                                        width: parent.width - 4
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: toggleSort(1)
-                                    }
-
-                                    Row {
-                                        anchors.centerIn: parent
-                                        spacing: 4
-                                        Label { text: qsTr("Packages"); font.bold: true }
-                                        Label { text: sortColumn === 1 ? (sortAscending ? "▲" : "▼") : ""; font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
-                                    }
-
-                                    Rectangle {
-                                        width: 4; height: parent.height; anchors.right: parent.right
-                                        color: phResize1.hovered || phResize1.pressed ? palette.highlight : "transparent"
-                                        MouseArea {
-                                            id: phResize1; anchors.fill: parent; cursorShape: Qt.SplitHCursor
-                                            property bool hovered: false; hoverEnabled: true
-                                            onEntered: hovered = true; onExited: hovered = false
-                                            property real globalStartX: 0; property real startW: 0
-                                            onPressed: function(mouse) { var p = mapToGlobal(mouse.x, 0); globalStartX = p.x; startW = pkgPane.colName }
-                                            onPositionChanged: function(mouse) { if (pressed) { var p = mapToGlobal(mouse.x, 0); pkgPane.colName = Math.max(pkgPane.minColName, startW + p.x - globalStartX) } }
-                                        }
-                                    }
-                                }
-
-                                Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                // 概要列ヘッダ (リサイズ可能)
-                                Item {
-                                    width: pkgPane.colSummary
-                                    height: parent.height
-                                    clip: true
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: qsTr("Summary"); font.bold: true
-                                    }
-
-                                    Rectangle {
-                                        width: 4; height: parent.height; anchors.right: parent.right
-                                        color: phResize2.hovered || phResize2.pressed ? palette.highlight : "transparent"
-                                        MouseArea {
-                                            id: phResize2; anchors.fill: parent; cursorShape: Qt.SplitHCursor
-                                            property bool hovered: false; hoverEnabled: true
-                                            onEntered: hovered = true; onExited: hovered = false
-                                            property real globalStartX: 0; property real startW: 0
-                                            onPressed: function(mouse) { var p = mapToGlobal(mouse.x, 0); globalStartX = p.x; startW = pkgPane.colSummary }
-                                            onPositionChanged: function(mouse) { if (pressed) { var p = mapToGlobal(mouse.x, 0); pkgPane.colSummary = Math.max(pkgPane.minColSummary, startW + p.x - globalStartX) } }
-                                        }
-                                    }
-                                }
-
-                                Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                // インストール済み列ヘッダ (リサイズ可能)
-                                Item {
-                                    width: pkgPane.colInstalled
-                                    height: parent.height
-                                    clip: true
-
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: qsTr("Installed"); font.bold: true
-                                        width: Math.min(implicitWidth, parent.width - 10)
-                                        elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter
-                                    }
-
-                                    Rectangle {
-                                        width: 4; height: parent.height; anchors.right: parent.right
-                                        color: phResize3.hovered || phResize3.pressed ? palette.highlight : "transparent"
-
-                                        MouseArea {
-                                            id: phResize3; anchors.fill: parent; cursorShape: Qt.SplitHCursor
-                                            property bool hovered: false; hoverEnabled: true
-                                            onEntered: hovered = true; onExited: hovered = false
-                                            property real globalStartX: 0; property real startW: 0
-                                            onPressed: function(mouse) { var p = mapToGlobal(mouse.x, 0); globalStartX = p.x; startW = pkgPane.colInstalled }
-                                            onPositionChanged: function(mouse) { if (pressed) { var p = mapToGlobal(mouse.x, 0); pkgPane.colInstalled = Math.max(pkgPane.minColInstalled, startW + p.x - globalStartX) } }
-                                        }
-                                    }
-                                }
-
-                                Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                // 利用可能列ヘッダ (リサイズ可能)
-                                Item {
-                                    width: pkgPane.colAvailable
-                                    height: parent.height
-                                    clip: true
-
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: qsTr("Available"); font.bold: true
-                                    }
-
-                                    Rectangle {
-                                        width: 4; height: parent.height; anchors.right: parent.right
-                                        color: phResize4.hovered || phResize4.pressed ? palette.highlight : "transparent"
-
-                                        MouseArea {
-                                            id: phResize4;
-                                            anchors.fill: parent;
-                                            cursorShape: Qt.SplitHCursor
-
-                                            property bool hovered: false;
-                                            property real globalStartX: 0;
-                                            property real startW: 0
-
-                                            hoverEnabled: true
-                                            onEntered: hovered = true;
-                                            onExited: hovered = false
-                                            onPressed: function(mouse) {
-                                                var p = mapToGlobal(mouse.x, 0);
-                                                globalStartX = p.x;
-                                                startW = pkgPane.colAvailable
-                                            }
-                                            onPositionChanged: function(mouse) {
-                                                if (pressed) {
-                                                    var p = mapToGlobal(mouse.x, 0);
-                                                    pkgPane.colAvailable = Math.max(pkgPane.minColAvailable, startW + p.x - globalStartX)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                // サイズ列ヘッダ (固定幅)
-                                Item {
-                                    width: 88
-                                    height: parent.height
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: qsTr("Size"); font.bold: true
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // パッケージリスト (横スクロール対応)
-                    Flickable {
-                        id: packageFlickable
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        contentWidth: Math.max(width, pkgPane.pkgMinRowWidth)
-                        contentHeight: height
-                        flickableDirection: Flickable.HorizontalFlick
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                        ListView {
-                            id: packageListView
-
-                            // rebuildPackageModel() のモデル差し替え中は詳細読込を抑止する
-                            property bool suppressDetailsLoad: false
-
-                            width: packageFlickable.contentWidth
-                            height: packageFlickable.height
-                            clip: true
-                            // モデルは rebuildPackageModel() でのみ更新する (バインディングは使わない)
-                            model: []
-                            focus: true
-                            activeFocusOnTab: true
-                            keyNavigationWraps: false
-                            highlightMoveDuration: 0
-                            highlightMoveVelocity: -1
-                            highlightResizeDuration: 0
-
-                            // 通常の選択変更時の詳細読込パス (表示保持の再構築時は rebuildPackageModel() で読み込む)
-                            onCurrentIndexChanged: {
-                                if (packageListView.suppressDetailsLoad) return
-                                var idx = packageListView.currentIndex
-                                if (idx >= 0 && idx < packageListView.count) {
-                                    var m = packageListView.model
-                                    if (m && m[idx] && m[idx].name)
-                                        PackageController.loadPackageDetails(m[idx].name)
-                                }
-                                else if (idx < 0) {
-                                    // 選択が無くなった場合は前のパッケージの詳細を残さない
-                                    PackageController.clearPackageDetails()
-                                }
-                            }
-
-                            Keys.onPressed: function(event) {
-                                switch (event.key) {
-                                    case Qt.Key_Up:
-                                        if (currentIndex > 0) currentIndex--
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_Down:
-                                        if (currentIndex < count - 1) currentIndex++
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_Home:
-                                        if (count > 0) {
-                                            currentIndex = 0
-                                            positionViewAtIndex(0, ListView.Beginning)
-                                        }
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_End:
-                                        if (count > 0) {
-                                            currentIndex = count - 1
-                                            positionViewAtIndex(count - 1, ListView.End)
-                                        }
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_PageUp:
-                                        currentIndex = Math.max(0, currentIndex - Math.floor(height / 28))
-                                        positionViewAtIndex(currentIndex, ListView.Contain)
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_PageDown:
-                                        currentIndex = Math.min(count - 1, currentIndex + Math.floor(height / 28))
-                                        positionViewAtIndex(currentIndex, ListView.Contain)
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_Escape:
-                                        // 通常はウィンドウ側の Shortcut(Escape) が処理する。キーがここへ届いた場合のフォールバック
-                                        pkgSearchBuffer = ""
-                                        pkgSearchClearTimer.stop()
-                                        event.accepted = true
-                                        break
-                                    case Qt.Key_Backspace:
-                                        if (pkgSearchBuffer.length > 0) {
-                                            pkgSearchBuffer = pkgSearchBuffer.slice(0, -1)
-                                            if (pkgSearchBuffer.length > 0) {
-                                                performPkgSearch()
-                                                pkgSearchClearTimer.restart()
-                                            }
-                                            else {
-                                                pkgSearchClearTimer.stop()
-                                            }
-                                        }
-                                        event.accepted = true
-                                        break
-                                    default:
-                                        if (event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
-                                            pkgSearchBuffer += event.text
-                                            performPkgSearch()
-                                            pkgSearchClearTimer.restart()
-                                            event.accepted = true
-                                        }
-                                        break
-                                }
-                            }
-
-                            delegate: ItemDelegate {
-                                id: pkgDelegate
-                                width: packageListView.width
-                                height: 28
-                                highlighted: ListView.isCurrentItem
-
-                                required property int index
-                                required property var modelData
-
-                                background: Rectangle {
-                                    color: pkgDelegate.highlighted ? palette.highlight : "transparent"
-                                }
-
-                                property bool isChecked: PackageStatusInfo.isChecked(pkgDelegate.modelData.status)
-                                property bool isMarkedForRemoval: PackageStatusInfo.isMarkedForRemoval(pkgDelegate.modelData.status)
-
-                                onClicked: {
-                                    packageListView.currentIndex = pkgDelegate.index
-                                    packageListView.forceActiveFocus()
-                                }
-
-                                TapHandler {
-                                    acceptedButtons: Qt.RightButton
-                                    onTapped: {
-                                        packageListView.currentIndex = pkgDelegate.index
-                                        packageListView.forceActiveFocus()
-                                        pkgContextMenu.targetPkg = pkgDelegate.modelData
-                                        pkgContextMenu.popup()
-                                    }
-                                }
-
-                                Row {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: 4
-                                    spacing: 0
-
-                                    Item {
-                                        width: 36
-                                        height: parent.height
-                                        z: 10
-
-                                        StatusIcon {
-                                            anchors.centerIn: parent
-                                            status: pkgDelegate.modelData.status || 0
-                                        }
-
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: function(mouse) {
-                                                mouse.accepted = true
-                                                var pkg = pkgDelegate.modelData
-                                                var s = pkg.status
-                                                if (pkgDelegate.isMarkedForRemoval) {
-                                                    // Del/AutoDel → KeepInstalled (削除取り消し)
-                                                    setStatus(pkg.name, 3)
-                                                } else if (!pkgDelegate.isChecked) {
-                                                    // 未チェック → インストール
-                                                    if (s === 0) setStatus(pkg.name, 1)
-                                                    else if (s === 8) setStatus(pkg.name, 1)  // Taboo → Install
-                                                } else {
-                                                    // チェック済み → 解除
-                                                    if (s === 3 || s === 4 || s === 5 || s === 9) setStatus(pkg.name, 6)
-                                                    else if (s === 1) setStatus(pkg.name, 0)
-                                                    else if (s === 2) setStatus(pkg.name, 8)  // AutoInstall → Taboo
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                    // パッケージ名
-                                    Item {
-                                        width: pkgPane.colName
-                                        height: parent.height
-                                        clip: true
-                                        Label {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.leftMargin: 4; anchors.rightMargin: 4
-                                            text: pkgDelegate.modelData.name || ""
-                                            textFormat: Text.PlainText
-                                            elide: Text.ElideRight
-                                            color: pkgDelegate.highlighted ? palette.highlightedText : palette.text
-                                        }
-                                    }
-
-                                    Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                    // 概要
-                                    Item {
-                                        width: pkgPane.colSummary
-                                        height: parent.height
-                                        clip: true
-                                        Label {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.leftMargin: 4; anchors.rightMargin: 4
-                                            text: pkgDelegate.modelData.summary || ""
-                                            textFormat: Text.PlainText
-                                            elide: Text.ElideRight
-                                            color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
-                                        }
-                                    }
-
-                                    Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                    // インストール済み
-                                    Item {
-                                        width: pkgPane.colInstalled
-                                        height: parent.height
-                                        clip: true
-                                        Label {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.leftMargin: 4; anchors.rightMargin: 4
-                                            text: pkgDelegate.modelData.installedVersion || ""
-                                            textFormat: Text.PlainText
-                                            elide: Text.ElideRight
-                                            color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
-                                        }
-                                    }
-
-                                    Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                    // 利用可能
-                                    Item {
-                                        width: pkgPane.colAvailable
-                                        height: parent.height
-                                        clip: true
-
-                                        Label {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.leftMargin: 4; anchors.rightMargin: 4
-                                            text: pkgDelegate.modelData.version || ""
-                                            textFormat: Text.PlainText
-                                            elide: Text.ElideRight
-                                            color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
-                                        }
-                                    }
-
-                                    Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                    // サイズ
-                                    Item {
-                                        width: 88
-                                        height: parent.height
-                                        Label {
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.rightMargin: 8
-                                            text: pkgDelegate.modelData.size ? formatSize(pkgDelegate.modelData.size) : ""
-                                            horizontalAlignment: Text.AlignRight
-                                            color: pkgDelegate.highlighted ? palette.highlightedText : palette.placeholderText
-                                        }
-                                    }
-                                }
-                            }
-
-                            ScrollBar.vertical: ScrollBar {}
-                        }
-
-                        // typeahead 検索オーバーレイ
-                        Rectangle {
-                            id: pkgSearchPopup
-                            z: 1000
-                            visible: pkgSearchBuffer.length > 0
-                            anchors.top: parent.top
-                            anchors.right: parent.right
-                            anchors.topMargin: 8
-                            anchors.rightMargin: 16
-                            radius: 5
-                            color: root.darkMode ? "#1B5E20" : "#2E7D32"
-                            border.color: root.darkMode ? "#0E3A12" : "#1B5E20"
-                            border.width: 1
-                            width: Math.max(220, pkgSearchPopupLabel.implicitWidth + 24)
-                            height: 36
-
-                            Label {
-                                id: pkgSearchPopupLabel
-                                anchors.centerIn: parent
-                                text: qsTr("Search: ") + pkgSearchBuffer
-                                color: "#ffffff"
-                                font.bold: true
-                            }
-                        }
-                    }
-
-                    // パッケージコンテキストメニュー
-                    Menu {
-                        id: pkgContextMenu
-                        property var targetPkg: ({})
-
-                        MenuItem {
-                            text: qsTr("Install")
-                            enabled: pkgContextMenu.targetPkg.status === 0  // NoInst
-                            onTriggered: setStatus(pkgContextMenu.targetPkg.name, 1)
-                        }
-
-                        MenuItem {
-                            text: qsTr("Delete")
-                            enabled: pkgContextMenu.targetPkg.status === 3  // KeepInstalled
-                                  || pkgContextMenu.targetPkg.status === 4  // Update
-                            onTriggered: setStatus(pkgContextMenu.targetPkg.name, 6)
-                        }
-
-                        MenuItem {
-                            text: qsTr("Update")
-                            enabled: (pkgContextMenu.targetPkg.status === 3)  // KeepInstalled
-                                  && (pkgContextMenu.targetPkg.version || "") !== ""
-                                  && (pkgContextMenu.targetPkg.version || "") !== (pkgContextMenu.targetPkg.installedVersion || "")
-                            onTriggered: setStatus(pkgContextMenu.targetPkg.name, 4)
-                        }
-
-                        MenuSeparator {}
-
-                        MenuItem {
-                            text: qsTr("Taboo (Prevent Install)")
-                            enabled: pkgContextMenu.targetPkg.status === 0
-                            onTriggered: setStatus(pkgContextMenu.targetPkg.name, 8)
-                        }
-
-                        MenuItem {
-                            text: qsTr("Protected (Prevent Removal)")
-                            enabled: pkgContextMenu.targetPkg.status === 3
-                            onTriggered: setStatus(pkgContextMenu.targetPkg.name, 9)
-                        }
-
-                        MenuSeparator {}
-
-                        MenuItem {
-                            text: qsTr("Undo Changes")
-                            enabled: pkgContextMenu.targetPkg.status === 1
-                                  || pkgContextMenu.targetPkg.status === 4
-                                  || pkgContextMenu.targetPkg.status === 6
-                                  || pkgContextMenu.targetPkg.status === 8
-                                  || pkgContextMenu.targetPkg.status === 9
-                            onTriggered: {
-                                var pkg = pkgContextMenu.targetPkg
-                                // インストール系 → NoInst、削除/更新系 → KeepInstalled
-                                var revert = (pkg.installedVersion && pkg.installedVersion !== "") ? 3 : 0
-                                setStatus(pkg.name, revert)
-                            }
-                        }
-                    }
+                currentIndex: filterTabBar.currentIndex === root.patchesTabIndex ? 1 : 0
+
+                PackageTable {
+                    id: packageTablePane
+                    darkMode: root.darkMode
                 }
 
-                // 空一覧時のメッセージ (全体が 0 件か、ステータスフィルタで 0 件か)
-                Label {
-                    anchors.centerIn: parent
-                    visible: packageListView.count === 0 && !PackageController.busy
-                    text: root.pkgCache.length === 0 ? qsTr("No packages to display")
-                                                     : qsTr("No packages match the status filter")
-                    color: palette.placeholderText
+                PatchView {
+                    id: patchView
                 }
             }
 
-            // 詳細パネル (下部)
-            Pane {
+            // パッケージ詳細 (下部)
+            PackageDetailsPane {
                 id: detailPane
-                SplitView.preferredHeight: splitSettings.detailPaneHeight
-                SplitView.minimumHeight: 120
-                padding: 0
-                onHeightChanged: splitSettings.detailPaneHeight = height
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
-
-                    TabBar {
-                        id: detailsTabBar
-                        Layout.fillWidth: true
-
-                        TabButton { text: qsTr("Description") }
-                        TabButton { text: qsTr("Technical Data") }
-                        TabButton { text: qsTr("Dependencies") }
-                        TabButton { text: qsTr("Version") }
-                        TabButton { text: qsTr("File List") }
-                        TabButton { text: qsTr("Changelog") }
-                    }
-
-                    StackLayout {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        currentIndex: detailsTabBar.currentIndex
-
-                        // 説明タブ
-                        ScrollView {
-                            TextArea {
-                                readOnly: true
-                                wrapMode: TextArea.WordWrap
-                                textFormat: TextArea.RichText
-                                text: {
-                                    var d = PackageController.currentPackageDetails
-                                    if (!d || !d.name) return ""
-                                    return "<h3>" + escapeHtml(d.name) + "</h3>"
-                                         + "<p>" + escapeHtml(d.summary) + "</p>"
-                                         + "<hr/>"
-                                         + "<p>" + escapeHtml(d.description).replace(/\n/g, "<br/>") + "</p>"
-                                }
-                            }
-                        }
-
-                        // 技術データタブ
-                        ScrollView {
-                            TextArea {
-                                readOnly: true
-                                wrapMode: TextArea.WordWrap
-                                textFormat: TextArea.RichText
-                                text: {
-                                    var d = PackageController.currentPackageDetails
-                                    if (!d || !d.name) return ""
-                                    return formatTechData(d)
-                                }
-                                onLinkActivated: function(link) {
-                                    openSafeUrl(link)
-                                }
-                                HoverHandler {
-                                    cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor
-                                }
-                            }
-                        }
-
-                        // 依存関係タブ
-                        ScrollView {
-                            TextArea {
-                                readOnly: true
-                                wrapMode: TextArea.WordWrap
-                                textFormat: TextArea.RichText
-                                text: {
-                                    var d = PackageController.currentPackageDetails
-                                    if (!d || !d.name) return ""
-                                    return formatDependencies(d)
-                                }
-                            }
-                        }
-
-                        // バージョンタブ
-                        Pane {
-                            id: versionPane
-                            padding: 0
-
-                            // カラム幅のプロパティ (ドラッグでリサイズ可能)
-                            readonly property real minColRadio: 40
-                            readonly property real minColVersion: 220
-                            readonly property real minColArch: 120
-                            readonly property real minColRepo: 200
-                            readonly property real minColStatus: 100
-                            property real colRadio: minColRadio
-                            property real colVersion: minColVersion
-                            property real colArch: minColArch
-                            property real colStatus: minColStatus
-
-                            // 全列の合計最小幅
-                            property real verMinRowWidth: colRadio + colVersion + colArch + minColRepo + colStatus
-
-                            ColumnLayout {
-                                anchors.fill: parent
-                                spacing: 0
-
-                                // カラムヘッダ (横スクロール同期)
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    height: 28
-                                    color: palette.button
-                                    clip: true
-
-                                    Flickable {
-                                        id: verHeaderFlickable
-                                        anchors.fill: parent
-                                        contentX: versionFlickable.contentX
-                                        contentWidth: versionFlickable.contentWidth
-                                        interactive: false
-
-                                        Row {
-                                            width: Math.max(verHeaderFlickable.width, versionPane.verMinRowWidth)
-                                            height: 28
-                                            spacing: 0
-
-                                            // ラジオ列ヘッダ
-                                            Item {
-                                                width: versionPane.colRadio
-                                                height: parent.height
-                                            }
-                                            // 区切り線
-                                            Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                            // バージョン列ヘッダ + リサイズハンドル
-                                            Item {
-                                                width: versionPane.colVersion - 1
-                                                height: parent.height
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    text: qsTr("Version")
-                                                    font.bold: true
-                                                }
-                                                Rectangle {
-                                                    width: 4; height: parent.height
-                                                    anchors.right: parent.right
-                                                    color: vhResize1.hovered || vhResize1.pressed ? palette.highlight : "transparent"
-
-                                                    MouseArea {
-                                                        id: vhResize1
-                                                        anchors.fill: parent
-                                                        cursorShape: Qt.SplitHCursor
-                                                        property bool hovered: false
-                                                        hoverEnabled: true
-                                                        onEntered: hovered = true
-                                                        onExited: hovered = false
-                                                        property real globalStartX: 0
-                                                        property real startW: 0
-                                                        onPressed: function(mouse) { var p = mapToGlobal(mouse.x, 0); globalStartX = p.x; startW = versionPane.colVersion }
-                                                        onPositionChanged: function(mouse) {
-                                                            if (pressed) {
-                                                                var p = mapToGlobal(mouse.x, 0)
-                                                                versionPane.colVersion = Math.max(versionPane.minColVersion, startW + p.x - globalStartX)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                            // アーキテクチャ列ヘッダ + リサイズハンドル
-                                            Item {
-                                                width: versionPane.colArch - 1
-                                                height: parent.height
-                                                clip: true
-
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    width: Math.min(implicitWidth, parent.width - 10)
-                                                    text: qsTr("Architecture")
-                                                    font.bold: true
-                                                    elide: Text.ElideRight
-                                                    horizontalAlignment: Text.AlignHCenter
-                                                }
-                                                Rectangle {
-                                                    width: 4; height: parent.height
-                                                    anchors.right: parent.right
-                                                    color: vhResize2.hovered || vhResize2.pressed ? palette.highlight : "transparent"
-                                                    MouseArea {
-                                                        id: vhResize2
-                                                        anchors.fill: parent
-                                                        cursorShape: Qt.SplitHCursor
-                                                        property bool hovered: false
-                                                        hoverEnabled: true
-                                                        onEntered: hovered = true
-                                                        onExited: hovered = false
-                                                        property real globalStartX: 0
-                                                        property real startW: 0
-                                                        onPressed: function(mouse) { var p = mapToGlobal(mouse.x, 0); globalStartX = p.x; startW = versionPane.colArch }
-                                                        onPositionChanged: function(mouse) {
-                                                            if (pressed) {
-                                                                var p = mapToGlobal(mouse.x, 0)
-                                                                versionPane.colArch = Math.max(versionPane.minColArch, startW + p.x - globalStartX)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                            // リポジトリ列ヘッダ
-                                            Item {
-                                                width: Math.max(versionPane.minColRepo, parent.width - versionPane.colRadio - versionPane.colVersion - versionPane.colArch - versionPane.colStatus - 3)
-                                                height: parent.height
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    text: qsTr("Repository")
-                                                    font.bold: true
-                                                }
-                                            }
-                                            Rectangle { width: 1; height: parent.height; color: palette.mid }
-
-                                            // ステータス列ヘッダ
-                                            Item {
-                                                width: versionPane.colStatus - 1
-                                                height: parent.height
-                                                Label {
-                                                    anchors.centerIn: parent
-                                                    text: qsTr("Status")
-                                                    font.bold: true
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // バージョンリスト (横スクロール対応)
-                                Flickable {
-                                    id: versionFlickable
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
-                                    clip: true
-                                    contentWidth: Math.max(width, versionPane.verMinRowWidth)
-                                    contentHeight: height
-                                    flickableDirection: Flickable.HorizontalFlick
-                                    boundsBehavior: Flickable.StopAtBounds
-
-                                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                                    ListView {
-                                        id: versionListView
-                                        width: versionFlickable.contentWidth
-                                        height: versionFlickable.height
-                                        clip: true
-                                        // 表示中パッケージの詳細 (変更時に選択を同期する)
-                                        property var details: PackageController.currentPackageDetails
-                                        model: details.availableVersions || []
-
-                                        property int selectedIndex: -1
-
-                                        // モデル差し替えと同じ通知で変わるため、モデル更新後に同期する
-                                        onDetailsChanged: Qt.callLater(syncSelection)
-
-                                        function selectVersion(idx, versionData) {
-                                            if (selectedIndex === idx) return
-                                            selectedIndex = idx
-                                            var d = details
-                                            if (d && d.name) {
-                                                PackageController.setPackageVersion(
-                                                    d.name,
-                                                    versionData.version,
-                                                    versionData.arch,
-                                                    versionData.repoAlias
-                                                )
-                                            }
-                                            // 変更に失敗した場合も含め、実際の状態に選択を合わせる
-                                            Qt.callLater(syncSelection)
-                                        }
-
-                                        // 選択 (ラジオボタン) を詳細の状態に合わせる
-                                        // インストール/更新対象なら候補バージョン、それ以外はインストール済みバージョンを選択する
-                                        function syncSelection() {
-                                            var d = details
-                                            var versions = (d && d.availableVersions) || []
-                                            var idx = -1
-                                            var i
-                                            if (d && d.name) {
-                                                var s = d.status
-                                                var toInstall = s === PackageStatusInfo.Install || s === PackageStatusInfo.AutoInstall
-                                                             || s === PackageStatusInfo.Update || s === PackageStatusInfo.AutoUpdate
-                                                if (toInstall) {
-                                                    for (i = 0; i < versions.length; i++) {
-                                                        var v = versions[i]
-                                                        if (v.version === d.version && v.arch === d.arch && v.repoAlias === d.repoAlias) {
-                                                            idx = i
-                                                            break
-                                                        }
-                                                    }
-                                                }
-                                                else if (d.installedVersion) {
-                                                    // installed: いずれかのインストール済みとバージョン・アーキテクチャが一致する (バックエンドで判定)
-                                                    // 複数版インストール時は代表版 (installedVersion) を選ぶ。優先順:
-                                                    //   0. 候補と一致するインストール済みの行 (インストール済みの版を選んで「変更なし」にした場合)
-                                                    //   1. installedVersion と一致し、候補と同じリポジトリの行
-                                                    //   2. installedVersion と一致する行
-                                                    //   3. インストール済みの行
-                                                    var sameVerIdx = -1
-                                                    var anyInstIdx = -1
-                                                    for (i = 0; i < versions.length; i++) {
-                                                        var c = versions[i]
-                                                        if (c.installed === true && c.version === d.version
-                                                                && c.arch === d.arch && c.repoAlias === d.repoAlias) {
-                                                            idx = i
-                                                            break
-                                                        }
-                                                    }
-                                                    for (i = 0; idx < 0 && i < versions.length; i++) {
-                                                        if (versions[i].installed !== true) continue
-                                                        if (anyInstIdx < 0) anyInstIdx = i
-                                                        if (versions[i].version !== d.installedVersion) continue
-                                                        if (sameVerIdx < 0) sameVerIdx = i
-                                                        if (versions[i].repoAlias === d.repoAlias) {
-                                                            idx = i
-                                                            break
-                                                        }
-                                                    }
-                                                    if (idx < 0) idx = sameVerIdx >= 0 ? sameVerIdx : anyInstIdx
-                                                }
-                                            }
-                                            selectedIndex = idx
-                                            // 選択行が見えている場合はスクロール位置を動かさない
-                                            if (idx >= 0) positionViewAtIndex(idx, ListView.Contain)
-                                        }
-
-                                        delegate: ItemDelegate {
-                                            width: versionListView.width
-                                            height: 32
-
-                                            required property int index
-                                            required property var modelData
-
-                                            property bool isInstalled: modelData.installed === true
-                                            property bool isSelected: versionListView.selectedIndex === index
-
-                                            onClicked: versionListView.selectVersion(index, modelData)
-
-                                            Row {
-                                                anchors.fill: parent
-                                                spacing: 0
-
-                                                // ラジオボタン (カスタム描画)
-                                                Item {
-                                                    width: versionPane.colRadio
-                                                    height: parent.height
-
-                                                    Rectangle {
-                                                        width: 16; height: 16
-                                                        anchors.centerIn: parent
-                                                        radius: 8
-                                                        color: "transparent"
-                                                        border.color: isSelected ? palette.highlight : palette.text
-                                                        border.width: 1.5
-
-                                                        Rectangle {
-                                                            width: 8; height: 8
-                                                            anchors.centerIn: parent
-                                                            radius: 4
-                                                            color: palette.highlight
-                                                            visible: isSelected
-                                                        }
-                                                    }
-
-                                                    MouseArea {
-                                                        anchors.fill: parent
-                                                        cursorShape: Qt.PointingHandCursor
-                                                        onClicked: versionListView.selectVersion(index, modelData)
-                                                    }
-                                                }
-                                                Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                                // バージョン
-                                                Item {
-                                                    width: versionPane.colVersion - 1
-                                                    height: parent.height
-                                                    Label {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        anchors.left: parent.left
-                                                        anchors.leftMargin: 4
-                                                        anchors.right: parent.right
-                                                        anchors.rightMargin: 4
-                                                        text: modelData.version || ""
-                                                        textFormat: Text.PlainText
-                                                        font.bold: isInstalled
-                                                        elide: Text.ElideRight
-                                                    }
-                                                }
-                                                Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                                // アーキテクチャ
-                                                Item {
-                                                    width: versionPane.colArch - 1
-                                                    height: parent.height
-                                                    Label {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        anchors.left: parent.left
-                                                        anchors.leftMargin: 4
-                                                        text: modelData.arch || ""
-                                                        textFormat: Text.PlainText
-                                                        color: palette.placeholderText
-                                                    }
-                                                }
-                                                Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                                // リポジトリ
-                                                Item {
-                                                    width: Math.max(versionPane.minColRepo, parent.width - versionPane.colRadio - versionPane.colVersion - versionPane.colArch - versionPane.colStatus - 3)
-                                                    height: parent.height
-                                                    Label {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        anchors.left: parent.left
-                                                        anchors.leftMargin: 4
-                                                        anchors.right: parent.right
-                                                        anchors.rightMargin: 4
-                                                        text: modelData.repoName || ""
-                                                        textFormat: Text.PlainText
-                                                        elide: Text.ElideRight
-                                                        color: palette.placeholderText
-                                                    }
-                                                }
-                                                Rectangle { width: 1; height: parent.height; color: palette.mid; opacity: 0.5 }
-
-                                                // ステータス
-                                                Item {
-                                                    width: versionPane.colStatus - 1
-                                                    height: parent.height
-                                                    Label {
-                                                        anchors.verticalCenter: parent.verticalCenter
-                                                        anchors.left: parent.left
-                                                        anchors.leftMargin: 4
-                                                        text: isInstalled ? qsTr("Installed") : ""
-                                                        color: "#4caf50"
-                                                        font.pixelSize: 12
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        ScrollBar.vertical: ScrollBar {}
-                                    }
-                                }
-                            }
-                        }
-
-                        // ファイル一覧タブ
-                        ScrollView {
-                            TextArea {
-                                readOnly: true
-                                wrapMode: TextArea.NoWrap
-                                textFormat: TextArea.PlainText
-                                font.family: "monospace"
-                                text: {
-                                    var d = PackageController.currentPackageDetails
-                                    return (d && d.fileList) ? d.fileList.join("\n") : ""
-                                }
-                            }
-                        }
-
-                        // 変更ログタブ
-                        ScrollView {
-                            TextArea {
-                                readOnly: true
-                                wrapMode: TextArea.WordWrap
-                                textFormat: TextArea.PlainText
-                                font.family: "monospace"
-                                text: {
-                                    var d = PackageController.currentPackageDetails
-                                    return (d && d.changeLog) ? d.changeLog.join("\n\n") : ""
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -1984,6 +366,14 @@ ApplicationWindow {
                 Layout.fillWidth: true
             }
 
+            // バックエンドの操作フェーズ表示 (operationState)
+            Label {
+                text: root.operationStageText(PackageController.operationState)
+                visible: text.length > 0
+                opacity: 0.7
+                Layout.alignment: Qt.AlignVCenter
+            }
+
             Button {
                 text: qsTr("Cancel")
                 onClicked: {
@@ -2003,46 +393,10 @@ ApplicationWindow {
     // -- ダイアログ --
 
     // ソルバー実行中ウェイトダイアログ
-    Dialog {
+    Dialogs.SolverWaitDialog {
         id: solverWaitDialog
-        title: qsTr("Resolving dependencies...")
-        anchors.centerIn: parent
-        modal: true
-        closePolicy: Dialog.NoAutoClose
-        width: 320
-        standardButtons: Dialog.NoButton
-
-        RowLayout {
-            anchors.fill: parent
-            spacing: 12
-
-            BusyIndicator {
-                Layout.preferredWidth: 32
-                Layout.preferredHeight: 32
-                running: solverWaitDialog.visible
-            }
-
-            Label {
-                text: qsTr("Resolving dependencies...\nPlease wait.")
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-        }
-
-        // PackageController.busyに連動して自動開閉
-        // ただし、startupDialog / commitProgressDialog / conflictDialog / refreshOverlay表示中は開かない
-        Connections {
-            target: PackageController
-            function onBusyChanged() {
-                if (PackageController.busy) {
-                    if (!startupDialog.visible && !commitProgressDialog.visible
-                            && !conflictDialog.visible && !refreshOverlay.visible)
-                        solverWaitDialog.open()
-                } else {
-                    solverWaitDialog.close()
-                }
-            }
-        }
+        blocked: startupDialog.visible || commitProgressDialog.visible
+                 || conflictDialog.visible || refreshOverlay.visible
     }
 
     // コミット進捗ダイアログ (myrlyn風 To Do / Downloads / Doing / Done)
@@ -2051,450 +405,31 @@ ApplicationWindow {
     }
 
     // トランザクション結果ダイアログ
-    Dialog {
+    Dialogs.InstallationResultDialog {
         id: resultDialog
-        title: qsTr("Installation Report")
-        anchors.centerIn: parent
-        modal: true
-        standardButtons: Dialog.Ok
-        width: 520
-        // 縦サイズは親ウィンドウの60%を上限 (大量パッケージ時もコンパクトに)
-        height: Math.min(root.height * 0.85, 700)
-
-        background: Rectangle {
-            color: palette.window
-            border.color: palette.highlight
-            border.width: 2
-        }
-        header: Label {
-            text: resultDialog.title
-            font.bold: true
-            padding: 10
-        }
-
-        property bool resultSuccess: true
-        property var resultData: ({})
-
-        Flickable {
-            id: resultFlickable
-            anchors.fill: parent
-            contentHeight: resultColumn.implicitHeight
-            clip: true
-            boundsMovement: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            ColumnLayout {
-                id: resultColumn
-                width: resultFlickable.width
-                spacing: 12
-
-            // ヘッダ
-            Label {
-                text: resultDialog.resultSuccess
-                    ? qsTr("Installation completed successfully.")
-                    : qsTr("Installation completed with errors.")
-                font.bold: true
-                font.pixelSize: 15
-                color: resultDialog.resultSuccess ? "#4CAF50" : "#F44336"
-                Layout.fillWidth: true
-            }
-
-            // エラーメッセージ
-            Label {
-                visible: !resultDialog.resultSuccess && (resultDialog.resultData.errorMessage || "") !== ""
-                text: resultDialog.resultData.errorMessage || ""
-                textFormat: Text.PlainText
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-                color: "#FF9800"
-                font.pixelSize: 12
-            }
-
-            // 区切り線
-            Rectangle {
-                Layout.fillWidth: true
-                height: 1
-                color: palette.mid
-            }
-
-            // パッケージ セクション
-            Label {
-                text: qsTr("Packages")
-                font.bold: true
-                font.pixelSize: 13
-                color: palette.highlight
-            }
-
-            // インストール済み
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                visible: (resultDialog.resultData.installed || 0) > 0
-
-                Label {
-                    text: "\u2022 " + qsTr("Installed packages: %1").arg(
-                        resultDialog.resultData.installed || 0)
-                    Layout.fillWidth: true
-                }
-                TextEdit {
-                    text: (resultDialog.resultData.installedPackages || []).join("\n")
-                    textFormat: TextEdit.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectByKeyboard: true
-                    wrapMode: TextEdit.NoWrap
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 16
-                    color: palette.text
-                    font.pixelSize: 13
-                    font.family: "monospace"
-                    visible: (resultDialog.resultData.installedPackages || []).length > 0
-                }
-            }
-
-            // 更新済み
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                visible: (resultDialog.resultData.updated || 0) > 0
-
-                Label {
-                    text: "\u2022 " + qsTr("Updated packages: %1").arg(
-                        resultDialog.resultData.updated || 0)
-                    Layout.fillWidth: true
-                }
-                TextEdit {
-                    text: (resultDialog.resultData.updatedPackages || []).join("\n")
-                    textFormat: TextEdit.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectByKeyboard: true
-                    wrapMode: TextEdit.NoWrap
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 16
-                    color: palette.text
-                    font.pixelSize: 13
-                    font.family: "monospace"
-                    visible: (resultDialog.resultData.updatedPackages || []).length > 0
-                }
-            }
-
-            // 削除済み
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                visible: (resultDialog.resultData.removed || 0) > 0
-
-                Label {
-                    text: "\u2022 " + qsTr("Removed packages: %1").arg(
-                        resultDialog.resultData.removed || 0)
-                    Layout.fillWidth: true
-                }
-                TextEdit {
-                    text: (resultDialog.resultData.removedPackages || []).join("\n")
-                    textFormat: TextEdit.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectByKeyboard: true
-                    wrapMode: TextEdit.NoWrap
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 16
-                    color: palette.text
-                    font.pixelSize: 13
-                    font.family: "monospace"
-                    visible: (resultDialog.resultData.removedPackages || []).length > 0
-                }
-            }
-
-            // 失敗パッケージ
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 4
-                visible: (resultDialog.resultData.failedPackages || []).length > 0
-
-                Label {
-                    text: "\u2022 " + qsTr("Failed packages: %1").arg(
-                        (resultDialog.resultData.failedPackages || []).length)
-                    color: "#F44336"
-                    Layout.fillWidth: true
-                }
-                TextEdit {
-                    text: (resultDialog.resultData.failedPackages || []).join("\n")
-                    textFormat: TextEdit.PlainText
-                    readOnly: true
-                    selectByMouse: true
-                    selectByKeyboard: true
-                    wrapMode: TextEdit.NoWrap
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 16
-                    color: "#F44336"
-                    font.pixelSize: 13
-                    font.family: "monospace"
-                }
-            }
-
-            // 区切り線
-            Rectangle {
-                Layout.fillWidth: true
-                height: 1
-                color: palette.mid
-            }
-
-            // 統計 セクション
-            Label {
-                text: qsTr("Statistics")
-                font.bold: true
-                font.pixelSize: 13
-                color: palette.highlight
-            }
-
-            GridLayout {
-                columns: 2
-                Layout.fillWidth: true
-                columnSpacing: 12
-                rowSpacing: 4
-
-                Label { text: "\u2022 " + qsTr("Elapsed time:") }
-                Label {
-                    text: {
-                        var secs = resultDialog.resultData.elapsedSeconds || 0
-                        var min = Math.floor(secs / 60)
-                        var sec = Math.floor(secs % 60)
-                        return String(min).padStart(2, '0') + ":" + String(sec).padStart(2, '0')
-                    }
-                }
-
-                Label { text: "\u2022 " + qsTr("Total installed size:") }
-                Label {
-                    text: formatBytes(resultDialog.resultData.totalInstalledSize || 0)
-                }
-
-                Label { text: "\u2022 " + qsTr("Total download size:") }
-                Label {
-                    text: formatBytes(resultDialog.resultData.totalDownloadSize || 0)
-                }
-            }
-            }   // ColumnLayout
-        }   // Flickable
-
-        onAccepted: {
-            // パッケージリストを再検索して更新
-            performSearch()
-        }
+        onRefreshRequested: searchView.performSearch()
     }
 
     // コンフリクト解決ダイアログ
-    Dialog {
+    Dialogs.ConflictDialog {
         id: conflictDialog
-        title: qsTr("Warning")
-        anchors.centerIn: parent
-        modal: true
-        width: Math.min(root.width * 0.85, 750)
-        height: Math.min(root.height * 0.75, 550)
-        standardButtons: Dialog.NoButton
-
-        onRejected: {
-            // ステータス変更を元に戻す (表示集合と表示位置は維持される)
-            PackageController.restoreState()
-        }
-
-        property var problems: []
-        // 各問題で選択された解決策のインデックスを保持
-        property var selectedSolutions: []
-        // applyChanges()から呼ばれたかどうか
-        property bool fromApply: false
-
-        onProblemsChanged: {
-            // デフォルト: 各問題の最初の解決策を選択
-            var sel = []
-            for (var i = 0; i < problems.length; i++)
-                sel.push(0)
-            selectedSolutions = sel
-        }
-
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 8
-
-            ListView {
-                id: conflictListView
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                clip: true
-                model: conflictDialog.problems
-                spacing: 12
-
-                delegate: ColumnLayout {
-                    id: conflictDelegate
-                    width: conflictListView.width - 12
-
-                    required property int index
-                    required property var modelData
-
-                    // 問題の説明 (⚠アイコン付き)
-                    Label {
-                        text: "\u26A0 " + (modelData.description || "")
-                        textFormat: Text.PlainText
-                        font.bold: true
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
-                    }
-
-                    // 詳細
-                    Label {
-                        text: modelData.details || ""
-                        textFormat: Text.PlainText
-                        wrapMode: Text.WordWrap
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        color: palette.placeholderText
-                        visible: (modelData.details || "") !== ""
-                    }
-
-                    // [競合の解決方法:]ラベル
-                    Label {
-                        text: qsTr("Conflict resolution:")
-                        Layout.topMargin: 4
-                    }
-
-                    // 解決策リスト (RadioButton + details)
-                    Repeater {
-                        model: modelData.solutions || []
-
-                        ColumnLayout {
-                            required property int index
-                            required property var modelData
-
-                            property int problemIdx: conflictDelegate.index
-
-                            Layout.fillWidth: true
-                            spacing: 2
-
-                            RadioButton {
-                                id: solutionRadio
-                                text: (parent.index + 1) + ": " + (parent.modelData.description || "")
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 12
-                                // 解決策の説明はソルバー (メタデータ) 由来のため PlainText で表示する
-                                contentItem: Text {
-                                    leftPadding: solutionRadio.indicator.width + solutionRadio.spacing
-                                    text: solutionRadio.text
-                                    textFormat: Text.PlainText
-                                    font: solutionRadio.font
-                                    color: solutionRadio.palette.windowText
-                                    elide: Text.ElideRight
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                checked: {
-                                    var sel = conflictDialog.selectedSolutions
-                                    var pi = parent.problemIdx
-                                    return sel && pi < sel.length && sel[pi] === parent.index
-                                }
-                                onClicked: {
-                                    var sel = conflictDialog.selectedSolutions.slice()
-                                    sel[parent.problemIdx] = parent.index
-                                    conflictDialog.selectedSolutions = sel
-                                }
-                            }
-
-                            // 解決策の詳細 (具体的なアクション内容)
-                            Label {
-                                text: parent.modelData.details || ""
-                                textFormat: Text.PlainText
-                                wrapMode: Text.WordWrap
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 48
-                                color: palette.placeholderText
-                                font.pixelSize: 13
-                                visible: (parent.modelData.details || "") !== ""
-                            }
-                        }
-                    }
-
-                    // 問題間の区切り線
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 1
-                        color: palette.mid
-                        opacity: 0.5
-                        Layout.topMargin: 4
-                    }
-                }
-            }
-
-            // ボタン行
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-
-                Item { Layout.fillWidth: true }
-
-                Button {
-                    text: qsTr("OK -- Try Again (O)")
-                    onClicked: {
-                        // 選択された解決策を適用
-                        var sel = conflictDialog.selectedSolutions
-                        for (var i = 0; i < conflictDialog.problems.length; i++) {
-                            var solIdx = (sel && i < sel.length) ? sel[i] : 0
-                            PackageController.applySolution(i, solIdx)
-                        }
-                        conflictDialog.close()
-
-                        if (conflictDialog.fromApply) {
-                            // 「適用」からの呼び出し — 再度依存関係解決
-                            applyChanges()
-                        } else {
-                            // チェックボックスからの呼び出し — ソルバー再実行 (パッケージリストの表示集合と表示位置は保持)
-                            var result = PackageController.resolveDependencies()
-                            if (result && !result.success && result.problems && result.problems.length > 0) {
-                                conflictDialog.problems = result.problems
-                                conflictDialog.open()
-                            }
-                        }
-                    }
-                }
-
-                Button {
-                    text: qsTr("Cancel (C)")
-                    onClicked: {
-                        // ステータス変更を元に戻す (内部でパッケージリスト再取得も実行、表示集合と表示位置は保持)
-                        PackageController.restoreState()
-                        conflictDialog.close()
-                    }
-                }
-            }
-        }
+        onApplyChangesRequested: root.applyChanges()
+        onApplyPendingCommitCleared: root.applyPendingCommit = false
     }
 
-    // 全パッケージ更新 結果通知ダイアログ
-    Dialog {
+    // 更新情報ダイアログ
+    Dialogs.UpdateInfoDialog {
         id: updateInfoDialog
-        title: qsTr("Update All Packages")
-        anchors.centerIn: parent
-        modal: true
-        standardButtons: Dialog.Ok
-        width: 400
-
-        property string message: ""
-
-        Label {
-            text: updateInfoDialog.message
-            wrapMode: Text.WordWrap
-            anchors.left: parent.left
-            anchors.right: parent.right
-        }
     }
 
     Dialogs.CommitConfirmDialog {
         id: commitConfirmDialog
+        diskUsageModel: PackageController.diskUsage
+        transactionSummary: PackageController.transactionSummary
 
         onAccepted: {
-            // Polkit認証
-            if (!PackageController.checkAuth("org.presire.qzypper.install-packages"))
-                return
-
-            // コミット実行
-            var pending = PackageController.getPendingChanges()
+            // コミット実行 (非同期: 進捗はシグナルで通知される)
+            var pending = PackageController.pendingChanges
             commitProgressDialog.initFromPendingChanges(pending)
             commitProgressDialog.open()
             PackageController.commitAsync()
@@ -2517,33 +452,169 @@ ApplicationWindow {
     // リポジトリ管理はrepoDrawer (上部で定義) に移行済み
 
     // -- 起動時ウェイトダイアログ --
-    Dialog {
+    Dialogs.StartupDialog {
         id: startupDialog
+    }
+
+    // -- パッケージ操作の対話プロンプト (Wave1) --
+    Dialogs.PromptDialog {
+        id: promptDialog
+    }
+
+    // -- Zypp ロック検出ダイアログ (Wave1) --
+    Dialogs.PackageLockDialog {
+        id: lockDialog
+        onRetryRequested: PackageController.retryOperation()
+    }
+
+    // -- セッション終了後の再開始ダイアログ (Wave1) --
+    Dialogs.SessionEndedDialog {
+        id: sessionEndedDialog
+        onStartSessionRequested: {
+            startupDialog.open()
+            PackageController.initialize()
+        }
+        onQuitRequested: Qt.quit()
+    }
+
+    // -- 情報トースト (PoolReloaded 等の通知) --
+    InfoToast {
+        id: infoToast
+    }
+
+    Dialogs.DistUpgradeDialog {
+        id: distUpgradeDialog
+        onConfirmed: function(allowVendorChange) {
+            PackageController.distUpgrade(allowVendorChange)
+        }
+    }
+
+    Dialogs.LocksDialog {
+        id: locksDialog
+    }
+
+    Dialogs.HistoryDialog {
+        id: historyDialog
+    }
+
+    Dialogs.SolverTestcaseDialog {
+        id: testcaseDialog
+    }
+
+    // バックエンド/コントローラのエラー通知
+    Dialog {
+        id: errorDialog
+        title: qsTr("Error")
         anchors.centerIn: parent
         modal: true
-        closePolicy: Dialog.NoAutoClose
-        standardButtons: Dialog.NoButton
-        title: qsTr("Starting")
+        standardButtons: Dialog.Ok
+        width: Math.min(root.width * 0.7, 520)
 
-        ColumnLayout {
-            spacing: 16
+        property string message: ""
 
-            Label {
-                text: qsTr("Initializing. Please wait...")
-                wrapMode: Text.WordWrap
-                Layout.fillWidth: true
-            }
-
-            BusyIndicator {
-                running: true
-                Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: 48
-                Layout.preferredHeight: 48
-            }
+        Label {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            text: errorDialog.message
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
         }
     }
 
     // -- ヘルパー関数 --
+
+    // 操作フェーズ (operationState.stage) を表示用テキストへ変換する。
+    function operationStageText(s) {
+        if (!s || !s.state || s.state === "idle")
+            return ""
+        switch (s.stage) {
+        case "initializing": return qsTr("Initializing...")
+        case "reading":      return qsTr("Reading package database...")
+        case "resolving":    return qsTr("Resolving dependencies...")
+        case "refreshing":   return qsTr("Refreshing repositories...")
+        case "downloading":  return qsTr("Downloading packages...")
+        case "installing":   return qsTr("Installing packages...")
+        case "repo-change":  return qsTr("Updating repositories...")
+        case "releasing":    return qsTr("Releasing session...")
+        default:             return qsTr("Working...")
+        }
+    }
+
+    function updateAllPackages() {
+        PackageController.updateAllPackages()
+    }
+
+    function applyChanges() {
+        root.applyPendingCommit = true
+        PackageController.resolveDependencies()
+    }
+
+    function summaryHasChanges(s) {
+        // 概要が取得できない場合は変更の有無を判断できないため、確認ダイアログへ進める (fail-closed)
+        if (!s || s.installCount === undefined)
+            return true
+        return (s.installCount || 0) + (s.updateCount || 0) + (s.removeCount || 0)
+                + (s.downgradeCount || 0) > 0
+    }
+
+    function showInfo(title, message) {
+        updateInfoDialog.title = title
+        updateInfoDialog.message = message
+        updateInfoDialog.open()
+    }
+
+    // ソルバー結果 (dup / パッチ一括選択 / 検証) を共通フローで処理する:
+    // 問題あり → コンフリクトダイアログ、変更あり → 確認ダイアログ (危険変更の承認込み)、変更なし → 情報表示
+    function handleSolverResult(result, title, noChangeMessage) {
+        if (!result || result.backendCrashed)
+            return
+        if (!result.success) {
+            conflictDialog.fromApply = true
+            conflictDialog.problems = result.problems || []
+            conflictDialog.open()
+            return
+        }
+        if (summaryHasChanges(result.summary)) {
+            root.applyChanges()
+            return
+        }
+        showInfo(title, noChangeMessage)
+    }
+
+    // ウィンドウ終了時に非同期で releaseSession を発行 (応答 or 3秒で終了)
+    onClosing: function(close) {
+        if (PackageController.initialized && !root.quitting) {
+            close.accepted = false
+            root.quitting = true
+            quitTimer.start()
+            PackageController.releaseSession()
+        }
+    }
+
+    // ローカル RPM ファイル選択 → バックエンドで一時リポジトリ経由の依存解決
+    FileDialog {
+        id: localRpmFileDialog
+        title: qsTr("Select RPM Files to Install")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("RPM packages (*.rpm)"), qsTr("All files (*)")]
+        onAccepted: PackageController.installLocalRpms(selectedFiles)
+    }
+
+    Connections {
+        target: PackageController
+        function onLocalRpmsFinished(result) {
+            if (!result.success && (!result.problems || result.problems.length === 0)) {
+                errorDialog.message = result.errorMessage || qsTr("The RPM files could not be prepared for installation.")
+                errorDialog.open()
+                return
+            }
+            var unsigned = result.unsignedPackages || []
+            if (result.success && unsigned.length > 0)
+                infoToast.show(qsTr("Warning: unsigned packages: %1").arg(unsigned.join(", ")))
+            root.handleSolverResult(result, qsTr("Install Local RPM Files"),
+                                    qsTr("The selected packages are already installed."))
+        }
+    }
 
     // チェックボックス操作時のコンフリクト自動表示
     Connections {
@@ -2563,9 +634,41 @@ ApplicationWindow {
         }
     }
 
+    // Zypp ロック検出 → フレンドリーダイアログ
+    Connections {
+        target: PackageController
+        function onPackageLocked(info) {
+            lockDialog.lockerName = info.name || ""
+            lockDialog.lockerPid = info.pid || 0
+            lockDialog.lockerMessage = info.message || ""
+            lockDialog.open()
+        }
+    }
+
+    // プール再読込 (外部変更) → 再取得 + 情報トースト
+    Connections {
+        target: PackageController
+        function onPoolReloaded() {
+            infoToast.show(qsTr("Package database was changed externally and reloaded"))
+        }
+    }
+
+    // 編集セッション解放 → 再開始状態へ (終了中なら終了)
+    Connections {
+        target: PackageController
+        function onSessionReleased(ok) {
+            if (root.quitting) {
+                quitTimer.stop()
+                Qt.quit()
+                return
+            }
+            sessionEndedDialog.open()
+        }
+    }
     Component.onCompleted: {
         Theme.darkMode = Qt.binding(() => root.darkMode)
         PackageController.applyDarkMode(root.darkMode)
+        PackageController.packageProxy.statusMask = statusFilterPanel.statusMask
         startupDialog.open()
         initTimer.start()
     }
@@ -2573,182 +676,122 @@ ApplicationWindow {
     Timer {
         id: initTimer
         interval: 50
-        onTriggered: {
-            PackageController.initialize()
-            PackageController.loadRepos()
-            PackageController.saveState()
-            startupDialog.close()
-        }
+        onTriggered: PackageController.initialize()
     }
 
-    function performSearch() {
-        var flags = 0
-        if (cbName.checked)     flags |= 0x01
-        if (cbKeyword.checked)  flags |= 0x02
-        if (cbSummary.checked)  flags |= 0x04
-        if (cbDesc.checked)     flags |= 0x08
-        if (cbRequires.checked) flags |= 0x10
-        if (cbProvides.checked) flags |= 0x20
+    // 非同期D-Bus呼び出しの結果ハンドリング
+    Connections {
+        target: PackageController
 
-        // 検索結果はパッケージ名昇順で表示
-        sortColumn = 1
-        sortAscending = true
-
-        PackageController.searchPackages(searchField.text, flags)
-    }
-
-    function setStatus(packageName, status) {
-        // C++側でステータス変更 → ソルバー実行 → パッケージリスト再読み込みを一括処理
-        // 再読み込みはステータス反映のみ (一覧の世代は変わらない) のため、表示集合・スクロール位置・選択パッケージを保持する
-        return PackageController.setPackageStatus(packageName, status)
-    }
-
-    function updateAllPackages() {
-        var result = PackageController.updateAllPackages()
-        if (!result) return
-
-        if (result.backendCrashed) {
-            return
+        function onInitializedChanged() {
+            if (PackageController.initialized) {
+                // 初期化完了 — 起動ウェイトを解除して一覧を読み込む
+                startupDialog.close()
+                PackageController.loadRepos()
+                PackageController.saveState()
+            }
         }
 
-        if (result.success) {
-            var pending = PackageController.getPendingChanges()
-            if (pending.length === 0) {
-                // 更新可能なパッケージなし — 情報ダイアログ表示
-                updateInfoDialog.message = qsTr("All packages are up to date.")
-                updateInfoDialog.open()
+        function onBusyChanged() {
+            // 初期化に失敗した場合 (busy=false かつ 未初期化) はウェイトを解除してエラー表示に戻す
+            if (startupDialog.opened && !PackageController.busy && !PackageController.initialized)
+                startupDialog.close()
+        }
+
+        function onUpdateAllFinished(result) {
+            if (!result || result.backendCrashed)
+                return
+            if (result.success) {
+                var pending = PackageController.pendingChanges
+                if (pending.length === 0) {
+                    // 更新可能なパッケージなし — 情報ダイアログ表示
+                    root.showInfo(qsTr("Update All Packages"), qsTr("All packages are up to date."))
+                    return
+                }
+                // パッケージがマークされた — 確認ダイアログ表示
+                root.showInfo(qsTr("Update All Packages"),
+                              qsTr("%1 package(s) will be updated.\nClick \"Apply Changes\" to proceed.").arg(pending.length))
+            } else {
+                // コンフリクト解決ダイアログを表示
+                conflictDialog.fromApply = true
+                conflictDialog.problems = result.problems || []
+                conflictDialog.open()
+            }
+        }
+
+        function onResolveFinished(result) {
+            if (!result || result.backendCrashed)
+                return
+            if (result.success) {
+                if (root.applyPendingCommit) {
+                    root.applyPendingCommit = false
+                    PackageController.prepareCommit()
+                }
+            } else {
+                // コンフリクト解決ダイアログを表示
+                conflictDialog.fromApply = root.applyPendingCommit
+                root.applyPendingCommit = false
+                conflictDialog.problems = result.problems || []
+                conflictDialog.open()
+            }
+        }
+
+        function onCommitPrepared(ok) {
+            if (!ok)
+                return
+            // コミット確認ダイアログを表示 (ディスク使用量とリスク概要は非同期取得しバインディングで反映)
+            commitConfirmDialog.summaryModel = Util.buildSummaryModel()
+            commitConfirmDialog.summaryPending = true
+            PackageController.requestDiskUsage()
+            PackageController.requestTransactionSummary()
+            commitConfirmDialog.open()
+        }
+
+        function onTransactionSummaryChanged() {
+            commitConfirmDialog.summaryPending = false
+        }
+
+        function onDistUpgradeFinished(result) {
+            root.handleSolverResult(result, qsTr("Distribution Upgrade"),
+                                    qsTr("The system is already up to date."))
+        }
+
+        function onSelectPatchesFinished(result) {
+            // パッチ一括選択は確認画面へ直行せず、一覧で選択内容を確認できるようにする
+            if (result && result.success && !result.backendCrashed && root.summaryHasChanges(result.summary)) {
+                root.showInfo(qsTr("Patches"),
+                              qsTr("Needed patches have been selected. Review the selection and click \"Apply\" to install them."))
                 return
             }
-            // パッケージがマークされた — 確認ダイアログ表示
-            updateInfoDialog.message = qsTr("%1 package(s) will be updated.\nClick \"Apply Changes\" to proceed.").arg(pending.length)
-            updateInfoDialog.open()
-        } else {
-            // コンフリクト解決ダイアログを表示
-            conflictDialog.fromApply = true
-            conflictDialog.problems = result.problems || []
-            conflictDialog.open()
-        }
-    }
-
-    function applyChanges() {
-        var result = PackageController.resolveDependencies()
-        if (!result) return
-
-        if (result.backendCrashed) {
-            return
+            root.handleSolverResult(result, qsTr("Patches"),
+                                    qsTr("No needed patches were found."))
         }
 
-        if (result.success) {
-            // コミット確認ダイアログを表示
-            if (!PackageController.prepareCommit()) return   // コミットを確認済みの選択状態 (リビジョン) に束縛する
-            commitConfirmDialog.summaryModel = buildSummaryModel()
-            commitConfirmDialog.diskUsageModel = PackageController.getDiskUsage()
-            commitConfirmDialog.open()
-        } else {
-            // コンフリクト解決ダイアログを表示
-            conflictDialog.fromApply = true
-            conflictDialog.problems = result.problems || []
-            conflictDialog.open()
+        function onVerifyFinished(result) {
+            root.handleSolverResult(result, qsTr("Verify System"),
+                                    qsTr("The system is consistent. No changes are needed."))
         }
-    }
 
-    function formatBytes(bytes) {
-        if (bytes === 0) return "0 B"
-        var units = ["B", "KiB", "MiB", "GiB"]
-        var i = 0
-        var value = bytes
-        while (value >= 1024 && i < units.length - 1) {
-            value /= 1024
-            i++
+        function onSolverTestcaseCreated(path) {
+            testcaseDialog.testcasePath = path
+            testcaseDialog.open()
         }
-        return value.toFixed(i === 0 ? 0 : 1) + " " + units[i]
-    }
 
-    function buildSummaryModel() {
-        // PackageController.packages を参照してバインディング再評価をトリガー
-        var _trigger = PackageController.packages
-        var installs = [], updates = [], deletes = []
-        // 全プール横断で変更予定パッケージを取得
-        var pkgs = PackageController.getPendingChanges()
-        for (var i = 0; i < pkgs.length; i++) {
-            var pkg = pkgs[i]
-            var s = pkg.status
-            if (s === 1 || s === 2) {  // Install, AutoInstall
-                installs.push({ category: "install", name: pkg.name, version: pkg.version })
-            } else if (s === 4 || s === 5) {  // Update, AutoUpdate
-                updates.push({ category: "update", name: pkg.name, version: pkg.version })
-            } else if (s === 6 || s === 7) {  // Del, AutoDel
-                deletes.push({ category: "delete", name: pkg.name, version: pkg.installedVersion })
-            }
+        function onErrorOccurred(errorMessage) {
+            if (!errorMessage || errorMessage.length === 0)
+                return
+            errorDialog.message = errorMessage
+            errorDialog.open()
         }
-        // カテゴリ順: インストール --> 更新 --> 削除
-        return installs.concat(updates, deletes)
-    }
 
-    function formatSize(bytes) {
-        if (bytes < 1024)            return bytes + " B"
-        if (bytes < 1024 * 1024)     return (bytes / 1024).toFixed(1) + " KiB"
-        if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MiB"
-        return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GiB"
-    }
+        function onAddRepoFinished(success) {
+            if (success && repoDrawerLoader.item)
+                repoDrawerLoader.item.loadData()
+        }
 
-    function formatTechData(d) {
-        var html = "<table>"
-        html += "<tr><td><b>" + qsTr("Version") + ":</b></td><td>" + escapeHtml(d.version) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Architecture") + ":</b></td><td>" + escapeHtml(d.arch) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("License") + ":</b></td><td>" + escapeHtml(d.license) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Group") + ":</b></td><td>" + escapeHtml(d.group) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Vendor") + ":</b></td><td>" + escapeHtml(d.vendor) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Build Host") + ":</b></td><td>" + escapeHtml(d.buildHost) + "</td></tr>"
-        html += "<tr><td><b>" + qsTr("Source RPM") + ":</b></td><td>" + escapeHtml(d.sourceRpm) + "</td></tr>"
-        var urlVal = d.url || ""
-        if (urlVal && isSafeUrl(urlVal))
-            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td><a href=\"" + escapeHtml(urlVal) + "\">" + escapeHtml(urlVal) + "</a></td></tr>"
-        else
-            html += "<tr><td><b>" + qsTr("URL") + ":</b></td><td>" + escapeHtml(urlVal) + "</td></tr>"
-        html += "</table>"
-        return html
-    }
-
-    function formatDependencies(d) {
-        var html = ""
-        if (d.provides && d.provides.length > 0)
-            html += "<h4>" + qsTr("Provides") + "</h4><p>" + d.provides.map(escapeHtml).join("<br/>") + "</p>"
-        if (d.requires && d.requires.length > 0)
-            html += "<h4>" + qsTr("Requires") + "</h4><p>" + d.requires.map(escapeHtml).join("<br/>") + "</p>"
-        if (d.conflicts && d.conflicts.length > 0)
-            html += "<h4>" + qsTr("Conflicts") + "</h4><p>" + d.conflicts.map(escapeHtml).join("<br/>") + "</p>"
-        if (d.obsoletes && d.obsoletes.length > 0)
-            html += "<h4>" + qsTr("Obsoletes") + "</h4><p>" + d.obsoletes.map(escapeHtml).join("<br/>") + "</p>"
-        if (d.recommends && d.recommends.length > 0)
-            html += "<h4>" + qsTr("Recommends") + "</h4><p>" + d.recommends.map(escapeHtml).join("<br/>") + "</p>"
-        if (d.suggests && d.suggests.length > 0)
-            html += "<h4>" + qsTr("Suggests") + "</h4><p>" + d.suggests.map(escapeHtml).join("<br/>") + "</p>"
-        return html || qsTr("<p>No dependency information</p>")
-    }
-
-    // 信頼できないメタデータを RichText に埋め込む前の HTML エスケープ。
-    // null/undefined は空文字列として扱う。
-    function escapeHtml(s) {
-        if (s === null || s === undefined) return ""
-        return String(s)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#39;")
-    }
-
-    // http/https スキームのみ許可 (大文字小文字は区別しない)。
-    // file:, javascript:, smb:, data: などそれ以外のスキームは false を返す。
-    function isSafeUrl(u) {
-        if (u === null || u === undefined) return false
-        return /^https?:\/\/\S/i.test(String(u).trim())
-    }
-
-    // リンク開きは http/https に限定し、それ以外のスキームは無視する。
-    function openSafeUrl(link) {
-        if (isSafeUrl(link))
-            Qt.openUrlExternally(link)
+        function onAddServiceFinished(success) {
+            if (success && repoDrawerLoader.item)
+                repoDrawerLoader.item.loadData()
+        }
     }
 }

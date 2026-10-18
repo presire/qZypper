@@ -15,10 +15,30 @@ Dialog {
 
     signal serviceAdded()
 
+    property bool awaiting: false        // 追加要求の応答待ち
+    property string errorMessage: ""     // 追加失敗時のエラー表示
+
     onOpened: {
+        awaiting = false
+        errorMessage = ""
         urlField.text = "https://"
         aliasField.text = ""
         urlField.forceActiveFocus()
+    }
+
+    Connections {
+        target: PackageController
+        function onAddServiceFinished(success) {
+            if (!root.awaiting)
+                return
+            root.awaiting = false
+            if (success) {
+                root.serviceAdded()
+                root.close()
+            } else {
+                root.errorMessage = qsTr("Failed to add service.")
+            }
+        }
     }
 
     contentItem: ColumnLayout {
@@ -64,15 +84,21 @@ Dialog {
             Button {
                 text: qsTr("Add")
                 highlighted: true
-                enabled: urlField.text.length > 8 && aliasField.text.length > 0
+                enabled: !root.awaiting && urlField.text.length > 8 && aliasField.text.length > 0
                 onClicked: {
-                    var ok = PackageController.addService(urlField.text, aliasField.text)
-                    if (ok) {
-                        root.serviceAdded()
-                        root.close()
-                    }
+                    root.errorMessage = ""
+                    root.awaiting = true
+                    PackageController.addService(urlField.text, aliasField.text)
                 }
             }
+        }
+
+        Label {
+            visible: root.errorMessage.length > 0
+            text: root.errorMessage
+            color: palette.brightText
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
         }
     }
 }

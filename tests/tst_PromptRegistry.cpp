@@ -1,0 +1,106 @@
+#include "PromptRegistry.h"
+#include <QtTest>
+#include <future>
+
+using namespace qZypper;
+using namespace std::chrono_literals;
+
+class PromptRegistryTest : public QObject {
+    Q_OBJECT
+private slots:
+    void acceptsMatchingAnswer()
+    {
+        // Given
+        PromptRegistry registry; registry.open();
+        PromptRequest request; request.actions << "retry"; request.timeout = 100ms;
+        // When
+        const auto result = registry.ask(request, [&registry](quint32 id, const QString &, const QVariantMap &) {
+            QVERIFY(registry.answer(id, {{"action", "retry"}}));
+        });
+        // Then
+        QCOMPARE(result.value("action").toString(), "retry");
+    }
+    void rejectsInvalidAnswers_data()
+    {
+        QTest::addColumn<QVariantMap>("answer");
+        QTest::newRow("unknown-action") << QVariantMap{{"action", "proceed"}};
+        QTest::newRow("extra-key") << QVariantMap{{"action", "abort"}, {"extra", true}};
+        QTest::newRow("wrong-type") << QVariantMap{{"action", true}};
+        QTest::newRow("missing-action") << QVariantMap{{"confirm", true}};
+        QTest::newRow("empty") << QVariantMap{};
+    }
+    void rejectsInvalidAnswers()
+    {
+        // Given
+        QFETCH(QVariantMap, answer);
+        PromptRegistry registry; registry.open(); PromptRequest request; request.timeout = 0ms;
+        bool accepted = true;
+        // When
+        const auto result = registry.ask(request, [&registry, &answer, &accepted](quint32 id, const QString &, const QVariantMap &) {
+            accepted = registry.answer(id, answer);
+        });
+        // Then
+        QVERIFY(!accepted); QCOMPARE(result, request.safeDefault);
+    }
+    void rejectsWrongId()
+    {
+        // Given
+        PromptRegistry registry; registry.open(); PromptRequest request; request.timeout = 0ms;
+        bool accepted = true;
+        // When
+        const auto result = registry.ask(request, [&registry, &accepted](quint32 id, const QString &, const QVariantMap &) {
+            accepted = registry.answer(id + 1, {{"action", "abort"}});
+        });
+        // Then
+        QVERIFY(!accepted); QCOMPARE(result, request.safeDefault);
+    }
+    void returnsDefaultWhenTimedOut()
+    {
+        // Given
+        PromptRegistry registry; registry.open(); PromptRequest request; request.timeout = 0ms;
+        // When
+        const auto result = registry.ask(request, [](quint32, const QString &, const QVariantMap &) {});
+        // Then
+        QCOMPARE(result, request.safeDefault);
+    }
+    void wakesWhenOwnerDisappearsOrOperationCancelled()
+    {
+        // Given
+        PromptRegistry registry; registry.open(); PromptRequest request; request.timeout = 500ms;
+        std::promise<void> announced; auto notification = announced.get_future();
+        auto result = std::async(std::launch::async, [&] {
+            return registry.ask(request, [&](quint32, const QString &, const QVariantMap &) { announced.set_value(); });
+        });
+        QVERIFY(notification.wait_for(1s) == std::future_status::ready);
+        // When
+        registry.interrupt();
+        // Then
+        QVERIFY(result.wait_for(1s) == std::future_status::ready);
+        QCOMPARE(result.get(), request.safeDefault);
+    }
+    void rejectsStaleAnswerAfterNextPrompt()
+    {
+        // Given
+        PromptRegistry registry; registry.open(); PromptRequest request; request.timeout = 0ms;
+        quint32 oldId = 0;
+        registry.ask(request, [&](quint32 id, const QString &, const QVariantMap &) { oldId = id; });
+        bool accepted = true;
+        // When
+        registry.ask(request, [&](quint32, const QString &, const QVariantMap &) { accepted = registry.answer(oldId, {{"action", "abort"}}); });
+        // Then
+        QVERIFY(!accepted);
+    }
+    void defaultsWhenInterruptedBeforePrompt()
+    {
+        // Given
+        PromptRegistry registry; registry.open(); registry.interrupt(); PromptRequest request;
+        bool notified = false;
+        // When
+        const auto result = registry.ask(request, [&](quint32, const QString &, const QVariantMap &) { notified = true; });
+        // Then
+        QVERIFY(!notified); QCOMPARE(result, request.safeDefault);
+    }
+};
+
+QTEST_GUILESS_MAIN(PromptRegistryTest)
+#include "tst_PromptRegistry.moc"

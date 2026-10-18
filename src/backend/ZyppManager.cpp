@@ -18,12 +18,17 @@
 #include <zypp/sat/Pool.h>
 #include <zypp/sat/Transaction.h>
 #include <zypp/PoolQuery.h>
+#include <zypp/ResObject.h>
 #include <zypp/ZYppCommitResult.h>
 #include <zypp/DiskUsageCounter.h>
 #include <zypp-core/base/UserRequestException>
 #include <zypp-core/base/String.h>
+#include <QFileInfo>
 #include "ZyppManager.h"
 #include "ZyppCallbackReceiver.h"
+#include "CommitInteraction.h"
+#include "SnapshotInfo.h"
+#include "RebootCheck.h"
 
 
 namespace qZypper {
@@ -34,15 +39,13 @@ Q_LOGGING_CATEGORY(lcZypp, "qzypper.zypp")
 /**
  * @brief シングルトンインスタンスを取得する。
  *
- * 静的破棄順序の問題を回避するため、意図的にリークさせる。
+ * 常駐ワーカーの終了時にコールバック受信器も同じスレッドで破棄する。
  * @return ZyppManager の参照
  */
 ZyppManager& ZyppManager::instance()
 {
-    // 意図的にリークさせ、静的破棄順序の問題を回避
-    // リソースは shutdown() で明示的に解放する
-    static ZyppManager* s_instance = new ZyppManager();
-    return *s_instance;
+    static thread_local ZyppManager manager;
+    return manager;
 }
 
 /**
@@ -52,10 +55,20 @@ void ZyppManager::shutdown()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    cleanupLocalRpmsLocked();
     m_problems.clear();
+    m_keyRingReceiver.disconnect();
+    m_digestReceiver.disconnect();
+    m_keyRingReceiver.clearApprovals();
     m_repoManager.reset();
+    if (m_zypp) {
+        m_zypp->resolver()->reset();
+        m_zypp->finishTarget();
+        zypp::sat::Pool::instance().reposEraseAll();
+    }
     m_zypp.reset();
     m_initialized = false;
+    m_rpmStamp.clear();
 }
 
 /**
@@ -65,7 +78,7 @@ void ZyppManager::shutdown()
  * @param root ルートパス (デフォルト: "/")
  * @return 初期化成功時 true
  */
-bool ZyppManager::initialize(const std::string& root)
+bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -110,6 +123,7 @@ bool ZyppManager::initialize(const std::string& root)
             }
 
             if (!m_repoManager->isCached(repo)) {
+                if (cacheOnly) continue;
                 // raw metadata が無い場合 buildCache は内部で refreshMetadata を行い
                 // ミラー端点を開くため、端点検査を先に行う
                 if (!checkRepoOrigins(repo, policyErr)) {
@@ -153,8 +167,12 @@ bool ZyppManager::initialize(const std::string& root)
         }
 
         m_initialized = true;
+        m_distUpgradeMode = false;
+        recordDatabaseStamp();
         return true;
 
+    } catch (const zypp::ZYppFactoryException&) {
+        throw;
     } catch (const zypp::Exception& e) {
         m_lastError = "Initialization failed: " + e.msg();
         return false;
@@ -1476,117 +1494,6 @@ bool ZyppManager::refreshService(const std::string& alias)
 // -- パッケージ検索・一覧 --
 
 /**
- * @brief パッケージを検索する。
- *
- * 名前、概要、説明からリテラル部分一致 (ASCII 大文字小文字不問) で検索する。
- * 正規表現は使わない (ReDoS 防止)。
- * @param query 検索クエリ文字列 (256 バイト超は拒否)
- * @param flags 検索フラグ (SearchFlag のビットマスク)
- * @return 一致したパッケージ情報のベクタ
- */
-std::vector<PackageInfo> ZyppManager::searchPackages(const std::string& query, int flags) const
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::vector<PackageInfo> result;
-
-    if (!m_initialized)
-        return result;
-
-    if (query.size() > 256) {
-        m_lastError = "Search query too long";
-        return result;
-    }
-
-    // リテラル部分一致 (ASCII 大文字小文字無視)。正規表現は使わない (ReDoS 対策)。
-    // 依存関係・ファイル一覧は件数が多いため、文字列のコピーを作らずに比較する。
-    auto asciiLower = [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    };
-    std::string loweredQuery(query.size(), '\0');
-    std::transform(query.begin(), query.end(), loweredQuery.begin(), asciiLower);
-
-    auto containsLiteral = [&loweredQuery, &asciiLower](const std::string &text) {
-        return std::search(text.begin(), text.end(), loweredQuery.begin(), loweredQuery.end(),
-                           [&asciiLower](char a, char b) {
-                               return asciiLower(static_cast<unsigned char>(a)) == b;
-                           }) != text.end();
-    };
-    auto anyCapabilityMatches = [&containsLiteral](const zypp::Capabilities &caps) {
-        for (const auto &cap : caps) {
-            if (containsLiteral(cap.asString()))
-                return true;
-        }
-        return false;
-    };
-
-    auto pool = m_zypp->poolProxy();
-
-    for (auto it = pool.byKindBegin<zypp::Package>();
-         it != pool.byKindEnd<zypp::Package>(); ++it) {
-
-        const auto& sel = *it;
-        bool match = false;
-
-        auto obj = sel->candidateObj() ? sel->candidateObj() : sel->installedObj();
-        if (!obj)
-            continue;
-        const auto pkg = zypp::asKind<zypp::Package>(obj);
-
-        if ((flags & static_cast<int>(SearchFlag::Name)) &&
-            containsLiteral(sel->name()))
-            match = true;
-
-        if (!match && pkg && (flags & static_cast<int>(SearchFlag::Keywords))) {
-            for (const auto &keyword : pkg->keywords()) {
-                if (containsLiteral(keyword.asString())) {
-                    match = true;
-                    break;
-                }
-            }
-        }
-
-        if (!match && (flags & static_cast<int>(SearchFlag::Summary)) &&
-            containsLiteral(obj->summary()))
-            match = true;
-
-        if (!match && (flags & static_cast<int>(SearchFlag::Description)) &&
-            containsLiteral(obj->description()))
-            match = true;
-
-        if (!match && (flags & static_cast<int>(SearchFlag::Requires)) &&
-            anyCapabilityMatches(obj->dep(zypp::Dep::REQUIRES)))
-            match = true;
-
-        if (!match && (flags & static_cast<int>(SearchFlag::Provides)) &&
-            anyCapabilityMatches(obj->dep(zypp::Dep::PROVIDES)))
-            match = true;
-
-        // ファイル一覧はリポジトリのメタデータ (通常は主要パスのみ) と
-        // インストール済みパッケージ (rpmdb) に含まれる範囲だけを検索する
-        if (!match && (flags & static_cast<int>(SearchFlag::FileList))) {
-            for (const auto &item : { obj, sel->installedObj() }) {
-                const auto filePkg = zypp::asKind<zypp::Package>(item);
-                if (!filePkg)
-                    continue;
-                for (const auto &file : filePkg->filelist()) {
-                    if (containsLiteral(file)) {
-                        match = true;
-                        break;
-                    }
-                }
-                if (match)
-                    break;
-            }
-        }
-
-        if (match)
-            result.push_back(makePackageInfo(sel));
-    }
-
-    return result;
-}
-
-/**
  * @brief パッケージの詳細情報を取得する。
  *
  * 依存関係、ファイル一覧、利用可能バージョン等を含む。
@@ -1858,6 +1765,18 @@ std::vector<PatchInfo> ZyppManager::getPatches(int category) const
         info.version     = QString::fromStdString(patch->edition().asString());
         info.status      = fromZyppStatus(sel->status());
         info.interactive = patch->interactive();
+
+        const std::string pArch = obj.arch().asString();
+        const std::string pRepo = obj.repoInfo().alias();
+        info.id               = QString::fromStdString(
+            makePatchId(sel->name(), patch->edition().asString(), pArch, pRepo));
+        info.isNeeded         = obj.isNeeded();
+        info.isRelevant       = obj.isRelevant();
+        info.isSatisfied      = obj.isSatisfied();
+        info.rebootSuggested  = patch->rebootSuggested();
+        info.restartSuggested = patch->restartSuggested();
+        info.selected         = sel->status() == zypp::ui::S_Install
+                                || sel->status() == zypp::ui::S_AutoInstall;
 
         result.push_back(std::move(info));
     }
@@ -2165,7 +2084,13 @@ ZyppManager::SolverResult ZyppManager::resolveDependencies()
         resolver->setDefaultSolverFlags();          // zypp.confデフォルト再適用
         resolver->setIgnoreAlreadyRecommended(true); // 既推奨パッケージの再展開を抑制
 
-        result.success = resolver->resolvePool();
+        if (m_distUpgradeMode) {
+            // DistUpgrade 後の確認・再解決では dup の操作種別とオプションを維持する
+            resolver->dupSetAllowVendorChange(m_dupAllowVendorChange);
+            result.success = resolver->doUpgrade();
+        } else {
+            result.success = resolver->resolvePool();
+        }
     } catch (const zypp::Exception& e) {
         m_lastError = "Solver error: " + e.asString();
         result.success = false;
@@ -2201,6 +2126,7 @@ ZyppManager::SolverResult ZyppManager::resolveDependencies()
         }
     }
 
+    result.summary = computeTransactionSummaryLocked();
     return result;
 }
 
@@ -2229,6 +2155,7 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
         resolver->setIgnoreAlreadyRecommended(true);
+        m_distUpgradeMode = false;
 
         resolver->doUpdate();
         result.success = resolver->resolvePool();
@@ -2267,6 +2194,7 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
         }
     }
 
+    result.summary = computeTransactionSummaryLocked();
     return result;
 }
 
@@ -2314,16 +2242,36 @@ bool ZyppManager::applySolution(int problemIndex, int solutionIndex)
  *
  * libzypp のコールバックレシーバーを登録して進捗をリアルタイム通知し、
  * transactionStepList を走査して正確なカウント・サイズ情報を収集する。
+ * コミット前に対話 (ライセンス確認・ファイル競合) を、コミット中に
+ * メディア変更・RPM スクリプト出力転送を行い、コミット後に再起動要否と
+ * snapper スナップショットを収集する。
  * @param progressCallback 進捗コールバック
+ * @param stateCallback 状態イベントコールバック
+ * @param askCallback 対話要求コールバック (null の場合は安全側に倒れる)
+ * @param scriptOutputCallback スクリプト出力コールバック (null 許容)
  * @return コミット結果
  */
 ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallback,
-                                              StateEventCallbackFn stateCallback)
+                                              StateEventCallbackFn stateCallback,
+                                              PromptAskFn askCallback,
+                                              ScriptOutputFn scriptOutputCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     // リポジトリ/プールの変更で、PoolItem を保持する既存の解決策は無効になる
     m_problems.clear();
+    m_distUpgradeMode = false;
     CommitResult result;
+
+    // スクリプト出力アグリゲータ (例外経路でも結果へ反映するため try の外で生成)
+    ScriptOutputAggregator scriptAggregator(scriptOutputCallback);
+    auto finalizeResult = [this, &scriptAggregator, &result]() -> CommitResult & {
+        cleanupLocalRpmsLocked();
+        scriptAggregator.flush();
+        result.scriptOutput = scriptAggregator.collected();
+        result.rpmMessages = scriptAggregator.rpmMessages();
+        result.scriptOutputTruncated = scriptAggregator.truncated();
+        return result;
+    };
 
     if (!m_initialized) {
         result.success = false;
@@ -2335,6 +2283,7 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
     // (checkRepoOrigins はネットワーク I/O を伴い得る) に届いた要求もここで拾える。
     auto cancelledResult = [this, &result]() {
         markCancelled();
+        result.classification.outcome = CommitOutcome::Cancelled;
         result.success = false;
         result.errorMessage = m_lastError;
         return result;
@@ -2363,6 +2312,13 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
     if (m_cancelRequested.load())
         return cancelledResult();
 
+    // コミット中インタラクション用レシーバー (例外経路でも状態参照できるよう try の外で生成)
+    MediaChangeReceiver mediaRcv(askCallback);
+    FileConflictReceiver conflictRcv(askCallback);
+    CommitScriptReceiver scriptRcv(scriptAggregator);
+    RpmOutputReceiver rpmOutRcv(scriptAggregator);
+    RpmLoglineReceiver rpmLogRcv(scriptAggregator);
+
     try {
         // 経過時間計測開始
         auto startTime = std::chrono::steady_clock::now();
@@ -2389,6 +2345,54 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
 
         int completedSteps = 0;
 
+        // ライセンス確認 (RPM ステージ前)。未承認ライセンスがあれば所有者へ問い合わせ、
+        // 拒否された場合は RPM ステージに到達させずコミットを中止する。
+        if (askCallback) {
+            for (auto it = m_zypp->pool().begin(); it != m_zypp->pool().end(); ++it) {
+                if (m_cancelRequested.load()) {
+                    finalizeResult();
+                    return cancelledResult();
+                }
+                if (!it->status().transacts() || it->status().isToBeUninstalled())
+                    continue;
+                const zypp::sat::Solvable solv = it->satSolvable();
+                if (!solv || !solv.needToAcceptLicense())
+                    continue;
+                const std::string licenseText = solv.licenseToConfirm();
+                if (licenseText.empty())
+                    continue;
+                const std::string licenseKey = solv.name() + "|" + solv.edition().asString();
+                if (m_acceptedLicenses.count(licenseKey) > 0)
+                    continue;
+
+                PromptRequest request;
+                request.type = QStringLiteral("license");
+                request.data = buildLicensePromptData(
+                    QString::fromStdString(solv.name()),
+                    QString::fromStdString(solv.edition().asString()),
+                    QString::fromStdString(licenseText));
+                request.actions = {QStringLiteral("accept"), QStringLiteral("reject")};
+                request.safeDefault = QVariantMap{{QStringLiteral("action"), QStringLiteral("reject")}};
+                request.timeout = std::chrono::milliseconds(300000);
+
+                if (!licenseAnswerAccepted(askCallback(request))) {
+                    result.classification.outcome = CommitOutcome::Cancelled;
+                    result.success = false;
+                    result.errorMessage = "License for package " + solv.name() + " was not accepted";
+                    m_lastError = result.errorMessage;
+                    return finalizeResult();
+                }
+                m_acceptedLicenses.insert(licenseKey);
+            }
+        }
+
+        // snapper スナップショットのコミット前観測 (作成はせず番号のみ差分検出)
+        const bool snapperPresent = QFileInfo::exists(QStringLiteral("/usr/bin/snapper"))
+            && QFileInfo::exists(QStringLiteral("/.snapshots"));
+        std::vector<SnapshotEntry> snapshotsBefore;
+        if (snapperPresent)
+            snapshotsBefore = readSnapshots(QStringLiteral("/.snapshots"));
+
         // Install/Remove/Download の problem() コールバックで発生した
         // エラー詳細を格納する (commit 失敗時に errorMessage として返す)
         std::string problemDetail;
@@ -2409,10 +2413,16 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         downloadRcv.connect();
         installRcvSA.connect();
         removeRcvSA.connect();
+        mediaRcv.connect();
+        conflictRcv.connect();
+        scriptRcv.connect();
+        rpmOutRcv.connect();
+        rpmLogRcv.connect();
 
         // コミット実行
         zypp::ZYppCommitPolicy policy;
         policy.dryRun(false);
+        policy.downloadMode(zypp::DownloadInAdvance);
         auto commitResult = m_zypp->commit(policy);
 
         // レシーバー切断
@@ -2421,8 +2431,42 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         downloadRcv.disconnect();
         installRcvSA.disconnect();
         removeRcvSA.disconnect();
+        mediaRcv.disconnect();
+        conflictRcv.disconnect();
+        scriptRcv.disconnect();
+        rpmOutRcv.disconnect();
+        rpmLogRcv.disconnect();
+        scriptAggregator.flush();
 
-        result.success = commitResult.noError();
+        std::vector<CommitStep> stages;
+        for (auto it = commitResult.transaction().actionBegin();
+             it != commitResult.transaction().actionEnd(); ++it) {
+            CommitStepStage stage = CommitStepStage::Todo;
+            switch (it->stepStage()) {
+            case zypp::sat::Transaction::STEP_DONE: stage = CommitStepStage::Done; break;
+            case zypp::sat::Transaction::STEP_ERROR: stage = CommitStepStage::Error; break;
+            case zypp::sat::Transaction::STEP_TODO: break;
+            }
+            stages.push_back({it->ident().asString(), stage});
+        }
+        result.classification = classifyCommit(stages, m_cancelRequested.load(), false);
+        result.success = result.classification.outcome == CommitOutcome::Completed;
+        result.failedPackages = result.classification.failedPackages;
+
+        // 対話による中止 (ファイル競合/メディア変更) は RPM ステージ前のため cancelled とする
+        if (conflictRcv.aborted()) {
+            result.classification.outcome = CommitOutcome::Cancelled;
+            result.success = false;
+            const QString abortMsg = conflictRcv.abortMessage();
+            result.errorMessage = abortMsg.isEmpty()
+                ? std::string("Commit cancelled due to file conflicts")
+                : abortMsg.toStdString();
+            m_lastError = result.errorMessage;
+        } else if (mediaRcv.aborted() && !result.success) {
+            result.classification.outcome = CommitOutcome::Cancelled;
+            result.errorMessage = "Media change was aborted by the user";
+            m_lastError = result.errorMessage;
+        }
         auto txSteps = std::distance(commitResult.transaction().begin(),
                                      commitResult.transaction().end());
         qCDebug(lcZypp) << "commit: noError=" << result.success
@@ -2476,10 +2520,32 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
                         result.removedPackages.push_back(name);
                     }
                 }
-            } else if (it->stepStage() == zypp::sat::Transaction::STEP_ERROR) {
-                result.failedPackages.push_back(name);
             }
         }
+
+        // コミット後に snapper プラグインが作成したスナップショットを差分検出
+        if (snapperPresent) {
+            const std::vector<SnapshotEntry> snapshotsAfter =
+                readSnapshots(QStringLiteral("/.snapshots"));
+            result.snapshots = newSnapshots(snapshotsBefore, snapshotsAfter);
+        }
+
+        // 再起動要否/再起動推奨/サービス再起動の検出 (外部プロセスは起動しない)
+        bool patchRebootSuggested = false;
+        bool patchRestartSuggested = false;
+        for (auto it = m_zypp->pool().begin(); it != m_zypp->pool().end(); ++it) {
+            if (!it->status().isInstalled())
+                continue;
+            const zypp::Patch::constPtr patch = zypp::asKind<zypp::Patch>(it->resolvable());
+            if (!patch)
+                continue;
+            patchRebootSuggested = patchRebootSuggested || patch->rebootSuggested();
+            patchRestartSuggested = patchRestartSuggested || patch->restartSuggested();
+        }
+        result.rebootNeeded = rebootFlagPresent(QStringLiteral("/run/reboot-needed"))
+            || patchRebootSuggested;
+        result.restartSuggested = patchRestartSuggested;
+        result.servicesToRestart = servicesUsingDeletedFiles(QStringLiteral("/proc"));
 
         // 経過時間計算
         auto endTime = std::chrono::steady_clock::now();
@@ -2496,23 +2562,45 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
             if (!problemDetail.empty())
                 result.errorMessage = problemDetail;
             else
-                result.errorMessage = m_lastError;
+                result.errorMessage = "Transaction did not complete all requested actions";
         }
 
-        return result;
+        return finalizeResult();
     } catch (const zypp::Exception& e) {
         m_lastError = "Commit failed: " + e.asString();
         result.success = false;
         result.errorMessage = m_lastError;
+        // 対話中止が原因の例外は cancelled として報告する
+        if (conflictRcv.aborted() || mediaRcv.aborted()) {
+            result.classification.outcome = CommitOutcome::Cancelled;
+            result.errorMessage = conflictRcv.aborted()
+                ? std::string("Commit cancelled due to file conflicts")
+                : std::string("Media change was aborted by the user");
+            m_lastError = result.errorMessage;
+        }
+        // ダウンロード中の取消し等、利用者の中止要求による例外も cancelled として扱う
+        else if (m_cancelRequested.load()
+                 || dynamic_cast<const zypp::UserRequestException *>(&e) != nullptr) {
+            result.classification.outcome = CommitOutcome::Cancelled;
+            result.errorMessage = "Commit was cancelled by the user";
+            m_lastError = result.errorMessage;
+        }
         qCWarning(lcZypp) << "commit exception:" << QString::fromStdString(e.asString())
                           << "| history:" << QString::fromStdString(e.historyAsString());
-        return result;
+        return finalizeResult();
     } catch (const std::exception& e) {
         m_lastError = std::string("Commit failed: ") + e.what();
         result.success = false;
         result.errorMessage = m_lastError;
+        if (conflictRcv.aborted() || mediaRcv.aborted()) {
+            result.classification.outcome = CommitOutcome::Cancelled;
+            result.errorMessage = conflictRcv.aborted()
+                ? std::string("Commit cancelled due to file conflicts")
+                : std::string("Media change was aborted by the user");
+            m_lastError = result.errorMessage;
+        }
         qCWarning(lcZypp) << "commit std::exception:" << e.what();
-        return result;
+        return finalizeResult();
     }
 }
 

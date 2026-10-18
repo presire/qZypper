@@ -1,118 +1,150 @@
 #include <QDBusConnection>
+#include <QDBusMetaType>
 #include <QDBusError>
 #include <QDBusMessage>
 #include <QDBusArgument>
-#include <QDBusPendingReply>
+#include <QDBusPendingCall>
+#include <QDBusPendingCallWatcher>
 #include <QDebug>
+#include <QRegularExpression>
+
 #include <limits>
+
 #include "DBusClient.h"
 
 namespace qZypper {
 
-/**
- * @brief 長時間D-Bus呼び出し用の無限タイムアウト。
- *
- * libdbus は INT_MAX を無限と扱う。長いcommit中に
- * クライアント側タイムアウトで失敗報告すると、root側が
- * インストール継続中のまま二重commitされる危険があるため使用する。
- */
-static constexpr int kNoTimeout = std::numeric_limits<int>::max();
+namespace {
+// ソルバー等の重い処理に備えた既定タイムアウト (120秒)
+constexpr int kDefaultTimeout = 120000;
+// バックエンドが遅延応答する非同期操作のためのタイムアウト無制限
+constexpr int kNoTimeout = std::numeric_limits<int>::max();
+} // namespace
+
+static QVariant normalizeDBusValue(const QVariant &value);
 
 /**
- * @brief D-Bus a{sv} をQDBusArgumentから読み取りQVariantMapに変換する。
- * @param arg 読み取り元のQDBusArgument
- * @return 変換されたQVariantMap
+ * @brief QDBusArgument の現在要素を再帰的に QVariant へ変換する。
+ *
+ * Qt D-Bus は variant 内の配列/辞書 (aa{sv}, a{sv}, av 等) を QDBusArgument のまま
+ * 返すため、入れ子の summary / problems / snapshots 等を QML から参照できるよう
+ * QVariantMap / QVariantList へ展開する。
+ * @param arg 読み出し元の QDBusArgument (現在位置の要素を 1 つ消費する)
+ * @return 変換後の値
  */
-static QVariantMap readSvMap(const QDBusArgument &arg)
+static QVariant readDBusArgument(const QDBusArgument &arg)
 {
-    QVariantMap map;
-    arg.beginMap();
-    while (!arg.atEnd()) {
-        QString key;
-        QDBusVariant dbusValue;
-        arg.beginMapEntry();
-        arg >> key >> dbusValue;
-        arg.endMapEntry();
-        map.insert(key, dbusValue.variant());
+    switch (arg.currentType()) {
+    case QDBusArgument::MapType: {
+        QVariantMap map;
+        arg.beginMap();
+        while (!arg.atEnd()) {
+            arg.beginMapEntry();
+            const QVariant key = normalizeDBusValue(arg.asVariant());
+            const QVariant value = readDBusArgument(arg);
+            arg.endMapEntry();
+            map.insert(key.toString(), value);
+        }
+        arg.endMap();
+        return map;
     }
-    arg.endMap();
-    return map;
+    case QDBusArgument::ArrayType: {
+        QVariantList list;
+        arg.beginArray();
+        while (!arg.atEnd())
+            list.append(readDBusArgument(arg));
+        arg.endArray();
+        return list;
+    }
+    case QDBusArgument::StructureType: {
+        QVariantList fields;
+        arg.beginStructure();
+        while (!arg.atEnd())
+            fields.append(readDBusArgument(arg));
+        arg.endStructure();
+        return fields;
+    }
+    default:
+        return normalizeDBusValue(arg.asVariant());
+    }
 }
 
 /**
- * @brief QVariantをQVariantMapに変換する。(QDBusArgument / QVariantMap 両対応)
- * @param v 変換元のQVariant
- * @return 変換されたQVariantMap (変換不可の場合は空)
+ * @brief QDBusVariant / QDBusArgument を含む値を再帰的に通常の QVariant へ正規化する。
+ * @param value 変換対象
+ * @return 正規化後の値
  */
-static QVariantMap variantToMap(const QVariant &v)
+static QVariant normalizeDBusValue(const QVariant &value)
 {
-    if (v.canConvert<QDBusArgument>())
-        return readSvMap(v.value<QDBusArgument>());
-    if (v.canConvert<QVariantMap>())
-        return v.toMap();
-    return {};
+    const int type = value.userType();
+    if (type == qMetaTypeId<QDBusVariant>())
+        return normalizeDBusValue(value.value<QDBusVariant>().variant());
+    if (type == qMetaTypeId<QDBusArgument>())
+        return readDBusArgument(value.value<QDBusArgument>());
+    if (type == QMetaType::QVariantList) {
+        QVariantList list = value.toList();
+        for (QVariant &item : list)
+            item = normalizeDBusValue(item);
+        return list;
+    }
+    if (type == QMetaType::QVariantMap) {
+        QVariantMap map = value.toMap();
+        for (auto it = map.begin(); it != map.end(); ++it)
+            it.value() = normalizeDBusValue(it.value());
+        return map;
+    }
+    return value;
 }
 
 /**
- * @brief D-Bus av / aa{sv} を QVariantList (of QVariantMap) に変換する。
- *
- * Qt は QVariantList を av (array of variants) としてマーシャルするため、
- * 各要素はQDBusVariantで包まれている。
- * @param variant 変換元のQVariant
- * @return QVariantMapのリスト
+ * @brief av / aa{sv} 形式の配列を QVariantList に変換する (入れ子も展開)。
+ * @param variant 変換対象の引数
+ * @return QVariantMap のリスト
  */
 static QVariantList demarshallArrayOfMaps(const QVariant &variant)
 {
-    QVariantList result;
-
-    if (!variant.canConvert<QDBusArgument>())
-        return variant.toList();
-
-    const QDBusArgument arg = variant.value<QDBusArgument>();
-    arg.beginArray();
-    while (!arg.atEnd()) {
-        if (arg.currentType() == QDBusArgument::VariantType) {
-            // av 形式: 各要素が variant で包まれている
-            QDBusVariant dbusVar;
-            arg >> dbusVar;
-            result.append(variantToMap(dbusVar.variant()));
-        } else if (arg.currentType() == QDBusArgument::MapType) {
-            // aa{sv} 形式: 直接 map
-            result.append(readSvMap(arg));
-        } else {
-            // 不明な型はスキップ
-            QVariant skip;
-            arg >> skip;
-        }
-    }
-    arg.endArray();
-
-    return result;
+    return normalizeDBusValue(variant).toList();
 }
 
 /**
- * @brief D-Bus a{sv} / v(a{sv}) をQVariantMapに変換する。
- * @param variant 変換元のQVariant
- * @return 変換されたQVariantMap
+ * @brief a{sv} 形式のマップを QVariantMap に変換する (入れ子も展開)。
+ * @param variant 変換対象の引数
+ * @return 変換後の QVariantMap
  */
 static QVariantMap demarshallMap(const QVariant &variant)
 {
-    // QDBusVariant でラップされている場合アンラップ
-    if (variant.canConvert<QDBusVariant>()) {
-        return variantToMap(variant.value<QDBusVariant>().variant());
-    }
-    return variantToMap(variant);
+    return normalizeDBusValue(variant).toMap();
 }
 
 /**
- * @brief DBusClient のコンストラクタ。
- *
- * D-Busサービスウォッチャーを初期化し、バックエンドの登録 / 解除を監視する。
+ * @brief D-Busエラーをユーザ向けメッセージへ変換する。
+ * @param error D-Busエラー
+ * @return 表示用メッセージ
+ */
+static QString describeError(const QDBusError &error)
+{
+    if (error.name() == QLatin1String("org.freedesktop.DBus.Error.AccessDenied")) {
+        QString message = QStringLiteral("Authorization was denied");
+        if (!error.message().isEmpty())
+            message += QStringLiteral(": %1").arg(error.message());
+        return message;
+    }
+    QString message = error.message();
+    if (message.isEmpty())
+        message = QStringLiteral("D-Bus call failed (error type: %1)").arg(error.name());
+    return message;
+}
+
+/**
+ * @brief コンストラクタ。バックエンドサービスの登録/解除を監視する。
  * @param parent 親オブジェクト
  */
 DBusClient::DBusClient(QObject *parent)
     : QObject(parent)
 {
+    // InstallLocalRpms(ah, as) で記述子配列を送るため登録する
+    qDBusRegisterMetaType<QList<QDBusUnixFileDescriptor>>();
+
     // サービスの登録/解除を監視
     m_watcher = new QDBusServiceWatcher(
         SERVICE_NAME,
@@ -172,81 +204,59 @@ bool DBusClient::connectToBackend()
     }
 
     // ソルバー等の重い処理に備えてタイムアウトを120秒に延長
-    m_iface->setTimeout(120000);
+    m_iface->setTimeout(kDefaultTimeout);
 
     // 再接続で重複配送しないよう、既存のbus接続を一旦外す
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "RepoRefreshProgress",
-        this, SIGNAL(repoRefreshProgress(QString, int))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "ProgressChanged",
-        this, SIGNAL(progressChanged(QString, int, QString))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "CommitProgressChanged",
-        this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "TransactionFinished",
-        this, SIGNAL(transactionFinished(bool, QString))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "ErrorOccurred",
-        this, SIGNAL(errorOccurred(QString))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "PackageStateChanged",
-        this, SIGNAL(packageStateChanged(QString, QString))
-    );
-    bus.disconnect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "UntrustedKeyDetected",
-        this, SIGNAL(untrustedKeyDetected(QVariantMap))
-    );
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RepoRefreshProgress",
+                   this, SIGNAL(repoRefreshProgress(QString, int)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ProgressChanged",
+                   this, SIGNAL(progressChanged(QString, int, QString)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CommitProgressChanged",
+                   this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "TransactionFinished",
+                   this, SIGNAL(transactionFinished(bool, QString)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ErrorOccurred",
+                   this, SIGNAL(errorOccurred(QString)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PackageStateChanged",
+                   this, SIGNAL(packageStateChanged(QString, QString)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "UntrustedKeyDetected",
+                   this, SLOT(onUntrustedKeyDetected(QVariantMap)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "OperationStateChanged",
+                   this, SLOT(onOperationStateChanged(QVariantMap)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PromptRequested",
+                   this, SLOT(onPromptRequested(uint, QString, QVariantMap)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PromptClosed",
+                   this, SIGNAL(promptClosed(uint)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PoolReloaded",
+                   this, SIGNAL(poolReloaded()));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutput",
+                   this, SLOT(onScriptOutput(QVariantMap)));
 
-    // シグナルを接続
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "RepoRefreshProgress",
-        this, SIGNAL(repoRefreshProgress(QString, int))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "ProgressChanged",
-        this, SIGNAL(progressChanged(QString, int, QString))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "CommitProgressChanged",
-        this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "TransactionFinished",
-        this, SIGNAL(transactionFinished(bool, QString))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "ErrorOccurred",
-        this, SIGNAL(errorOccurred(QString))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "PackageStateChanged",
-        this, SIGNAL(packageStateChanged(QString, QString))
-    );
-    bus.connect(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE,
-        "UntrustedKeyDetected",
-        this, SIGNAL(untrustedKeyDetected(QVariantMap))
-    );
+    // バックエンドのブロードキャストシグナルをGUI側シグナルへ中継
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RepoRefreshProgress",
+                this, SIGNAL(repoRefreshProgress(QString, int)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ProgressChanged",
+                this, SIGNAL(progressChanged(QString, int, QString)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CommitProgressChanged",
+                this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "TransactionFinished",
+                this, SIGNAL(transactionFinished(bool, QString)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ErrorOccurred",
+                this, SIGNAL(errorOccurred(QString)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PackageStateChanged",
+                this, SIGNAL(packageStateChanged(QString, QString)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "UntrustedKeyDetected",
+                this, SLOT(onUntrustedKeyDetected(QVariantMap)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "OperationStateChanged",
+                this, SLOT(onOperationStateChanged(QVariantMap)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PromptRequested",
+                this, SLOT(onPromptRequested(uint, QString, QVariantMap)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PromptClosed",
+                this, SIGNAL(promptClosed(uint)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PoolReloaded",
+                this, SIGNAL(poolReloaded()));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutput",
+                this, SLOT(onScriptOutput(QVariantMap)));
 
     m_connected = true;
     qDebug() << "DBusClient: connected to backend";
@@ -256,7 +266,7 @@ bool DBusClient::connectToBackend()
 
 /**
  * @brief バックエンドとの接続状態を返す。
- * @return 接続中の場合: true
+ * @return 接続済みかつインターフェースが有効な場合: true
  */
 bool DBusClient::isConnected() const
 {
@@ -264,912 +274,1052 @@ bool DBusClient::isConnected() const
 }
 
 /**
- * @brief D-Busサービス登録時のハンドラ。
+ * @brief バックエンドサービス登録時の処理。
+ *
+ * 自分の初期化中は再入を避けるためスキップする。
+ * 再接続後は非同期で初期化し、成功時に backendReconnected を発行する。
  * @param serviceName 登録されたサービス名
  */
 void DBusClient::onServiceRegistered(const QString &serviceName)
 {
-    Q_UNUSED(serviceName)
-    qDebug() << "DBusClient: backend service registered";
+    Q_UNUSED(serviceName);
     if (m_initializing) {
-        // initializeBackend() の BlockWithGui 待機中にバス名が再登録された場合、
-        // ここで connectToBackend() すると m_iface を削除して待機中の呼び出しを壊すため何もしない。
-        qDebug() << "DBusClient: initialization in progress, skip reconnect";
         return;
     }
-    // 再起動後のバックエンドは未初期化。接続→Initialize→再ロードを促す
     if (connectToBackend()) {
-        if (initializeBackend()) {
-            qDebug() << "DBusClient: backend re-initialized after restart";
-            emit backendReconnected();
-        } else {
-            qWarning() << "DBusClient: backend re-initialization failed:" << m_lastError;
-        }
+        initializeBackend([this](bool success, const QString &, const QString &, const QVariantList &) {
+            if (success)
+                emit backendReconnected();
+        });
     }
 }
 
 /**
- * @brief D-Busサービス解除時のハンドラ。
+ * @brief バックエンドサービス解除時の処理。
  * @param serviceName 解除されたサービス名
  */
 void DBusClient::onServiceUnregistered(const QString &serviceName)
 {
-    Q_UNUSED(serviceName)
-    qDebug() << "DBusClient: backend service unregistered";
+    Q_UNUSED(serviceName);
     m_connected = false;
     emit backendDisconnected();
+}
+
+// -- 非同期呼び出し共通処理 --
+
+/**
+ * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す。
+ *
+ * QDBusPendingCallWatcher を用いるためGUIスレッドをブロックしない。
+ * エラー時は m_lastError を更新し、コールバックへエラー名/メッセージを返す。
+ * @param msg 送信するメソッド呼び出しメッセージ
+ * @param timeout タイムアウト (ミリ秒)
+ * @param callback 完了時に呼ばれるコールバック
+ */
+void DBusClient::callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback)
+{
+    // バックエンドは処理中に別操作を Busy で拒否する。取消し・プロンプト応答・状態照会は
+    // 処理中でも受け付けられるため直列化せず即時送信し、それ以外は1件ずつ順番に送る。
+    static const QStringList kConcurrentMembers = {
+        QStringLiteral("CancelOperation"), QStringLiteral("AnswerPrompt"),
+        QStringLiteral("GetOperationState"), QStringLiteral("GetSelectionRevision"),
+    };
+    if (kConcurrentMembers.contains(msg.member())) {
+        dispatchCall(msg, timeout, std::move(callback), false);
+        return;
+    }
+    if (m_serialCallInFlight || !m_callQueue.empty()) {
+        m_callQueue.push_back({msg, timeout, std::move(callback)});
+        return;
+    }
+    dispatchCall(msg, timeout, std::move(callback), true);
+}
+
+void DBusClient::dispatchNextQueuedCall()
+{
+    if (m_serialCallInFlight || m_callQueue.empty())
+        return;
+    QueuedCall next = std::move(m_callQueue.front());
+    m_callQueue.pop_front();
+    dispatchCall(next.msg, next.timeout, std::move(next.callback), true);
+}
+
+void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback,
+                              bool serialized)
+{
+    if (!isConnected()) {
+        m_lastError = QStringLiteral("Not connected to backend");
+        qWarning() << "DBusClient:" << m_lastError;
+        emit lastErrorChanged();
+        if (callback)
+            callback(false, QStringLiteral("org.presire.qzypper.Error.NotConnected"), m_lastError, {});
+        if (serialized)
+            dispatchNextQueuedCall();
+        return;
+    }
+
+    if (serialized)
+        m_serialCallInFlight = true;
+
+    const QString member = msg.member();
+    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, timeout);
+    auto *watcher = new QDBusPendingCallWatcher(pending, this);
+
+    connect(watcher, &QDBusPendingCallWatcher::finished, this,
+            [this, callback, member, serialized](QDBusPendingCallWatcher *w) {
+        const QDBusMessage reply = w->reply();
+        w->deleteLater();
+
+        // コールバック内で新たな呼び出しが積まれても順序を保つよう、先に完了扱いにする
+        if (serialized)
+            m_serialCallInFlight = false;
+
+        if (reply.type() == QDBusMessage::ErrorMessage) {
+            const QDBusError error(reply);
+            m_lastError = describeError(error);
+            qWarning() << "DBusClient:" << member << m_lastError;
+            emit lastErrorChanged();
+            if (error.name() == QLatin1String("org.presire.qzypper.Error.ZyppLocked")) {
+                static const QRegularExpression lockedRe(
+                    QStringLiteral("locked by (.+) \\(PID (\\d+)\\)"));
+                const QRegularExpressionMatch m = lockedRe.match(error.message());
+                const QString lockerName = m.hasMatch() ? m.captured(1) : QString();
+                const int lockerPid = m.hasMatch() ? m.captured(2).toInt() : 0;
+                emit packageLocked(lockerName, lockerPid, error.message());
+            }
+            if (callback)
+                callback(false, error.name(), m_lastError, {});
+        } else if (callback) {
+            callback(true, QString(), QString(), reply.arguments());
+        }
+
+        if (serialized)
+            dispatchNextQueuedCall();
+    });
 }
 
 // -- 初期化 --
 
 /**
- * @brief バックエンドの初期化を要求する。
+ * @brief バックエンドを非同期で初期化する。
  *
- * BlockWithGui で待機するため入れ子イベントループが回り、再入が起こり得る。
- * m_initializing で保護し、再入時は要求を開始せず失敗を返す。
- * Polkit認証ダイアログが数分開かれ得るため、GUI描画を維持する目的で
- * BlockWithGui + kNoTimeout (無限) を使う。バックエンドは必ず応答し、
- * プロセスが終了した場合はバスがエラーを返す。
- * @return 初期化成功時: true
+ * Polkit認証を含むためタイムアウト無制限で呼び出す。バックエンドは必ず応答し、
+ * プロセスが終了した場合はバスがエラーを返す。完了時にコールバックへ
+ * 成功可否とエラー情報を渡す。
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::initializeBackend()
+void DBusClient::initializeBackend(ReplyCallback callback)
 {
     if (m_initializing) {
         m_lastError = QStringLiteral("Initialization already in progress");
-        return false;
+        emit lastErrorChanged();
+        if (callback)
+            callback(false, QStringLiteral("org.presire.qzypper.Error.Busy"), m_lastError, {});
+        return;
     }
     if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
+        m_lastError = QStringLiteral("Not connected to backend");
+        emit lastErrorChanged();
+        if (callback)
+            callback(false, QStringLiteral("org.presire.qzypper.Error.NotConnected"), m_lastError, {});
+        return;
     }
 
     m_initializing = true;
-    // バックエンドはPolkit認証で最大300秒待機し得るためタイムアウト無制限で同期呼び出しする。
-    // バックエンドは必ず応答し、プロセスが終了した場合はバスがエラーを返す。
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "Initialize");
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::BlockWithGui, kNoTimeout);
-    m_initializing = false;
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        if (reply.error().name() == QLatin1String("org.freedesktop.DBus.Error.AccessDenied")) {
-            m_lastError = QStringLiteral("Authorization to open a package management session was denied");
-            if (!reply.error().message().isEmpty())
-                m_lastError += QStringLiteral(": %1").arg(reply.error().message());
-        } else {
-            m_lastError = reply.error().message();
-            if (m_lastError.isEmpty())
-                m_lastError = QStringLiteral("D-Bus call failed (error type: %1)").arg(reply.error().name());
-        }
-        qWarning() << "DBusClient::initializeBackend:" << m_lastError;
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [this, callback](bool success, const QString &errorName,
+                                                const QString &errorMessage, const QVariantList &args) {
+        m_initializing = false;
+        const bool value = success && (args.isEmpty() || args.at(0).toBool());
+        if (callback)
+            callback(value, errorName, errorMessage, args);
+    });
 }
 
 // -- リポジトリ操作 --
 
 /**
- * @brief 指定リポジトリの非同期リフレッシュを実行する。
- *
- * 完了時に refreshSingleRepoFinished シグナルを発行する。
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- * @param alias リフレッシュ対象のリポジトリエイリアス
- * @return 要求開始時: true
+ * @brief 全リポジトリのリフレッシュを非同期で要求する。
+ * @param callback 完了時に呼ばれるコールバック
  */
-void DBusClient::refreshSingleRepoAsync(const QString &alias)
+void DBusClient::refreshReposAsync(ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = QStringLiteral("Not connected to backend");
-        emit refreshSingleRepoFinished(false);
-        return;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshSingleRepo");
-    msg << alias;
-    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
-    auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<bool> reply = *w;
-        bool success = !reply.isError() && reply.value();
-        if (reply.isError())
-            m_lastError = reply.error().message();
-        emit refreshSingleRepoFinished(success);
-        w->deleteLater();
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshRepos");
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
     });
 }
 
 /**
- * @brief リポジトリを追加する。
- *
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- * @param url リポジトリURL
- * @param name リポジトリ名
- * @return 結果を格納したQVariantMap (success, errorMessage)
+ * @brief 指定リポジトリのリフレッシュを非同期で要求する。
+ * @param alias リフレッシュ対象のエイリアス
+ * @param callback 完了時に呼ばれるコールバック
  */
-QVariantMap DBusClient::addRepo(const QString &url, const QString &name)
+void DBusClient::refreshSingleRepoAsync(const QString &alias, ReplyCallback callback)
 {
-    QVariantMap result;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddRepo");
-    msg << url << name;
-    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
-    return reply.arguments().isEmpty() ? result : demarshallMap(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshSingleRepo");
+    msg << alias;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
- * @brief 全プロパティを指定してリポジトリを追加する。
- *
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- * @param properties リポジトリプロパティ (url, name, alias, enabled等)
- * @return 結果を格納したQVariantMap (success, errorMessage)
+ * @brief 実行中の操作のキャンセルを要求する (fire-and-forget)。
  */
-QVariantMap DBusClient::addRepoFull(const QVariantMap &properties)
+void DBusClient::cancelOperation()
 {
-    QVariantMap result;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
+    if (!isConnected())
+        return;
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CancelOperation");
+    QDBusConnection::systemBus().send(msg);
+}
 
+/**
+ * @brief リポジトリを追加する。
+ * @param url リポジトリURL
+ * @param name リポジトリ名
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::addRepo(const QString &url, const QString &name, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddRepo");
+    msg << url << name;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name2,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name2, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 全属性を指定してリポジトリを追加する。
+ * @param properties リポジトリ属性マップ
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::addRepoFull(const QVariantMap &properties, ReplyCallback callback)
+{
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddRepoFull");
     msg << properties;
-    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
-    return reply.arguments().isEmpty() ? result : demarshallMap(reply.arguments().at(0));
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief リポジトリを削除する。
- * @param alias 削除対象のリポジトリエイリアス
- * @return 削除成功時 true
+ * @param alias 削除対象のエイリアス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::removeRepo(const QString &alias)
+void DBusClient::removeRepo(const QString &alias, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RemoveRepo");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
  * @brief リポジトリの有効/無効を切り替える。
- * @param alias 対象のリポジトリエイリアス
- * @param enabled 有効にする場合はtrue
- * @return 変更成功時: true
+ * @param alias 対象エイリアス
+ * @param enabled 有効にする場合 true
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::setRepoEnabled(const QString &alias, bool enabled)
+void DBusClient::setRepoEnabled(const QString &alias, bool enabled, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetRepoEnabled");
     msg << alias << enabled;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
- * @brief リポジトリのプロパティを変更する。
- * @param alias 対象のリポジトリエイリアス
- * @param properties 変更するプロパティ
- * @return 変更成功時: true
+ * @brief リポジトリ属性を変更する。
+ * @param alias 対象エイリアス
+ * @param properties 変更する属性マップ
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::modifyRepo(const QString &alias, const QVariantMap &properties)
+void DBusClient::modifyRepo(const QString &alias, const QVariantMap &properties, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ModifyRepo");
     msg << alias << properties;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 // -- サービス操作 --
 
 /**
  * @brief サービスを追加する。
- *
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
  * @param url サービスURL
  * @param alias サービスエイリアス
- * @return 追加成功時: true
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::addService(const QString &url, const QString &alias)
+void DBusClient::addService(const QString &url, const QString &alias, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddService");
     msg << url << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
  * @brief サービスを削除する。
- * @param alias 削除対象のサービスエイリアス
- * @return 削除成功時: true
+ * @param alias 削除対象エイリアス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::removeService(const QString &alias)
+void DBusClient::removeService(const QString &alias, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RemoveService");
     msg << alias;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
- * @brief サービスのプロパティを変更する。
- * @param alias 対象のサービスエイリアス
- * @param properties 変更するプロパティ
- * @return 変更成功時: true
+ * @brief サービス属性を変更する。
+ * @param alias 対象エイリアス
+ * @param properties 変更する属性マップ
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::modifyService(const QString &alias, const QVariantMap &properties)
+void DBusClient::modifyService(const QString &alias, const QVariantMap &properties, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    // バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout) で同期呼び出しする
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ModifyService");
     msg << alias << properties;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
- * @brief サービスを非同期でリフレッシュする。
- *
- * 完了時に refreshServiceFinished シグナルを発行する。
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- * @param alias リフレッシュ対象のサービスエイリアス
- * @return 要求開始時: true
+ * @brief サービスのリフレッシュを非同期で要求する。
+ * @param alias 対象エイリアス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::refreshServiceAsync(const QString &alias)
+void DBusClient::refreshServiceAsync(const QString &alias, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = QStringLiteral("Not connected to backend");
-        return false;
-    }
-
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshService");
     msg << alias;
-    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
-    auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<bool> reply = *w;
-        bool success = !reply.isError() && reply.value();
-        if (reply.isError())
-            m_lastError = reply.error().message();
-        emit refreshServiceFinished(success);
-        w->deleteLater();
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
     });
-    return true;
 }
 
 // -- パッケージ状態変更 --
 
 /**
- * @brief パッケージのステータスを変更する。
+ * @brief パッケージの状態を変更する。
  * @param name パッケージ名
- * @param status 新しいステータス (PackageStatus)
- * @return 変更成功時: true
+ * @param status 新しいステータス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::setPackageStatus(const QString &name, int status)
+void DBusClient::setPackageStatus(const QString &name, int status, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    QDBusReply<bool> reply = m_iface->call("SetPackageStatus", name, status);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPackageStatus");
+    msg << name << status;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
  * @brief パッケージのバージョンを変更する。
  * @param name パッケージ名
- * @param version 選択バージョン (edition文字列)
+ * @param version バージョン
  * @param arch アーキテクチャ
  * @param repoAlias リポジトリエイリアス
- * @return 変更成功時: true
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::setPackageVersion(const QString &name, const QString &version,
-                                   const QString &arch, const QString &repoAlias)
+void DBusClient::setPackageVersion(const QString &name, const QString &version,
+                                   const QString &arch, const QString &repoAlias,
+                                   ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    QDBusReply<bool> reply = m_iface->call("SetPackageVersion", name, version, arch, repoAlias);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPackageVersion");
+    msg << name << version << arch << repoAlias;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 /**
- * @brief パターンのステータスを変更する。
+ * @brief パターンの状態を変更する。
  * @param name パターン名
- * @param status 新しいステータス (PackageStatus)
- * @return 変更成功時: true
+ * @param status 新しいステータス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::setPatternStatus(const QString &name, int status)
+void DBusClient::setPatternStatus(const QString &name, int status, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPatternStatus");
+    msg << name << status;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
 
-    QDBusReply<bool> reply = m_iface->call("SetPatternStatus", name, status);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+/**
+ * @brief パッチの適用状態を変更する。
+ * @param patchId パッチID
+ * @param status 新しいステータス (Install=1 / NoInst=0)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ */
+void DBusClient::setPatchStatus(const QString &patchId, int status, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPatchStatus");
+    msg << patchId << status;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 必要な全パッチを選択する。
+ * @param options オプションマップ (securityOnly / includeOptional / skipInteractive)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::selectAllNeededPatches(const QVariantMap &options, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SelectAllNeededPatches");
+    msg << options;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 // -- 依存関係解決 --
 
 /**
  * @brief 全パッケージの更新を実行する。
- *
- * バックエンドのUpdateAllPackages (doUpdate + 依存解決) を呼び出す。
- * @return 解決結果 (success, problems)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
  */
-QVariantMap DBusClient::updateAllPackages()
+void DBusClient::updateAllPackages(ReplyCallback callback)
 {
-    QVariantMap result;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        result["success"] = false;
-        return result;
-    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "UpdateAllPackages");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
 
-    QDBusMessage reply = m_iface->call("UpdateAllPackages");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        qWarning() << "DBusClient::updateAllPackages:" << m_lastError;
-        result["success"] = false;
-        return result;
-    }
+/**
+ * @brief ディストリビューション更新 (dist-upgrade) を実行する。
+ * @param options オプションマップ (allowVendorChange)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::distUpgrade(const QVariantMap &options, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "DistUpgrade");
+    msg << options;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
 
-    if (reply.arguments().isEmpty())
-        return result;
+/**
+ * @brief システムの整合性を検証する (VerifySystem)。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::verifySystem(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "VerifySystem");
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
 
-    result = demarshallMap(reply.arguments().at(0));
-
-    // ネストされた problems 配列を再帰的にデマーシャリング
-    if (result.contains("problems")) {
-        QVariantList problems = demarshallArrayOfMaps(result.value("problems"));
-        QVariantList demarshalled;
-        for (const auto &p : std::as_const(problems)) {
-            QVariantMap problem = variantToMap(p);
-            if (problem.contains("solutions")) {
-                problem["solutions"] = demarshallArrayOfMaps(problem.value("solutions"));
-            }
-            demarshalled.append(problem);
-        }
-        result["problems"] = demarshalled;
-    }
-
-    return result;
+/**
+ * @brief 現在の解決済みトランザクションの概要を取得する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::getTransactionSummary(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetTransactionSummary");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief 依存関係を解決する。
- *
- * ソルバーを実行し、衝突がある場合はproblems配列を再帰的にデマーシャリングする。
- * @return 解決結果 (success, problems)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
  */
-QVariantMap DBusClient::resolveDependencies()
+void DBusClient::resolveDependencies(ReplyCallback callback)
 {
-    QVariantMap result;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        result["success"] = false;
-        return result;
-    }
-
-    QDBusMessage reply = m_iface->call("ResolveDependencies");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        qWarning() << "DBusClient::resolveDependencies:" << m_lastError;
-        result["success"] = false;
-        return result;
-    }
-
-    if (reply.arguments().isEmpty())
-        return result;
-
-    result = demarshallMap(reply.arguments().at(0));
-
-    // ネストされた problems 配列を再帰的にデマーシャリング
-    if (result.contains("problems")) {
-        QVariantList problems = demarshallArrayOfMaps(result.value("problems"));
-        QVariantList demarshalled;
-        for (const auto &p : std::as_const(problems)) {
-            QVariantMap problem = variantToMap(p);
-            // 各 problem 内の solutions もデマーシャリング
-            if (problem.contains("solutions")) {
-                problem["solutions"] = demarshallArrayOfMaps(problem.value("solutions"));
-            }
-            demarshalled.append(problem);
-        }
-        result["problems"] = demarshalled;
-    }
-
-    return result;
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ResolveDependencies");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
- * @brief 依存関係の衝突に対する解決策を適用する。
- * @param problemIndex 問題のインデックス
- * @param solutionIndex 解決策のインデックス
- * @return 適用成功時: true
+ * @brief 選択された解決策を適用する。
+ * @param problemIndex 問題インデックス
+ * @param solutionIndex 解決策インデックス
+ * @param callback 完了時に呼ばれるコールバック
  */
-bool DBusClient::applySolution(int problemIndex, int solutionIndex)
+void DBusClient::applySolution(int problemIndex, int solutionIndex, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
-
-    QDBusReply<bool> reply = m_iface->call("ApplySolution", problemIndex, solutionIndex);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        return false;
-    }
-    return reply.value();
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ApplySolution");
+    msg << problemIndex << solutionIndex;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
 }
 
 // -- コミット --
 
 /**
  * @brief 現在の選択リビジョンを取得する。
- * @param ok 成功時はtrueが設定される (nullptr可)
- * @return 選択リビジョン (失敗時は0)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に quint64)
  */
-quint64 DBusClient::getSelectionRevision(bool *ok)
+void DBusClient::getSelectionRevision(ReplyCallback callback)
 {
-    if (ok)
-        *ok = false;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return 0;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetSelectionRevision");
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block);
-    QDBusReply<qulonglong> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        if (m_lastError.isEmpty())
-            m_lastError = reply.error().name();
-        qWarning() << "DBusClient::getSelectionRevision:" << m_lastError;
-        return 0;
-    }
-    if (ok)
-        *ok = true;
-    return reply.value();
-}
-
-/**
- * @brief パッケージの変更をコミットする。
- * @param expectedRevision prepareCommitで取得した選択リビジョン
- * @return コミット結果 (success, installed, updated, removed, errorMessage等)
- */
-QVariantMap DBusClient::commit(quint64 expectedRevision)
-{
-    QVariantMap result;
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE, "Commit");
-    msg << static_cast<qulonglong>(expectedRevision);
-    QDBusMessage reply = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        result["success"] = false;
-        result["errorMessage"] = m_lastError;
-        return result;
-    }
-    return reply.arguments().isEmpty() ? result : demarshallMap(reply.arguments().at(0));
-}
-
-/**
- * @brief パッケージの変更を非同期でコミットする。
- * @param expectedRevision prepareCommitで取得した選択リビジョン
- *
- * 完了時にcommitFinishedシグナルを発行する。タイムアウトは無限。
- */
-void DBusClient::commitAsync(quint64 expectedRevision)
-{
-    if (!isConnected()) {
-        QVariantMap result;
-        result["success"] = false;
-        emit commitFinished(result);
-        return;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE, "Commit");
-    msg << static_cast<qulonglong>(expectedRevision);
-    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
-    auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<> reply = *w;
-        QVariantMap result;
-        if (reply.isError()) {
-            m_lastError = reply.error().message();
-            result["success"] = false;
-            result["errorMessage"] = m_lastError;
-        } else {
-            auto args = reply.reply().arguments();
-            if (!args.isEmpty())
-                result = demarshallMap(args.at(0));
-        }
-        emit commitFinished(result);
-        w->deleteLater();
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetSelectionRevision");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0) } : QVariantList{});
     });
 }
 
 /**
- * @brief GPG署名鍵を信頼する。
- *
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- * @param fingerprint 鍵フィンガープリント
- * @return 信頼成功時 true
+ * @brief 選択状態を非同期でコミットする。
+ * @param expectedRevision コミット対象の選択リビジョン
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
  */
-bool DBusClient::trustKey(const QString &fingerprint)
+void DBusClient::commitAsync(quint64 expectedRevision, ReplyCallback callback)
 {
-    if (!isConnected()) {
-        m_lastError = "Not connected to backend";
-        return false;
-    }
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "Commit");
+    msg << expectedRevision;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
 
-    QDBusMessage msg = QDBusMessage::createMethodCall(
-        SERVICE_NAME, OBJECT_PATH, INTERFACE, "TrustKey");
+// -- 署名鍵 --
+
+/**
+ * @brief 署名鍵を承認する。
+ * @param fingerprint 鍵のフィンガープリント
+ * @param callback 完了時に呼ばれるコールバック
+ */
+void DBusClient::trustKey(const QString &fingerprint, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "TrustKey");
     msg << fingerprint;
-    QDBusMessage replyMsg = QDBusConnection::systemBus().call(msg, QDBus::Block, kNoTimeout);
-    QDBusReply<bool> reply(replyMsg);
-    if (!reply.isValid()) {
-        m_lastError = reply.error().message();
-        if (m_lastError.isEmpty())
-            m_lastError = reply.error().name();
-        qWarning() << "DBusClient::trustKey:" << m_lastError;
-        return false;
-    }
-    if (!reply.value())
-        m_lastError = reply.error().message();
-    return reply.value();
-}
-
-/**
- * @brief 全リポジトリの非同期リフレッシュを実行する。
- *
- * 完了時にrefreshReposFinishedシグナルを発行する。
- * バックエンドの単一ワーカーで実行されるためタイムアウトは無限 (kNoTimeout)。
- * バックエンドは必ず遅延応答し、プロセス終了時はバスがエラーを返す。
- */
-void DBusClient::refreshReposAsync()
-{
-    if (!isConnected()) {
-        emit refreshReposFinished(false, false);
-        return;
-    }
-
-    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshRepos");
-    QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, kNoTimeout);
-    auto *watcher = new QDBusPendingCallWatcher(pending, this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
-        QDBusPendingReply<bool> reply = *w;
-        bool success = !reply.isError() && reply.value();
-        const bool cancelled = reply.isError()
-            && reply.error().name() == QLatin1String("org.presire.qzypper.Error.Cancelled");
-        if (reply.isError())
-            m_lastError = reply.error().message();
-        emit refreshReposFinished(success, cancelled);
-        w->deleteLater();
+    callAsync(msg, kNoTimeout, [callback, this](bool ok, const QString &errorName,
+                                                const QString &message, const QVariantList &args) {
+        // 元実装はエラーメッセージが空の場合エラー名を表示していた
+        QString effective = message;
+        if (!ok && effective.isEmpty())
+            effective = m_lastError;
+        if (callback)
+            callback(ok, errorName, effective,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
     });
-}
-
-/**
- * @brief 実行中の操作をキャンセルする。
- */
-void DBusClient::cancelOperation()
-{
-    if (!isConnected()) return;
-    m_iface->call(QDBus::NoBlock, "CancelOperation");
 }
 
 // -- 読み取り操作 --
 
 /**
  * @brief リポジトリ一覧を取得する。
- * @return リポジトリ情報のQVariantList
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getRepos()
+void DBusClient::getRepos(ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetRepos");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetRepos");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief パッケージを検索する。
- * @param query 検索クエリ文字列
- * @param flags 検索フラグ (SearchFlagのビットマスク)
- * @return 検索結果のパッケージ情報リスト
+ * @param query 検索クエリ
+ * @param flags 検索フラグ
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::searchPackages(const QString &query, int flags)
+void DBusClient::searchPackages(const QString &query, int flags, ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("SearchPackages", query, flags);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SearchPackages");
+    msg << query << flags;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
- * @brief パッケージの詳細情報を取得する。
+ * @brief 高度なパッケージ検索を実行する (マッチ方式・インストール済み限定・ページング対応)。
+ * @param options オプションマップ (query / flags / match / offset / limit / installedOnly / repoAlias)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ */
+void DBusClient::searchPackagesEx(const QVariantMap &options, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SearchPackagesEx");
+    msg << options;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 分類別のパッケージ一覧を取得する。
+ * @param classification 分類名 (recommended / orphaned / unneeded 等)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ */
+void DBusClient::getPackagesByClassification(const QString &classification, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackagesByClassification");
+    msg << classification;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief パッケージ詳細を取得する。
  * @param name パッケージ名
- * @return パッケージ詳細のQVariantMap
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
  */
-QVariantMap DBusClient::getPackageDetails(const QString &name)
+void DBusClient::getPackageDetails(const QString &name, ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetPackageDetails", name);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    if (reply.arguments().isEmpty())
-        return {};
-
-    QVariantMap result = demarshallMap(reply.arguments().at(0));
-
-    // availableVersions のネストされた配列をデマーシャリング
-    if (result.contains("availableVersions"))
-        result["availableVersions"] = demarshallArrayOfMaps(result.value("availableVersions"));
-
-    return result;
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackageDetails");
+    msg << name;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
- * @brief 指定リポジトリに属するパッケージ一覧を取得する。
+ * @brief 指定リポジトリのパッケージ一覧を取得する。
  * @param repoAlias リポジトリエイリアス
- * @return パッケージ情報のリスト
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getPackagesByRepo(const QString &repoAlias)
+void DBusClient::getPackagesByRepo(const QString &repoAlias, ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetPackagesByRepo", repoAlias);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackagesByRepo");
+    msg << repoAlias;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief パターン一覧を取得する。
- * @return パターン情報のQVariantList
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getPatterns()
+void DBusClient::getPatterns(ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetPatterns");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPatterns");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
- * @brief 指定パターンに属するパッケージ一覧を取得する。
+ * @brief 指定パターンのパッケージ一覧を取得する。
  * @param patternName パターン名
- * @return パッケージ情報のリスト
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getPackagesByPattern(const QString &patternName)
+void DBusClient::getPackagesByPattern(const QString &patternName, ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetPackagesByPattern", patternName);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackagesByPattern");
+    msg << patternName;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief パッチ一覧を取得する。
- * @param category パッチカテゴリ (PatchCategory)
- * @return パッチ情報のリスト
+ * @param category パッチカテゴリ
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getPatches(int category)
+void DBusClient::getPatches(int category, ReplyCallback callback)
 {
-    if (!isConnected()) return {};
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPatches");
+    msg << category;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
 
-    QDBusMessage reply = m_iface->call("GetPatches", category);
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+/**
+ * @brief パッケージロック一覧を取得する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ */
+void DBusClient::getLocks(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetLocks");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief パッケージロックを追加する。
+ * @param lock ロック定義マップ (name / kind / match / repoAlias / arch / version / comment)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ */
+void DBusClient::addLock(const QVariantMap &lock, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AddLock");
+    msg << lock;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief パッケージロックを削除する。
+ * @param lock 削除対象のロック定義マップ (追加時のキーと同じ)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ */
+void DBusClient::removeLock(const QVariantMap &lock, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RemoveLock");
+    msg << lock;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief zypp 操作履歴を取得する。
+ * @param filter フィルタマップ (since / until / limit / offset / actions)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ */
+void DBusClient::getHistory(const QVariantMap &filter, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetHistory");
+    msg << filter;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 現在のソルバー問題のテストケースをファイルへ保存する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に保存パス QString)
+ */
+void DBusClient::createSolverTestcase(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CreateSolverTestcase");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toString() } : QVariantList{});
+    });
 }
 
 /**
  * @brief サービス一覧を取得する。
- * @return サービス情報のQVariantList
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getServices()
+void DBusClient::getServices(ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetServices");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetServices");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 /**
  * @brief ディスク使用量を取得する。
- * @return ディスク使用量情報のリスト
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getDiskUsage()
+void DBusClient::getDiskUsage(ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetDiskUsage");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetDiskUsage");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
-// -- 変更予定パッケージ一覧 --
-
 /**
- * @brief 変更予定のパッケージ一覧を取得する。
- * @return 変更予定パッケージ情報のリスト
+ * @brief 変更予定パッケージ一覧を取得する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
  */
-QVariantList DBusClient::getPendingChanges()
+void DBusClient::getPendingChanges(ReplyCallback callback)
 {
-    if (!isConnected()) return {};
-
-    QDBusMessage reply = m_iface->call("GetPendingChanges");
-    if (reply.type() == QDBusMessage::ErrorMessage) {
-        m_lastError = reply.errorMessage();
-        return {};
-    }
-    return reply.arguments().isEmpty() ? QVariantList{} : demarshallArrayOfMaps(reply.arguments().at(0));
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPendingChanges");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
 }
 
 // -- 状態保存・復元 --
 
 /**
- * @brief パッケージの選択状態を保存する。
+ * @brief 選択状態を保存する (fire-and-forget)。
  */
 void DBusClient::saveState()
 {
-    if (!isConnected()) return;
-    m_iface->call(QDBus::NoBlock, "SaveState");
+    if (!isConnected())
+        return;
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SaveState");
+    QDBusConnection::systemBus().send(msg);
 }
 
 /**
- * @brief 保存されたパッケージ選択状態を復元する。
+ * @brief 選択状態を復元する。
+ * @param callback 完了時に呼ばれるコールバック
  */
-void DBusClient::restoreState()
+void DBusClient::restoreState(ReplyCallback callback)
 {
-    if (!isConnected()) return;
-    m_iface->call(QDBus::NoBlock, "RestoreState");
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RestoreState");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+// -- 操作状態 (Wave1) --
+
+/**
+ * @brief 現在の操作状態 (a{sv}) を非同期で取得する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ */
+void DBusClient::getOperationState(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetOperationState");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
+
+// -- 対話プロンプト (Wave1) --
+
+/**
+ * @brief 対話プロンプトへ応答する。
+ * @param promptId プロンプトID
+ * @param answer 応答マップ (action キーを含む)
+ * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ */
+void DBusClient::answerPrompt(uint promptId, const QVariantMap &answer, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "AnswerPrompt");
+    msg << promptId;
+    msg << answer;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 編集セッションを解放する。
+ * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ */
+void DBusClient::releaseSession(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ReleaseSession");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+
+void DBusClient::onUntrustedKeyDetected(const QVariantMap &keyInfo)
+{
+    emit untrustedKeyDetected(demarshallMap(keyInfo));
+}
+
+void DBusClient::onOperationStateChanged(const QVariantMap &state)
+{
+    emit operationStateChanged(demarshallMap(state));
+}
+
+void DBusClient::onPromptRequested(uint promptId, const QString &promptType, const QVariantMap &data)
+{
+    emit promptRequested(promptId, promptType, demarshallMap(data));
+}
+
+void DBusClient::onScriptOutput(const QVariantMap &line)
+{
+    emit scriptOutput(demarshallMap(line));
+}
+
+/**
+ * @brief ローカルRPMファイルをインストール対象として選択し、ソルバーを実行する。
+ * @param paths RPMファイルの絶対パス一覧
+ * @param callback 完了時に呼ばれるコールバック (args[0] に結果 QVariantMap)
+ */
+void DBusClient::installLocalRpms(const QList<QDBusUnixFileDescriptor> &files,
+                                  const QStringList &fileNames, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "InstallLocalRpms");
+    msg << QVariant::fromValue(files) << fileNames;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief .repo ファイルの内容を解析してリポジトリ一覧を返す (システムは変更しない)。
+ * @param content .repo ファイルの内容
+ * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ */
+void DBusClient::parseRepoFile(const QString &content, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ParseRepoFile");
+    msg << content;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief .repo ファイルの内容からリポジトリを追加する。
+ * @param content .repo ファイルの内容
+ * @param callback 完了時に呼ばれるコールバック (args[0] に結果 QVariantMap)
+ */
+void DBusClient::importRepoFile(const QString &content, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ImportRepoFile");
+    msg << content;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+    });
 }
 
 } // namespace qZypper

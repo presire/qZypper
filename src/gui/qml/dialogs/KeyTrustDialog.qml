@@ -166,18 +166,31 @@ Dialog {
                 text: qsTr("Approve Key")
                 highlighted: true
                 visible: root.trustedMessage === ""
-                enabled: root.currentKey !== null && !PackageController.busy
+                enabled: root.currentKey !== null && !PackageController.busy && !root.awaiting
                 onClicked: {
                     root.trustError = ""
+                    root.awaiting = true
                     var fp = root.currentKey ? String(root.currentKey.fingerprint) : ""
-                    // ポルキット認証入力中は呼び出しがブロックされることがある
-                    if (PackageController.trustKey(fp)) {
-                        root.trustedMessage = qsTr("Key approved. It will be imported when you retry the operation (for example, refresh the repository again).")
-                    } else {
-                        // 失敗時はダイアログと鍵表示を維持し、ビジー解除後に再試行できるようにする
-                        root.trustError = qsTr("The key could not be approved. Wait until the current operation has finished and try again, or reject the key.")
-                    }
+                    // ポルキット認証ダイアログは非同期呼び出し中に表示される
+                    PackageController.trustKey(fp)
                 }
+            }
+        }
+    }
+
+    property bool awaiting: false   // 鍵承認要求の応答待ち
+
+    Connections {
+        target: PackageController
+        function onKeyTrustFinished(success) {
+            if (!root.awaiting)
+                return
+            root.awaiting = false
+            if (success) {
+                root.trustedMessage = qsTr("Key approved. It will be imported when you retry the operation (for example, refresh the repository again).")
+            } else {
+                // 失敗時はダイアログと鍵表示を維持し、ビジー解除後に再試行できるようにする
+                root.trustError = qsTr("The key could not be approved. Wait until the current operation has finished and try again, or reject the key.")
             }
         }
     }
@@ -185,6 +198,7 @@ Dialog {
     onOpened: rejectButton.forceActiveFocus()
 
     onClosed: {
+        root.awaiting = false
         root.currentKey = null
         root.trustedMessage = ""
         root.trustError = ""

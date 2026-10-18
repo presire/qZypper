@@ -96,8 +96,6 @@ void InstallReceiver::start(zypp::Resolvable::constPtr resolvable)
  */
 bool InstallReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable*/)
 {
-    if (m_cancelFlag.load()) return false;
-
     if (m_callback) {
         CommitProgressInfo info;
         info.packageName     = m_currentPkg;
@@ -188,8 +186,6 @@ void RemoveReceiver::start(zypp::Resolvable::constPtr resolvable)
  */
 bool RemoveReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable*/)
 {
-    if (m_cancelFlag.load()) return false;
-
     if (m_callback) {
         CommitProgressInfo info;
         info.packageName     = m_currentPkg;
@@ -526,6 +522,13 @@ void KeyRingReceiver::approveFingerprint(const std::string &normalizedFingerprin
     m_approved.insert(normalizedFingerprint);
 }
 
+/** @brief セッション間で署名鍵の承認を引き継がない。 */
+void KeyRingReceiver::clearApprovals()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_approved.clear();
+}
+
 /**
  * @brief 未信頼鍵通知コールバックを設定する (mutex 保護)。
  * @param cb 通知コールバック
@@ -534,6 +537,26 @@ void KeyRingReceiver::setUntrustedKeyCallback(UntrustedKeyCallbackFn cb)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_untrustedCb = std::move(cb);
+}
+
+/**
+ * @brief 未知鍵の in-flight 信頼プロンプトコールバックを設定する (mutex 保護)。
+ * @param cb 回答コールバック
+ */
+void KeyRingReceiver::setKeyTrustPromptCallback(KeyTrustPromptFn cb)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_keyTrustPrompt = std::move(cb);
+}
+
+/**
+ * @brief 未署名/検証失敗ファイルの in-flight プロンプトコールバックを設定する (mutex 保護)。
+ * @param cb 回答コールバック
+ */
+void KeyRingReceiver::setUnsignedFilePromptCallback(UnsignedFilePromptFn cb)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_unsignedPrompt = std::move(cb);
 }
 
 /**
@@ -554,6 +577,7 @@ KeyRingReceiver::KeyTrust KeyRingReceiver::askUserToAcceptKey(
     const std::string fp = normalizeFingerprint(rawFp);
 
     UntrustedKeyCallbackFn cb;
+    KeyTrustPromptFn prompt;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!fp.empty()) {
@@ -564,16 +588,40 @@ KeyRingReceiver::KeyTrust KeyRingReceiver::askUserToAcceptKey(
             }
         }
         cb = m_untrustedCb;
+        prompt = m_keyTrustPrompt;
+    }
+
+    KeyTrustAnswerInfo answerInfo;
+    answerInfo.fingerprint = fp.empty() ? rawFp : fp;
+    answerInfo.id = key.id();
+    answerInfo.name = key.name();
+    answerInfo.created = static_cast<std::int64_t>(key.created());
+    answerInfo.expires = static_cast<std::int64_t>(key.expires());
+    answerInfo.repoAlias = keycontext.repoInfo().alias();
+    answerInfo.repoName = keycontext.repoInfo().name();
+
+    // in-flight プロンプトが設定されていれば、その場で回答を待つ。
+    // 未回答・タイムアウト・不正回答はすべて拒否 (fail-closed)。
+    if (prompt) {
+        switch (prompt(answerInfo).value_or(KeyTrustDecision::Reject)) {
+        case KeyTrustDecision::TrustTemporarily:
+            return KEY_TRUST_TEMPORARILY;
+        case KeyTrustDecision::TrustPermanently:
+            return KEY_TRUST_AND_IMPORT;
+        case KeyTrustDecision::Reject:
+        default:
+            return KEY_DONT_TRUST;
+        }
     }
 
     UntrustedKeyInfo info;
-    info.fingerprint = fp.empty() ? rawFp : fp;
-    info.id = key.id();
-    info.name = key.name();
-    info.created = static_cast<std::int64_t>(key.created());
-    info.expires = static_cast<std::int64_t>(key.expires());
-    info.repoAlias = keycontext.repoInfo().alias();
-    info.repoName = keycontext.repoInfo().name();
+    info.fingerprint = answerInfo.fingerprint;
+    info.id = answerInfo.id;
+    info.name = answerInfo.name;
+    info.created = answerInfo.created;
+    info.expires = answerInfo.expires;
+    info.repoAlias = answerInfo.repoAlias;
+    info.repoName = answerInfo.repoName;
 
     qWarning("Refusing to trust GPG key id=%s fingerprint=%s repo=%s (no explicit approval)",
              info.id.c_str(), info.fingerprint.c_str(), info.repoAlias.c_str());
@@ -595,6 +643,18 @@ bool KeyRingReceiver::askUserToAcceptUnsignedFile(
     const std::string &file,
     const zypp::KeyContext &/*keycontext*/)
 {
+    UnsignedFilePromptFn prompt;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        prompt = m_unsignedPrompt;
+    }
+    if (prompt) {
+        if (prompt(file, KeyTrustPromptKind::GpgUnsigned).value_or(false)) {
+            qWarning("User accepted unsigned file: %s", file.c_str());
+            return true;
+        }
+        return false;
+    }
     qWarning("Refusing unsigned file: %s", file.c_str());
     return false;
 }
@@ -611,6 +671,18 @@ bool KeyRingReceiver::askUserToAcceptUnknownKey(
     const std::string &id,
     const zypp::KeyContext &/*keycontext*/)
 {
+    UnsignedFilePromptFn prompt;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        prompt = m_unsignedPrompt;
+    }
+    if (prompt) {
+        if (prompt(file, KeyTrustPromptKind::GpgUnsigned).value_or(false)) {
+            qWarning("User accepted unknown key id=%s for file: %s", id.c_str(), file.c_str());
+            return true;
+        }
+        return false;
+    }
     qWarning("Refusing unknown key id=%s for file: %s", id.c_str(), file.c_str());
     return false;
 }
@@ -627,6 +699,19 @@ bool KeyRingReceiver::askUserToAcceptVerificationFailed(
     const zypp::PublicKey &key,
     const zypp::KeyContext &/*keycontext*/)
 {
+    UnsignedFilePromptFn prompt;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        prompt = m_unsignedPrompt;
+    }
+    if (prompt) {
+        if (prompt(file, KeyTrustPromptKind::GpgVerifyFailed).value_or(false)) {
+            qWarning("User accepted failed verification: %s key id=%s",
+                     file.c_str(), key.id().c_str());
+            return true;
+        }
+        return false;
+    }
     qWarning("Refusing file with failed verification: %s key id=%s",
              file.c_str(), key.id().c_str());
     return false;

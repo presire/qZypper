@@ -12,13 +12,125 @@ Dialog {
 
     property var summaryModel: []
     property var diskUsageModel: []
+    // バックエンドの GetTransactionSummary 結果 (件数 + 危険な変更の一覧)
+    property var transactionSummary: ({})
+    // 概要の取得待ち (取得完了まで Apply 不可)
+    property bool summaryPending: false
+
+    readonly property bool summaryAvailable: transactionSummary.installCount !== undefined
+    readonly property int removeCount: transactionSummary.removeCount || 0
+    readonly property int downgradeCount: transactionSummary.downgradeCount || 0
+    readonly property int vendorChangeCount: transactionSummary.vendorChangeCount || 0
+    readonly property int archChangeCount: transactionSummary.archChangeCount || 0
+    // 概要が取得できない場合も危険扱いとし、明示承認を求める (fail closed)
+    readonly property bool hasRiskyChanges: !summaryPending
+                                            && (!summaryAvailable
+                                                || removeCount + downgradeCount + vendorChangeCount + archChangeCount > 0)
+    readonly property var riskyEntries: buildRiskyEntries(transactionSummary)
 
     width: Math.min(parent.width * 0.85, 750)
-    height: Math.min(parent.height * 0.8, 600)
+    height: Math.min(parent.height * 0.85, 680)
+
+    // 開くたびに承認チェックをリセットする (前回の承認を持ち越さない)
+    onAboutToShow: riskAckCheck.checked = false
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 8
+
+        // ===== 件数サマリ =====
+        Label {
+            Layout.fillWidth: true
+            wrapMode: Text.WordWrap
+            visible: confirmDialog.transactionSummary.installCount !== undefined
+            text: qsTr("Install: %1, Update: %2, Remove: %3, Downgrade: %4, Vendor change: %5, Architecture change: %6")
+                  .arg(confirmDialog.transactionSummary.installCount || 0)
+                  .arg(confirmDialog.transactionSummary.updateCount || 0)
+                  .arg(confirmDialog.removeCount)
+                  .arg(confirmDialog.downgradeCount)
+                  .arg(confirmDialog.vendorChangeCount)
+                  .arg(confirmDialog.archChangeCount)
+                  + "\n"
+                  + qsTr("Download size: %1, Installed size change: %2")
+                  .arg(formatBytes(confirmDialog.transactionSummary.downloadSize || 0))
+                  .arg(formatSignedBytes(confirmDialog.transactionSummary.installedSizeChange || 0))
+        }
+
+        // ===== 危険な変更の警告 (削除 / ダウングレード / ベンダー変更 / アーキテクチャ変更) =====
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: riskColumn.implicitHeight + 16
+            visible: confirmDialog.hasRiskyChanges
+            color: Qt.rgba(0.96, 0.26, 0.21, Theme.darkMode ? 0.18 : 0.10)
+            border.color: "#F44336"
+            radius: 4
+
+            ColumnLayout {
+                id: riskColumn
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 6
+
+                Label {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    font.bold: true
+                    color: "#F44336"
+                    text: confirmDialog.summaryAvailable
+                          ? qsTr("Warning: this transaction contains potentially dangerous changes. Review them carefully.")
+                          : qsTr("Warning: the transaction summary could not be retrieved. Removals, downgrades or vendor changes cannot be ruled out.")
+                }
+
+                ListView {
+                    id: riskList
+                    visible: count > 0
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(contentHeight, 140)
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: confirmDialog.riskyEntries
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.List
+                    Accessible.name: qsTr("Dangerous changes")
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    delegate: RowLayout {
+                        width: riskList.width - (riskList.ScrollBar.vertical.visible ? riskList.ScrollBar.vertical.width + 4 : 0)
+                        spacing: 8
+
+                        required property var modelData
+
+                        Label {
+                            text: modelData.kindText
+                            font.bold: true
+                            Layout.preferredWidth: 150
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            text: modelData.name || ""
+                            textFormat: Text.PlainText
+                            Layout.preferredWidth: 180
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            text: modelData.detail
+                            textFormat: Text.PlainText
+                            color: palette.placeholderText
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                }
+
+                CheckBox {
+                    id: riskAckCheck
+                    text: qsTr("I understand the risks of these changes")
+                    activeFocusOnTab: true
+                    Accessible.name: text
+                    Accessible.description: qsTr("Required before dangerous changes can be applied")
+                }
+            }
+        }
 
         // ===== 変更予定パッケージ一覧 =====
         Label {
@@ -201,14 +313,51 @@ Dialog {
 
             Button {
                 text: qsTr("Cancel")
+                activeFocusOnTab: true
+                Accessible.name: text
                 onClicked: confirmDialog.reject()
             }
             Button {
                 text: qsTr("Apply")
                 highlighted: true
+                enabled: !confirmDialog.summaryPending
+                         && (!confirmDialog.hasRiskyChanges || riskAckCheck.checked)
+                activeFocusOnTab: true
+                Accessible.name: text
+                Accessible.description: confirmDialog.hasRiskyChanges && !riskAckCheck.checked
+                                        ? qsTr("Confirm the dangerous changes first") : ""
                 onClicked: confirmDialog.accept()
             }
         }
+    }
+
+    function versionDetail(e) {
+        return (e.oldVersion || "?") + " \u2192 " + (e.newVersion || "?")
+    }
+
+    // summary の各危険リストを表示用の一覧へ平坦化する
+    function buildRiskyEntries(s) {
+        var out = []
+        var i
+        var list = s.removals || []
+        for (i = 0; i < list.length; ++i)
+            out.push({ kindText: qsTr("Remove"), name: list[i].name, detail: list[i].oldVersion || "" })
+        list = s.downgrades || []
+        for (i = 0; i < list.length; ++i)
+            out.push({ kindText: qsTr("Downgrade"), name: list[i].name, detail: versionDetail(list[i]) })
+        list = s.vendorChanges || []
+        for (i = 0; i < list.length; ++i)
+            out.push({ kindText: qsTr("Vendor change"), name: list[i].name,
+                       detail: (list[i].oldVendor || "?") + " \u2192 " + (list[i].newVendor || "?") })
+        list = s.archChanges || []
+        for (i = 0; i < list.length; ++i)
+            out.push({ kindText: qsTr("Architecture change"), name: list[i].name,
+                       detail: (list[i].oldArch || "?") + " \u2192 " + (list[i].newArch || "?") })
+        return out
+    }
+
+    function formatSignedBytes(bytes) {
+        return (bytes < 0 ? "-" : "+") + formatBytes(Math.abs(bytes))
     }
 
     function formatBytes(bytes) {

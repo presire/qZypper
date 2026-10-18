@@ -3,6 +3,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import org.presire.qzypper.gui
 
 Dialog {
     id: root
@@ -24,7 +25,7 @@ Dialog {
     // http/https スキームのリンクのみ外部開きする (javascript:, file: 等は無視)
     function openSafeUrl(link) {
         if (/^https?:\/\/\S/i.test(String(link).trim()))
-            Qt.openUrlExternally(link)
+            PackageController.openExternalUrl(link)
     }
 
     ScrollView {
