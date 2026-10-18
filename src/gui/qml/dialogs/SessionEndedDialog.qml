@@ -37,7 +37,8 @@ Dialog {
                 text: qsTr("Start Session")
                 highlighted: true
                 onClicked: {
-                    sessionEndedDialog.close()
+                    // 開始に失敗した場合に再試行できるよう、このダイアログは閉じない。
+                    // 接続に成功した時点で Main.qml が閉じる
                     sessionEndedDialog.startSessionRequested()
                 }
             }

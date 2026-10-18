@@ -19,6 +19,7 @@ ApplicationWindow {
     // 初回起動時はシステム設定に従い、以降はユーザ選択を永続化
     property bool darkMode: themeSettings.darkMode
     property bool applyPendingCommit: false   // Apply Changes 起点の resolve かを追跡 (非同期チェーン用)
+    property bool sessionWasConnected: false  // 接続済みだったか (切断時の再開始ダイアログ表示判定用)
     property bool quitting: false             // 終了時に releaseSession の応答を待っているか
     readonly property int patchesTabIndex: 4
 
@@ -73,6 +74,8 @@ ApplicationWindow {
         onApplyChangesRequested: root.applyChanges()
         onManageReposRequested: repoDrawer.open()
         onRefreshReposRequested: {
+            if (!PackageController.connected || PackageController.busy)
+                return
             refreshOverlay.open()
             PackageController.refreshReposAsync()
         }
@@ -110,6 +113,9 @@ ApplicationWindow {
                 Dialogs.RepoManagerDrawerContent {
                     onCloseRequested: repoDrawer.close()
                     onRefreshAllRequested: {
+                        // 未接続または処理中は要求が即時に破棄され refreshFinished が届かないため、オーバーレイを開かない
+                        if (!PackageController.connected || PackageController.busy)
+                            return
                         refreshOverlay.open()
                         PackageController.refreshReposAsync()
                     }
@@ -698,9 +704,30 @@ ApplicationWindow {
         }
 
         function onConnectedChanged() {
+            if (PackageController.connected) {
+                root.sessionWasConnected = true
+                // 自動再接続できた場合は再開始ダイアログを閉じる
+                sessionEndedDialog.close()
+                return
+            }
             // 切断時は依存解決の応答が破棄され resolveFinished が届かないため、保留中の適用フラグを解除する
-            if (!PackageController.connected)
-                root.applyPendingCommit = false
+            root.applyPendingCommit = false
+            if (!root.sessionWasConnected)
+                return
+            root.sessionWasConnected = false
+            if (root.quitting)
+                return
+            // 切断時は実行中のリフレッシュ/適用の完了通知が届かないため、進捗モーダルを閉じて操作を戻す
+            const commitInterrupted = commitProgressDialog.visible
+            refreshOverlay.close()
+            commitProgressDialog.close()
+            if (commitInterrupted) {
+                root.showInfo(qsTr("Backend disconnected"),
+                              qsTr("The connection to the backend was lost while applying changes. The result is unknown. Start a new session and check the package state."))
+            }
+            // アイドル終了などでバックエンドが消えた場合、ユーザー操作で新しいセッションを開始できるようにする
+            if (!startupDialog.visible)
+                sessionEndedDialog.open()
         }
 
         function onBusyChanged() {

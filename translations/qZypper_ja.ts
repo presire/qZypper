@@ -1017,7 +1017,7 @@
         <translation>qZypper - ソフトウェア管理</translation>
     </message>
     <message>
-        <location line="+362"/>
+        <location line="+368"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
@@ -1053,13 +1053,13 @@
     </message>
     <message>
         <location line="+2"/>
-        <location line="+587"/>
+        <location line="+608"/>
         <location line="+4"/>
         <source>Patches</source>
         <translation>パッチ</translation>
     </message>
     <message>
-        <location line="-589"/>
+        <location line="-610"/>
         <source>Patches view</source>
         <translation>パッチ表示</translation>
     </message>
@@ -1174,7 +1174,17 @@
         <translation>パッケージデータベースが外部で変更されたため、再読み込みしました</translation>
     </message>
     <message>
-        <location line="+112"/>
+        <location line="+62"/>
+        <source>Backend disconnected</source>
+        <translation>バックエンドから切断されました</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>The connection to the backend was lost while applying changes. The result is unknown. Start a new session and check the package state.</source>
+        <translation>変更の適用中にバックエンドとの接続が失われました。結果は不明です。新しいセッションを開始して、パッケージの状態を確認してください。</translation>
+    </message>
+    <message>
+        <location line="+70"/>
         <source>Distribution Upgrade</source>
         <translation>ディストリビューションアップグレード</translation>
     </message>
@@ -1204,7 +1214,7 @@
         <translation>システムは整合しています。変更は不要です。</translation>
     </message>
     <message>
-        <location line="-401"/>
+        <location line="-422"/>
         <source>Apply</source>
         <translation>適用</translation>
     </message>
@@ -1224,7 +1234,7 @@
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="+186"/>
+        <location line="+207"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -2394,7 +2404,7 @@ Expires: %5</source>
         <translation>セッションを開始</translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location line="+9"/>
         <source>Quit</source>
         <translation>終了</translation>
     </message>
