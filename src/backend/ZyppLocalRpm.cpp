@@ -169,8 +169,12 @@ ZyppManager::LocalRpmInstallResult ZyppManager::installLocalRpms(std::vector<Loc
 
     for (const LocalRpmFile &file : files) {
         const std::string dest = dir + "/" + file.filename;
-        if (!copyLocalRpmTo(file, dest, kMaxLocalRpmBytes, ioError)) {
-            m_lastError = "Failed to stage '" + file.path + "': " + ioError;
+        if (!copyLocalRpmTo(file, dest, kMaxLocalRpmBytes, ioError, &m_cancelRequested,
+                            [this] { m_operation.heartbeat(); })) {
+            if (m_cancelRequested.load())
+                markCancelled();
+            else
+                m_lastError = "Failed to stage '" + file.path + "': " + ioError;
             cleanupLocalRpmsLocked();
             return result;
         }

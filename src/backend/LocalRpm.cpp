@@ -237,10 +237,13 @@ bool adoptLocalRpmFd(int fd, const std::string &fileName, std::uintmax_t maxByte
  * @param destPath 宛先パス
  * @param maxBytes 許可最大サイズ
  * @param err 失敗時の理由
+ * @param cancel 取消し要求フラグ (nullptr なら確認しない)
+ * @param heartbeat 読み込みごとの進捗通知 (空なら呼ばない)
  * @return 成功時 true
  */
 bool copyLocalRpmTo(const LocalRpmFile &src, const std::string &destPath,
-                    std::uintmax_t maxBytes, std::string &err)
+                    std::uintmax_t maxBytes, std::string &err,
+                    const std::atomic<bool> *cancel, const std::function<void()> &heartbeat)
 {
     if (src.fd < 0) {
         err = "source file is not open";
@@ -259,6 +262,15 @@ bool copyLocalRpmTo(const LocalRpmFile &src, const std::string &destPath,
     std::vector<char> buffer(1 << 20);
     std::uintmax_t total = 0;
     for (;;) {
+        // 取消しは読み込みの合間にだけ検出できる。FUSE 等で read() 自体が
+        // ブロックしている間は中断できず、read() が戻った時点で取消しを反映する。
+        if (cancel && cancel->load()) {
+            err = kLocalRpmCopyCancelled;
+            ::close(dst);
+            return false;
+        }
+        if (heartbeat)
+            heartbeat();
         const ssize_t readBytes = ::read(src.fd, buffer.data(), buffer.size());
         if (readBytes < 0) {
             if (errno == EINTR)

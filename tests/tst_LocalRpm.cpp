@@ -25,6 +25,7 @@ private slots:
     void enforcesSizeLimit();
     void rejectsNonRegularFile();
     void copiesToDestination();
+    void copyStopsWhenCancelled();
     void adoptsRegularFd();
     void adoptRejectsBadNames_data();
     void adoptRejectsBadNames();
@@ -163,6 +164,40 @@ void LocalRpmTest::copiesToDestination()
     QFile copy(destPath);
     QVERIFY(copy.open(QIODevice::ReadOnly));
     QCOMPARE(copy.readAll(), payload);
+}
+
+void LocalRpmTest::copyStopsWhenCancelled()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString srcPath = dir.filePath(QStringLiteral("src.rpm"));
+    QFile src(srcPath);
+    QVERIFY(src.open(QIODevice::WriteOnly));
+    src.write(QByteArray(3 * 1024 * 1024, 'c'));
+    src.close();
+
+    LocalRpmFile staged;
+    std::string err;
+    QVERIFY(openLocalRpm(srcPath.toStdString(), ::getuid(), kMaxLocalRpmBytes, staged, err));
+
+    // 1回目の読み込み後に取消しを要求し、残りを読まずに止まることを確認する
+    std::atomic<bool> cancel{false};
+    int beats = 0;
+    const QString destPath = dir.filePath(QStringLiteral("copy.rpm"));
+    QVERIFY(!copyLocalRpmTo(staged, destPath.toStdString(), kMaxLocalRpmBytes, err, &cancel,
+                            [&] { if (++beats == 2) cancel = true; }));
+    QCOMPARE(err, std::string(kLocalRpmCopyCancelled));
+    QCOMPARE(beats, 2);
+    QVERIFY(QFileInfo(destPath).size() < 3 * 1024 * 1024);
+
+    // 取消し要求前なら最後までコピーし、読み込みごとに heartbeat を呼ぶ
+    cancel = false;
+    beats = 0;
+    const QString fullPath = dir.filePath(QStringLiteral("full.rpm"));
+    QVERIFY2(copyLocalRpmTo(staged, fullPath.toStdString(), kMaxLocalRpmBytes, err, &cancel,
+                            [&] { ++beats; }), err.c_str());
+    QCOMPARE(QFileInfo(fullPath).size(), qint64(3 * 1024 * 1024));
+    QVERIFY(beats >= 4);
 }
 
 void LocalRpmTest::adoptsRegularFd()

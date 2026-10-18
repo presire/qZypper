@@ -1,8 +1,10 @@
 #ifndef QZYPPER_BACKEND_LOCALRPM_H
 #define QZYPPER_BACKEND_LOCALRPM_H
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <sys/types.h>
 
@@ -17,6 +19,11 @@ constexpr std::uintmax_t kMaxLocalRpmBytes = static_cast<std::uintmax_t>(2) * 10
  * @brief 1 回の要求で受け付ける RPM 数の上限。
  */
 constexpr std::size_t kMaxLocalRpmCount = 64;
+
+/**
+ * @brief 取消しでコピーを中断したときに copyLocalRpmTo が返す理由。
+ */
+constexpr const char kLocalRpmCopyCancelled[] = "copy cancelled";
 
 /**
  * @brief 検証済みローカル RPM ファイル。
@@ -93,11 +100,15 @@ bool adoptLocalRpmFd(int fd, const std::string &fileName, std::uintmax_t maxByte
  * @param src コピー元 (openLocalRpm で検証済み)
  * @param destPath 宛先パス (O_EXCL で新規作成)
  * @param maxBytes 許可最大サイズ
- * @param err 失敗時の理由
+ * @param err 失敗時の理由 (取消し時は kLocalRpmCopyCancelled)
+ * @param cancel 取消し要求フラグ (nullptr なら確認しない)
+ * @param heartbeat 読み込みごとの進捗通知 (空なら呼ばない)
  * @return 成功時 true
  */
 bool copyLocalRpmTo(const LocalRpmFile &src, const std::string &destPath,
-                    std::uintmax_t maxBytes, std::string &err);
+                    std::uintmax_t maxBytes, std::string &err,
+                    const std::atomic<bool> *cancel = nullptr,
+                    const std::function<void()> &heartbeat = {});
 
 } // namespace qZypper
 

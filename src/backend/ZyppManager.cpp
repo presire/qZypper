@@ -82,12 +82,13 @@ bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    // 前回の操作のエラーを持ち越さない (初期化済みで即時に返す場合も同様)。
+    // リポジトリ単位の失敗は致命的ではない (オフライン等) ため初期化自体は成功させ、
+    // 警告として m_lastError に集約する。
+    m_lastError.clear();
     if (m_initialized)
         return true;
 
-    // 前回の操作のエラーを持ち越さない。リポジトリ単位の失敗は致命的ではない
-    // (オフライン等) ため初期化自体は成功させ、警告として m_lastError に集約する。
-    m_lastError.clear();
     std::vector<std::string> repoWarnings;
 
     try {
@@ -175,6 +176,11 @@ bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
         throw;
     } catch (const zypp::Exception& e) {
         m_lastError = "Initialization failed: " + e.msg();
+        return false;
+    } catch (const std::exception& e) {
+        // 半端な状態の解放は呼び出し側が shutdown() で行う (m_mutex は非再帰のため
+        // ロック中にここから shutdown() を呼ばない)。
+        m_lastError = std::string("Initialization failed: ") + e.what();
         return false;
     }
 }
@@ -1184,6 +1190,7 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
         int current = 0;
         bool skippedViolation = false;
         std::string skippedDetail;
+        std::vector<std::string> failedDetail;
 
         for (const auto& repo : repos) {
             if (m_cancelRequested) {
@@ -1222,17 +1229,40 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
             if (progressCallback)
                 progressCallback(repo.alias(), (current * 100) / total);
 
-            m_repoManager->refreshMetadata(repo, zypp::RepoManager::RefreshForced, cancelCheck);
-            m_repoManager->buildCache(repo, zypp::RepoManager::BuildIfNeeded, cancelCheck);
-            m_repoManager->loadFromCache(repo, cancelCheck);
+            // 1件の失敗 (到達不能・メタデータ不正等) で残りの更新を止めない。
+            // 取消しによる中断 (AbortRequestException) は外側で処理する。
+            try {
+                m_repoManager->refreshMetadata(repo, zypp::RepoManager::RefreshForced, cancelCheck);
+                m_repoManager->buildCache(repo, zypp::RepoManager::BuildIfNeeded, cancelCheck);
+                m_repoManager->loadFromCache(repo, cancelCheck);
+            } catch (const zypp::AbortRequestException&) {
+                if (m_cancelRequested.load())
+                    throw;
+                failedDetail.push_back(repo.alias() + ": operation aborted");
+            } catch (const zypp::Exception& e) {
+                failedDetail.push_back(repo.alias() + ": " + e.msg());
+                qCWarning(lcZypp) << "Failed to refresh repo" << QString::fromStdString(repo.alias())
+                                  << ":" << QString::fromStdString(e.msg());
+            }
             ++current;
         }
 
         if (progressCallback)
             progressCallback("", 100);
 
+        std::string error;
+        if (!failedDetail.empty()) {
+            error = "Failed to refresh repositories: ";
+            for (std::size_t i = 0; i < failedDetail.size(); ++i)
+                error += (i ? "; " : "") + failedDetail[i];
+        }
         if (skippedViolation) {
-            m_lastError = "Skipped repositories with policy violations: " + skippedDetail;
+            if (!error.empty())
+                error += "; ";
+            error += "Skipped repositories with policy violations: " + skippedDetail;
+        }
+        if (!error.empty()) {
+            m_lastError = error;
             return false;
         }
 
@@ -2578,9 +2608,12 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
                 : std::string("Media change was aborted by the user");
             m_lastError = result.errorMessage;
         }
-        // ダウンロード中の取消し等、利用者の中止要求による例外も cancelled として扱う
-        else if (m_cancelRequested.load()
-                 || dynamic_cast<const zypp::UserRequestException *>(&e) != nullptr) {
+        // 取消し要求に起因する中断例外だけを cancelled とする。取消し要求後でも無関係な
+        // 例外は失敗のまま、取消し要求なしの ABORT (problem() の中止等) も失敗とする。
+        else if (classifyCommitException(
+                     m_cancelRequested.load(),
+                     dynamic_cast<const zypp::UserRequestException *>(&e) != nullptr)
+                 == CommitOutcome::Cancelled) {
             result.classification.outcome = CommitOutcome::Cancelled;
             result.errorMessage = "Commit was cancelled by the user";
             m_lastError = result.errorMessage;

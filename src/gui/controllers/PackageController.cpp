@@ -12,14 +12,36 @@
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QThread>
+#include <memory>
 #include <utility>
 #include "PackageController.h"
 #include "DBusClient.h"
 #include "PackageListModel.h"
 #include "PackageFilterProxyModel.h"
+#include "RepoFilePreview.h"
 
 
 namespace qZypper {
+
+namespace {
+
+/**
+ * @brief 変更予定の再取得後に通知する操作結果を返す。
+ *
+ * 再取得中にバックエンドから切断した場合は、旧操作の結果を成功として通知しないよう
+ * success=false / backendCrashed=true に変換する (QML 側は backendCrashed で処理を中止する)。
+ */
+QVariantMap resultAfterPendingRefresh(QVariantMap result, bool refreshed, bool connected)
+{
+    if (!refreshed && !connected) {
+        result[QStringLiteral("success")] = false;
+        result[QStringLiteral("backendCrashed")] = true;
+    }
+    return result;
+}
+
+} // namespace
 
 /**
  * @brief PackageController のコンストラクタ。
@@ -82,6 +104,9 @@ PackageController::PackageController(QObject *parent)
         m_initialized = true;
         emit connectedChanged();
         emit initializedChanged();
+        // 旧バックエンドで実行中だった操作は結果を受け取れないため、ビジー状態と改訂番号を初期化する
+        setBusy(false);
+        m_commitRevision = 0;
         setStatusMessage(tr("Backend reconnected"));
         // 新しいバックエンドは prompt ID を 1 から再利用するため、旧プロンプトは破棄する
         clearPrompts();
@@ -92,6 +117,11 @@ PackageController::PackageController(QObject *parent)
             this, [this]() {
         // 切断したバックエンドのプロンプトへの回答が別プロセスの同一IDへ届かないよう全破棄
         clearPrompts();
+        // バックエンド消滅後は実行中操作の応答が来ないため、ビジー状態と改訂番号を解除する
+        setBusy(false);
+        m_commitRevision = 0;
+        // 旧セッションで開始した .repo プレビューの結果を、再接続後に表示しない
+        ++m_repoPreviewRequest;
         if (m_connected) {
             m_connected = false;
             m_initialized = false;
@@ -99,6 +129,9 @@ PackageController::PackageController(QObject *parent)
             emit initializedChanged();
             setStatusMessage(tr("Backend disconnected"));
         }
+        // 破棄された GetPendingChanges の応答では取得中フラグが解除されないため、
+        // 未接続として取得状態とキャッシュを初期化し、待機者へ失敗を通知する
+        refreshPendingChanges();
     });
 }
 
@@ -569,7 +602,9 @@ void PackageController::distUpgrade(bool allowVendorChange)
 
         setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit distUpgradeFinished(result); });
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            emit distUpgradeFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -587,16 +622,19 @@ void PackageController::verifySystem()
     setStatusMessage(tr("Verifying system integrity..."));
 
     m_dbus->verifySystem([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
-        setBusy(false);
         if (!ok) {
+            setBusy(false);
             emit errorOccurred(errorText.isEmpty() ? tr("Verify system failed") : errorText);
             return;
         }
         const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
         refreshPackageStatuses(true);
         setStatusMessage(tr("System verification completed"));
-        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit verifyFinished(result); });
+        // 変更予定一覧の更新完了後に通知し、その完了を待ってビジーを解除する (途中で解除しないため)
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            setBusy(false);
+            emit verifyFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -652,7 +690,9 @@ void PackageController::selectAllNeededPatches(bool securityOnly, bool includeOp
         cacheTransactionSummary(result);
         loadPatches(m_patchCategory);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit selectPatchesFinished(result); });
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            emit selectPatchesFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -945,7 +985,7 @@ void PackageController::updateAllPackages()
     setBusy(true);
     setStatusMessage(tr("Updating all packages..."));
 
-    m_dbus->updateAllPackages([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+    m_dbus->updateAllPackages([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
         QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
 
         // バックエンドがクラッシュした場合の復旧
@@ -965,6 +1005,20 @@ void PackageController::updateAllPackages()
             return;
         }
 
+        // D-Bus 呼び出し自体が拒否/失敗した場合は依存関係の問題として扱わない
+        if (!ok) {
+            const QString message = errorText.isEmpty() ? tr("Update packages failed") : errorText;
+            emit errorOccurred(message);
+            result[QStringLiteral("success")] = false;
+            result[QStringLiteral("busError")] = true;
+            setStatusMessage(message);
+            setBusy(false);
+            refreshPendingChangesThen([this, result](bool refreshed) {
+                emit updateAllFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+            });
+            return;
+        }
+
         refreshPackageStatuses(true);
         cacheTransactionSummary(result);
 
@@ -975,7 +1029,9 @@ void PackageController::updateAllPackages()
 
         setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit updateAllFinished(result); });
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            emit updateAllFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -1020,7 +1076,7 @@ void PackageController::resolveDependencies()
     setBusy(true);
     setStatusMessage(tr("Resolving dependencies..."));
 
-    m_dbus->resolveDependencies([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+    m_dbus->resolveDependencies([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
         QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
 
         // バックエンドがクラッシュした場合の復旧
@@ -1040,6 +1096,20 @@ void PackageController::resolveDependencies()
             return;
         }
 
+        // D-Bus 呼び出し自体が拒否/失敗した場合は依存関係の問題として扱わない
+        if (!ok) {
+            const QString message = errorText.isEmpty() ? tr("Resolve dependencies failed") : errorText;
+            emit errorOccurred(message);
+            result[QStringLiteral("success")] = false;
+            result[QStringLiteral("busError")] = true;
+            setStatusMessage(message);
+            setBusy(false);
+            refreshPendingChangesThen([this, result](bool refreshed) {
+                emit resolveFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+            });
+            return;
+        }
+
         if (result[QStringLiteral("success")].toBool()) {
             setStatusMessage(tr("Dependencies resolved"));
             refreshPackageStatuses();
@@ -1048,7 +1118,9 @@ void PackageController::resolveDependencies()
         }
         setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit resolveFinished(result); });
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            emit resolveFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -1898,6 +1970,7 @@ void PackageController::releaseSession()
         m_initialized = false;
         m_prompts.clear();
         m_commitRevision = 0;
+        ++m_repoPreviewRequest;
         emit connectedChanged();
         emit initializedChanged();
         emit pendingPromptsChanged();
@@ -1975,7 +2048,9 @@ void PackageController::installLocalRpms(const QVariantList &fileUrls)
 
         setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool) { emit localRpmsFinished(result); });
+        refreshPendingChangesThen([this, result](bool refreshed) {
+            emit localRpmsFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        });
     });
 }
 
@@ -1991,19 +2066,54 @@ void PackageController::previewRepoFile(const QUrl &fileUrl)
     if (!m_connected) return;
 
     constexpr qint64 kMaxRepoFileSize = 64 * 1024;
-    QFile file(fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString());
-    if (!file.open(QIODevice::ReadOnly)) {
-        emit repoFilePreviewReady(false, {}, QString(), tr("Cannot open file: %1").arg(file.errorString()));
-        return;
-    }
-    if (file.size() > kMaxRepoFileSize) {
-        emit repoFilePreviewReady(false, {}, QString(), tr("The file is too large (maximum 64 KiB)"));
-        return;
-    }
-    const QString content = QString::fromUtf8(file.readAll());
+    const QString path = fileUrl.isLocalFile() ? fileUrl.toLocalFile() : fileUrl.toString();
+    const quint64 request = ++m_repoPreviewRequest;
 
-    m_dbus->parseRepoFile(content, [this, content](bool ok, const QString &, const QString &message,
-                                                   const QVariantList &args) {
+    struct ReadOutcome {
+        bool ok = false;
+        QByteArray content;
+        QString error;
+    };
+    auto outcome = std::make_shared<ReadOutcome>();
+
+    // 通常ファイルでも FUSE やネットワーク上では open/read が長時間ブロックし得るため、
+    // 読み込みは専用スレッドで行い、結果だけを GUI スレッドへ戻す。
+    // ブロックしたままのスレッドは中断できないが、GUI と以降の要求は妨げない。
+    // 読み込みスレッドは controller に触れず、finished の queued 接続で結果を渡す
+    // (controller 破棄時は接続が切れるため、破棄後に呼ばれない)。
+    QThread *reader = QThread::create([path, outcome]() {
+        outcome->ok = readRepoFileForPreview(path, kMaxRepoFileSize, outcome->content, outcome->error);
+    });
+    connect(reader, &QThread::finished, this, [this, request, outcome]() {
+        onRepoFileRead(request, outcome->ok, outcome->content, outcome->error);
+    });
+    connect(reader, &QThread::finished, reader, &QObject::deleteLater);
+    reader->start();
+}
+
+/**
+ * @brief previewRepoFile の読み込み結果を受け取り、バックエンドで解析する (GUI スレッド)。
+ * @param request 読み込み要求の番号 (最新の要求以外の結果は破棄する)
+ * @param readOk 読み込み成否
+ * @param contentBytes 読み込んだ内容
+ * @param readError 失敗時の理由
+ */
+void PackageController::onRepoFileRead(quint64 request, bool readOk, const QByteArray &contentBytes,
+                                       const QString &readError)
+{
+    if (request != m_repoPreviewRequest || !m_connected)
+        return;
+    if (!readOk) {
+        emit repoFilePreviewReady(false, {}, QString(), readError);
+        return;
+    }
+    const QString content = QString::fromUtf8(contentBytes);
+
+    m_dbus->parseRepoFile(content, [this, request, content](bool ok, const QString &, const QString &message,
+                                                            const QVariantList &args) {
+        // 解析待ちの間に別のファイルが選ばれた場合や切断した場合は、古い結果を表示しない
+        if (request != m_repoPreviewRequest || !m_connected)
+            return;
         const QVariantList repos = (ok && !args.isEmpty()) ? args.at(0).toList() : QVariantList();
         if (!ok)
             emit repoFilePreviewReady(false, {}, content, message);

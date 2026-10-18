@@ -146,7 +146,12 @@ QVariantMap PackageManagerAdaptor::InstallLocalRpms(const QList<QDBusUnixFileDes
 
     startPrivileged(QStringLiteral("org.presire.qzypper.install-packages"), [adopted] {
         AsyncOutcome result;
-        result.value = installResultToMap(ZyppManager::instance().installLocalRpms(std::move(*adopted)));
+        auto &manager = ZyppManager::instance();
+        result.value = installResultToMap(manager.installLocalRpms(std::move(*adopted)));
+        if (manager.lastOperationCancelled()) {
+            result.errorName = QStringLiteral("org.presire.qzypper.Error.Cancelled");
+            result.errorText = QString::fromStdString(manager.lastError());
+        }
         return result;
     });
     return {};

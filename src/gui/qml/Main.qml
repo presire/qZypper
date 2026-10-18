@@ -545,6 +545,9 @@ ApplicationWindow {
     }
 
     function applyChanges() {
+        // 依存解決を開始できない状態ではフラグを立てない (resolveFinished が届かず残るため)
+        if (!PackageController.connected || !PackageController.initialized || PackageController.busy)
+            return
         root.applyPendingCommit = true
         PackageController.resolveDependencies()
     }
@@ -603,6 +606,8 @@ ApplicationWindow {
     Connections {
         target: PackageController
         function onLocalRpmsFinished(result) {
+            if (!result || result.backendCrashed)
+                return
             if (!result.success && (!result.problems || result.problems.length === 0)) {
                 errorDialog.message = result.errorMessage || qsTr("The RPM files could not be prepared for installation.")
                 errorDialog.open()
@@ -692,6 +697,12 @@ ApplicationWindow {
             }
         }
 
+        function onConnectedChanged() {
+            // 切断時は依存解決の応答が破棄され resolveFinished が届かないため、保留中の適用フラグを解除する
+            if (!PackageController.connected)
+                root.applyPendingCommit = false
+        }
+
         function onBusyChanged() {
             // 初期化に失敗した場合 (busy=false かつ 未初期化) はウェイトを解除してエラー表示に戻す
             if (startupDialog.opened && !PackageController.busy && !PackageController.initialized)
@@ -699,7 +710,7 @@ ApplicationWindow {
         }
 
         function onUpdateAllFinished(result) {
-            if (!result || result.backendCrashed)
+            if (!result || result.backendCrashed || result.busError)
                 return
             if (result.success) {
                 var pending = PackageController.pendingChanges
@@ -720,8 +731,11 @@ ApplicationWindow {
         }
 
         function onResolveFinished(result) {
-            if (!result || result.backendCrashed)
+            if (!result || result.backendCrashed || result.busError || !PackageController.connected) {
+                // 依存解決が進行せず終了した場合は保留中の適用フラグを解除する
+                root.applyPendingCommit = false
                 return
+            }
             if (result.success) {
                 if (root.applyPendingCommit) {
                     root.applyPendingCommit = false

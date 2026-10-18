@@ -52,6 +52,23 @@ private slots:
         QCOMPARE(result.doneCount, done); QCOMPARE(result.errorCount, errors); QCOMPARE(result.skippedCount, skipped);
         QVERIFY(result.failedPackages == failedNames); QVERIFY(result.skippedPackages == skippedNames);
     }
+    void classifiesException_data()
+    {
+        QTest::addColumn<bool>("cancelled");
+        QTest::addColumn<bool>("userRequest");
+        QTest::addColumn<int>("outcome");
+        QTest::newRow("cancel-abort") << true << true << int(CommitOutcome::Cancelled);
+        QTest::newRow("unrelated-after-cancel") << true << false << int(CommitOutcome::Failed);
+        QTest::newRow("abort-without-cancel") << false << true << int(CommitOutcome::Failed);
+        QTest::newRow("plain-failure") << false << false << int(CommitOutcome::Failed);
+    }
+    void classifiesException()
+    {
+        // Given
+        QFETCH(bool, cancelled); QFETCH(bool, userRequest); QFETCH(int, outcome);
+        // When / Then
+        QCOMPARE(int(classifyCommitException(cancelled, userRequest)), outcome);
+    }
 };
 
 QTEST_GUILESS_MAIN(CommitOutcomeTest)

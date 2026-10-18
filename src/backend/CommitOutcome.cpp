@@ -34,6 +34,13 @@ CommitClassification classifyCommit(const std::vector<CommitStep> &steps,
     return result;
 }
 
+/** @brief 例外で終わったコミットを分類する。取消し要求に起因する中断だけを取消しとする。 */
+CommitOutcome classifyCommitException(bool cancelRequested, bool userRequestException)
+{
+    return cancelRequested && userRequestException ? CommitOutcome::Cancelled
+                                                   : CommitOutcome::Failed;
+}
+
 /** @brief D-Busで使用する安定した結果識別子を返す。 */
 const char *commitOutcomeName(CommitOutcome outcome)
 {

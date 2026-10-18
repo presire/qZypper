@@ -397,9 +397,16 @@ Pane {
                     Button {
                         text: qsTr("Refresh")
                         icon.name: "view-refresh"
-                        enabled: serviceListView.currentIndex >= 0 && !PackageController.busy
+                        enabled: serviceListView.currentIndex >= 0
+                                 && serviceListView.currentIndex < PackageController.services.length
+                                 && !PackageController.busy
                         onClicked: {
+                            if (serviceListView.currentIndex < 0
+                                    || serviceListView.currentIndex >= PackageController.services.length)
+                                return
                             var svc = PackageController.services[serviceListView.currentIndex]
+                            if (!svc)
+                                return
                             PackageController.refreshService(svc.alias)
                         }
                     }
@@ -645,7 +652,9 @@ Pane {
 
         Label {
             text: {
-                if (serviceListView.currentIndex < 0) return ""
+                if (serviceListView.currentIndex < 0
+                        || serviceListView.currentIndex >= PackageController.services.length)
+                    return ""
                 var svc = PackageController.services[serviceListView.currentIndex]
                 return qsTr("Remove service \"%1\" and its repositories?").arg(svc ? (svc.name || svc.alias) : "")
             }
@@ -654,11 +663,14 @@ Pane {
         }
 
         onAccepted: {
-            if (serviceListView.currentIndex >= 0) {
-                var svc = PackageController.services[serviceListView.currentIndex]
-                PackageController.removeService(svc.alias)
-                serviceListView.currentIndex = -1
-            }
+            if (serviceListView.currentIndex < 0
+                    || serviceListView.currentIndex >= PackageController.services.length)
+                return
+            var svc = PackageController.services[serviceListView.currentIndex]
+            if (!svc)
+                return
+            PackageController.removeService(svc.alias)
+            serviceListView.currentIndex = -1
         }
     }
 }

@@ -2,6 +2,7 @@ set(GUI_SOURCES
     main.cpp
     controllers/PackageController.cpp
     controllers/DBusClient.cpp
+    controllers/RepoFilePreview.cpp
     models/PackageListModel.cpp
     models/PackageFilterProxyModel.cpp
 )
@@ -9,6 +10,7 @@ set(GUI_SOURCES
 set(GUI_HEADERS
     controllers/PackageController.h
     controllers/DBusClient.h
+    controllers/RepoFilePreview.h
     models/PackageListModel.h
     models/PackageFilterProxyModel.h
 )

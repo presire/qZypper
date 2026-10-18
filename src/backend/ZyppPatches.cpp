@@ -73,7 +73,11 @@ bool ZyppManager::setPatchStatus(const std::string& id, int status)
         if (patchId != id)
             continue;
 
-        sel->setStatus(target);
+        // ロック等で変更できない場合 libzypp は false を返す (成功扱いにしない)
+        if (!sel->setStatus(target)) {
+            m_lastError = "Cannot change status of patch: " + id;
+            return false;
+        }
         return true;
     }
 

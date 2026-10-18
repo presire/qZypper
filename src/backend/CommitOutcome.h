@@ -27,6 +27,7 @@ struct CommitClassification {
 
 CommitClassification classifyCommit(const std::vector<CommitStep> &steps,
                                     bool cancelRequested, bool exception);
+CommitOutcome classifyCommitException(bool cancelRequested, bool userRequestException);
 const char *commitOutcomeName(CommitOutcome outcome);
 
 } // namespace qZypper

@@ -234,6 +234,9 @@ private:
     void refreshPendingChanges();                       // 変更予定一覧を非同期で再取得 (合体・直列化)
     // 呼出し時点以降の選択状態を反映した変更予定の取得完了後に onDone を呼ぶ
     void refreshPendingChangesThen(std::function<void(bool)> onDone);
+    // .repo プレビューの読み込み結果を GUI スレッドで受け取る
+    void onRepoFileRead(quint64 request, bool readOk, const QByteArray &contentBytes,
+                        const QString &readError);
     void fetchCommitRevision(int attemptsLeft);         // revision→変更予定→revision の整合取得
     void clearPrompts();                                // 未応答プロンプトを全破棄
 
@@ -288,6 +291,7 @@ private:
     bool m_pendingRefreshInFlight = false;              // 変更予定取得が実行中
     bool m_pendingRefreshQueued = false;                // 変更予定取得の再要求が待機中
     std::vector<std::function<void(bool)>> m_pendingRefreshWaiters; // 変更予定取得完了の待機者
+    quint64 m_repoPreviewRequest = 0;                   // .repo プレビュー読み込みの最新要求番号
 };
 
 } // namespace qZypper

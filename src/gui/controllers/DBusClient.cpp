@@ -302,7 +302,23 @@ void DBusClient::onServiceUnregistered(const QString &serviceName)
 {
     Q_UNUSED(serviceName);
     m_connected = false;
+    // 消滅したバックエンド宛ての呼び出しは応答が来ないため破棄する
+    resetPendingCalls();
     emit backendDisconnected();
+}
+
+/**
+ * @brief 待機中の呼び出しを破棄し、旧バックエンドの応答を無効化する。
+ *
+ * 世代番号を進めることで、既に送信済みで応答待ちの呼び出しのコールバックも破棄対象となる。
+ */
+void DBusClient::resetPendingCalls()
+{
+    ++m_generation;
+    m_callQueue.clear();
+    m_serialCallInFlight = false;
+    // 破棄した Initialize の応答では解除されないため、再接続時の初期化を妨げないよう解除する
+    m_initializing = false;
 }
 
 // -- 非同期呼び出し共通処理 --
@@ -362,13 +378,18 @@ void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallbac
         m_serialCallInFlight = true;
 
     const QString member = msg.member();
+    const quint64 generation = m_generation;
     QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, timeout);
     auto *watcher = new QDBusPendingCallWatcher(pending, this);
 
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, callback, member, serialized](QDBusPendingCallWatcher *w) {
+            [this, callback, member, serialized, generation](QDBusPendingCallWatcher *w) {
         const QDBusMessage reply = w->reply();
         w->deleteLater();
+
+        // バックエンド再接続後の古い応答は状態を壊すため破棄する
+        if (generation != m_generation)
+            return;
 
         // コールバック内で新たな呼び出しが積まれても順序を保つよう、先に完了扱いにする
         if (serialized)

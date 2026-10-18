@@ -223,6 +223,16 @@ private:
     std::deque<QueuedCall> m_callQueue;   // 直列化対象の待ち行列
     bool m_serialCallInFlight = false;    // 直列化対象の呼び出しが応答待ちか
 
+    /**
+     * @brief 世代番号。バックエンド再接続/切断のたびに増加する。
+     *
+     * 送信時点の世代と不一致になった応答はバックエンド消滅後の古い応答とみなし破棄する。
+     */
+    quint64 m_generation = 0;
+
+    /** @brief バックエンド消滅時に待機中の呼び出しを破棄し、応答を無効化する。 */
+    void resetPendingCalls();
+
     void onServiceRegistered(const QString &serviceName);    // サービス登録ハンドラ
     void onServiceUnregistered(const QString &serviceName);  // サービス解除ハンドラ
 };
