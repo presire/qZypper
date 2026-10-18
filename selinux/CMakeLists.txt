@@ -21,7 +21,7 @@ endif()
 ########################################
 
 set(POLICY_NAME qzypper)
-set(POLICY_VERSION 0.5.0)
+set(POLICY_VERSION 0.4.0)
 
 message(STATUS "Building SELinux policy module: ${POLICY_NAME} (version ${POLICY_VERSION})")
 

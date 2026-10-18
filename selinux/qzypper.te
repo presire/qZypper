@@ -1,4 +1,4 @@
-module qzypper 0.5.0;
+module qzypper 0.4.0;
 
 ########################################
 # qZypper SELinux Policy Module
@@ -220,10 +220,24 @@ role system_r types qzypper_dbus_t;
 #    allocates code pages from a memfd (tmpfs), and
 #    OSAllocator::canAllocateExecutableMemory() probes that path first and
 #    silently falls back to the bytecode interpreter when PROT_EXEC is refused
-#    (see the tmpfs rules below). Only Mesa llvmpipe (software rendering on
-#    hosts without a usable GPU, e.g. VMs) JIT-compiles shaders into anonymous
-#    memory and has no fallback. Hosts that rely on llvmpipe (or that see
-#    execmem denials) can run `setsebool -P qzypper_gui_execmem on`.
+#    (see the tmpfs rules below).
+#    Measured on Leap 16 (Qt 6.9.1, Mesa 24.3.3, accelerated AMD radeonsi, not
+#    llvmpipe): the only process:execmem request at startup is an anonymous
+#    RWX mmap(64 KiB) made by pcre2_jit_compile_16() (libpcre2-16), called from
+#    QRegularExpression::match() in Qt's xcb GLX integration plugin
+#    (libqxcb-glx-integration.so) via QSGRenderLoop::instance(). It is absent
+#    with QT_QUICK_BACKEND=software and still present with
+#    QV4_FORCE_INTERPRETER=1, so it comes from the OpenGL path, not from QV4.
+#    Qt ignores the return value of that call
+#    (QRegularExpressionPrivate::optimizePattern()), so a refused JIT only
+#    leaves the pattern interpreted: the denial is a harmless probe and is
+#    therefore dontaudit'ed below instead of allowed.
+#    The same dontaudit hides the denial on hosts that really need execmem and
+#    have no fallback: Mesa llvmpipe (software rendering on hosts without a
+#    usable GPU, e.g. VMs) JIT-compiles shaders into anonymous memory. If the
+#    GUI fails to create an OpenGL context there, run
+#    `setsebool -P qzypper_gui_execmem on` (and `semodule -DB` to make the
+#    dontaudit'ed denials visible again while diagnosing).
 #  - execstack: REMOVED. `readelf -lW` reports GNU_STACK "RW" (no RWE) for the
 #    qzypper GUI binary, the qzypper-backend binary, their linked libraries
 #    (Qt6 Qml/Quick included) and the Qt plugins / Mesa DRI drivers loaded at
@@ -235,6 +249,9 @@ bool qzypper_gui_execmem false;
 if (qzypper_gui_execmem) {
     allow qzypper_t self:process execmem;
 }
+# Harmless PCRE2 JIT probe (see AUDIT note above). dontaudit only silences the
+# log; it grants nothing, so the boolean above stays the only way to allow it.
+dontaudit qzypper_t self:process execmem;
 allow qzypper_t self:fifo_file { getattr open read write ioctl };
 allow qzypper_t self:unix_stream_socket { create bind connect listen accept read write getattr setattr shutdown };
 allow qzypper_t self:unix_dgram_socket { create bind connect read write sendto getattr setattr };
