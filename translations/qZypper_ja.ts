@@ -1356,22 +1356,22 @@ Click &quot;Apply Changes&quot; to proceed.</source>
     <message>
         <location line="+15"/>
         <source>Install All Matching -devel Packages</source>
-        <translation>一致する -devel パッケージをすべてインストール</translation>
+        <translation>-devel パッケージを一括インストール</translation>
     </message>
     <message>
         <location line="+15"/>
         <source>Install All Matching -debuginfo Packages</source>
-        <translation>一致する -debuginfo パッケージをすべてインストール</translation>
+        <translation>-debuginfo パッケージを一括インストール</translation>
     </message>
     <message>
         <location line="+15"/>
         <source>Install All Matching -debugsource Packages</source>
-        <translation>一致する -debugsource パッケージをすべてインストール</translation>
+        <translation>-debugsource パッケージを一括インストール</translation>
     </message>
     <message>
         <location line="+15"/>
         <source>Install All Recommended Packages</source>
-        <translation>推奨パッケージをすべてインストール</translation>
+        <translation>推奨パッケージを一括インストール</translation>
     </message>
     <message>
         <location line="+22"/>

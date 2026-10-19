@@ -65,7 +65,7 @@ Drawer {
         return defaults[key] ? qsTr("On") : qsTr("Off")
     }
 
-    width: 300                            // ドロワーの幅
+    width: 400                            // ドロワーの幅
     height: parent ? parent.height : 600  // 親の高さいっぱい (親が未確定のときのフォールバック)
     edge: Qt.LeftEdge                     // 画面の左端から開く
 
@@ -125,7 +125,7 @@ Drawer {
                 Layout.fillWidth: true               // 親の幅いっぱいに広げる
                 enabled: !PackageController.busy     // 実行中の選択状態に重ねて更新要求を送らない
                 text: qsTr("Update All Packages")    // メニューの文字列
-                icon.name: "system-software-update"  // テーマのアイコン名
+                icon.source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/menu/update-all.svg"  // 同梱アイコン (テーマ非依存)
                 icon.color: palette.text             // アイコンを文字色で着色する
 
                 // ドロワーを閉じて、全パッケージ更新をMain側へ要求する
@@ -140,7 +140,7 @@ Drawer {
                 Layout.fillWidth: true                         // 親の幅いっぱいに広げる
                 enabled: !PackageController.busy               // 依存解決やコミット中の更新競合を防ぐ
                 text: qsTr("Distribution Upgrade")             // メニューの文字列
-                icon.name: "package-upgrade"                   // テーマのアイコン名
+                icon.source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/menu/dist-upgrade.svg"  // 同梱アイコン (テーマ非依存)
                 icon.color: palette.text                       // アイコンを文字色で着色する
                 Accessible.name: qsTr("Distribution Upgrade")  // スクリーンリーダー向けの名前
                 // スクリーンリーダー向けの説明
@@ -402,7 +402,7 @@ Drawer {
                 Layout.fillWidth: true                            // 親の幅いっぱいに広げる
                 enabled: !PackageController.busy                  // パッケージ操作中に新しい依存解決を開始しない
                 text: qsTr("Install Local RPM Files...")          // メニューの文字列
-                icon.name: "application-x-rpm"                    // テーマのアイコン名
+                icon.source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/menu/install-rpm.svg"  // 同梱アイコン (テーマ非依存)
                 icon.color: palette.text                          // アイコンを文字色で着色する
                 Accessible.name: qsTr("Install Local RPM Files")  // スクリーンリーダー向けの名前
                 // スクリーンリーダー向けの説明
@@ -435,7 +435,7 @@ Drawer {
             ItemDelegate {
                 Layout.fillWidth: true                                                              // 親の幅いっぱいに広げる
                 text: qsTr("Installation History...")                                               // メニューの文字列
-                icon.name: "document-open-recent"                                                   // テーマのアイコン名
+                icon.source: "qrc:/qt/qml/org/presire/qzypper/gui/icons/menu/history.svg"  // 同梱アイコン (テーマ非依存)
                 icon.color: palette.text                                                            // アイコンを文字色で着色する
                 Accessible.name: qsTr("Installation History")                                       // スクリーンリーダー向けの名前
                 Accessible.description: qsTr("Browse the libzypp history of package transactions")  // スクリーンリーダー向けの説明

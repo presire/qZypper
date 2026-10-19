@@ -103,6 +103,10 @@ qt_add_qml_module(qzypper
         icons/status/auto-delete.svg
         icons/status/taboo.svg
         icons/status/protected.svg
+        icons/menu/update-all.svg
+        icons/menu/dist-upgrade.svg
+        icons/menu/install-rpm.svg
+        icons/menu/history.svg
 )
 
 # アプリケーションアイコン (QMLモジュールとは別に登録し、起動時から利用可能にする)
