@@ -1,18 +1,21 @@
-#include "ZyppManager.h"
-
-#include <zypp/Resolver.h>
-#include <zypp/ProblemTypes.h>
-
 #include <QDateTime>
 #include <QVariantMap>
-
 #include <cerrno>
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
+#include <zypp/Resolver.h>
+#include <zypp/ProblemTypes.h>
+#include "ZyppManager.h"
 
 namespace qZypper {
 
+/**
+ * @brief システムの整合性を検証する (zypper verify相当)
+ *
+ * Resolver::verifySystemを実行し、壊れた依存関係の修復案を提示する
+ * @return SolverResult (成功フラグ + 衝突リスト + 修復後のリスクサマリ)
+ */
 ZyppManager::SolverResult ZyppManager::verifySystem()
 {
     std::lock_guard<std::mutex> guard(m_mutex);
@@ -28,9 +31,11 @@ ZyppManager::SolverResult ZyppManager::verifySystem()
         const auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
         result.success = resolver->verifySystem();
-    } catch (const zypp::Exception &e) {
+    }
+    catch (const zypp::Exception &e) {
         m_lastError = e.asString();
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         m_lastError = e.what();
     }
 
@@ -52,11 +57,20 @@ ZyppManager::SolverResult ZyppManager::verifySystem()
             result.problems.push_back(conflict);
         }
     }
-    // 修復のために選択されたパッケージを GUI が確認できるよう、解決後の概要を返す
+
+    // 修復のために選択されたパッケージをGUIが確認できるよう、解決後の概要を返す
     result.summary = computeTransactionSummaryLocked();
     return result;
 }
 
+/**
+ * @brief ソルバーのテストケースを生成する (zypperの--debug-solver相当)
+ *
+ * /var/log配下にタイムスタンプ付きディレクトリを作成し、現在の解決問題を出力する
+ * ディレクトリは、mkdirで新規作成してsymlinkを辿らず、既存時は連番を付けて再試行する
+ *
+ * @return 作成したディレクトリのパス、失敗時は空文字列
+ */
 std::string ZyppManager::createSolverTestcase()
 {
     std::lock_guard<std::mutex> guard(m_mutex);
@@ -69,7 +83,7 @@ std::string ZyppManager::createSolverTestcase()
     const QString stamp = now.toString(QStringLiteral("yyyyMMdd-HHmmss"));
     const std::string base = "/var/log/qzypper-testcase-" + stamp.toStdString();
 
-    // symlink を辿らないよう mkdir で新規作成する (既存時は EEXIST で失敗)。
+    // symlinkを辿らないようmkdirで新規作成する (既存時はEEXISTで失敗)
     std::string directory;
     for (int attempt = 0; attempt < 16; ++attempt) {
         const std::string candidate =
@@ -84,6 +98,7 @@ std::string ZyppManager::createSolverTestcase()
             return {};
         }
     }
+
     if (directory.empty()) {
         m_lastError = "failed to create unique testcase directory";
         return {};
@@ -94,10 +109,12 @@ std::string ZyppManager::createSolverTestcase()
             m_lastError = "createSolverTestcase failed";
             return {};
         }
-    } catch (const zypp::Exception &e) {
+    }
+    catch (const zypp::Exception &e) {
         m_lastError = e.asString();
         return {};
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         m_lastError = e.what();
         return {};
     }

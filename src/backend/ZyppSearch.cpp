@@ -1,6 +1,7 @@
-#include "ZyppManager.h"
-#include "SearchOptions.h"
-
+#include <algorithm>
+#include <set>
+#include <string>
+#include <vector>
 #include <zypp/Locale.h>
 #include <zypp/PoolQuery.h>
 #include <zypp/Repository.h>
@@ -9,20 +10,17 @@
 #include <zypp/sat/Pool.h>
 #include <zypp/sat/SolvAttr.h>
 #include <zypp/ui/Selectable.h>
-
-#include <algorithm>
-#include <set>
-#include <string>
-#include <vector>
+#include "ZyppManager.h"
+#include "SearchOptions.h"
 
 namespace qZypper {
 
 namespace {
 
-constexpr int kMaxSearchFlags = 127; ///< SearchFlag に定義された全ビットの和
+constexpr int kMaxSearchFlags = 127;  ///< SearchFlagに定義された全ビットの和
 
 /**
- * @brief PoolQuery に照合方式を設定する。
+ * @brief PoolQueryに照合方式を設定する
  * @param query 対象クエリ
  * @param mode 照合方式
  */
@@ -37,19 +35,23 @@ void applyMatchMode(zypp::PoolQuery &query, SearchMatchMode mode)
 }
 
 /**
- * @brief 翻訳テキスト検索に用いる言語コード列を返す。
+ * @brief 翻訳テキスト検索に用いる言語コード列を返す
  *
- * ZConfig::textLocale() から fallback を空になるまで辿る (例: "ja_JP" → "ja" → "en")。
- * libsolv の表示処理と同様に "en" も言語別属性として検索し、無印属性は呼び出し側で別途検索する。
- * textLocale() が空の場合は libzypp と同じく "en" から開始する。
+ * ZConfig::textLocale()からfallbackを空になるまで辿る (例 : "ja_JP" → "ja" → "en")
+ * libsolvの表示処理と同様に"en"も言語別属性として検索し、無印属性は呼び出し側で別途検索する
+ *
+ * textLocale()が空の場合は、libzyppと同じく"en"から開始する
+ *
  * @return 言語コードのベクタ (優先順)
  */
 std::vector<std::string> localizedTextCodes()
 {
     std::vector<std::string> codes;
     zypp::Locale start = zypp::ZConfig::instance().textLocale();
+
     if (!start)
         start = zypp::Locale::enCode;
+
     for (zypp::Locale locale = start; locale; locale = locale.fallback()) {
         codes.push_back(locale.code());
     }
@@ -57,10 +59,10 @@ std::vector<std::string> localizedTextCodes()
 }
 
 /**
- * @brief 原文属性に加え、現在のテキストロケールの翻訳属性も検索対象へ追加する。
+ * @brief 原文属性に加え、現在のテキストロケールの翻訳属性も検索対象へ追加する
  *
- * libsolv は翻訳を "solvable:summary:ja" のような言語別キーに格納するため、
- * 原文キーのみの検索では表示中の翻訳テキストに一致しない。
+ * libsolvは翻訳を"solvable:summary:ja"のような言語別キーに格納するため、原文キーのみの検索では表示中の翻訳テキストに一致しない
+ *
  * @param query 対象クエリ
  * @param attr 原文属性 (SolvAttr::summary / SolvAttr::description)
  * @param value 検索文字列
@@ -74,7 +76,7 @@ void addTextAttribute(zypp::PoolQuery &query, const zypp::sat::SolvAttr &attr,
 }
 
 /**
- * @brief 1 つの SearchFlag に対応する属性検索をクエリへ追加する。
+ * @brief 1つのSearchFlagに対応する属性検索をクエリへ追加する
  * @param query 対象クエリ
  * @param flag 追加する検索フィールド
  * @param value 検索文字列
@@ -94,7 +96,7 @@ void addFlagField(zypp::PoolQuery &query, SearchFlag flag, const std::string &va
 }
 
 /**
- * @brief オプションから PoolQuery を構築する。
+ * @brief オプションからPoolQueryを構築する
  * @param query 構築先
  * @param options 検証済みオプション
  */
@@ -113,6 +115,7 @@ void buildQuery(zypp::PoolQuery &query, const SearchOptions &options)
 
     if (options.installedOnly)
         query.setInstalledOnly();
+
     if (!options.repoAlias.isEmpty())
         query.addRepo(options.repoAlias.toStdString());
 }
@@ -120,11 +123,12 @@ void buildQuery(zypp::PoolQuery &query, const SearchOptions &options)
 } // namespace
 
 /**
- * @brief パッケージを検索する (既存 D-Bus シグネチャ互換)。
+ * @brief パッケージを検索する (既存D-Busシグネチャ互換)
  *
- * SearchPackagesEx の既定オプション (部分一致・件数制限なし) へ委譲する。
- * @param query 検索クエリ文字列 (256 バイト超は拒否)
- * @param flags 検索フラグ (SearchFlag のビットマスク)
+ * SearchPackagesExの既定オプション (部分一致・件数制限なし) へ委譲する
+ *
+ * @param query 検索クエリ文字列 (256バイト超は拒否)
+ * @param flags 検索フラグ (SearchFlagのビットマスク)
  * @return 一致したパッケージ情報のベクタ
  */
 std::vector<PackageInfo> ZyppManager::searchPackages(const std::string &query, int flags)
@@ -144,10 +148,10 @@ std::vector<PackageInfo> ZyppManager::searchPackages(const std::string &query, i
 }
 
 /**
- * @brief PoolQuery を用いた拡張パッケージ検索。
+ * @brief PoolQueryを用いた拡張パッケージ検索
  *
- * 照合方式 (部分/完全/グロブ/正規表現)、ページング、インストール済み限定、
- * リポジトリ限定に対応する。
+ * 照合方式 (部分/完全/グロブ/正規表現)、ページング、インストール済み限定、リポジトリ限定に対応する
+ *
  * @param options 検証済み検索オプション
  * @return 一致したパッケージ情報のベクタ
  */
@@ -166,14 +170,13 @@ std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &opti
     }
 
     try {
-        // selectableBegin()/++it は次の一致まで不一致の候補を内部で走査するため、
-        // プール全体を 1 クエリにすると 0 件一致の検索がキャンセル不能になる。
-        // リポジトリ単位のクエリに分割し、各リポジトリの境界と一致ごとに
-        // キャンセルと heartbeat を確認する (中断待ちは最大 1 リポジトリ分)。
+        // selectableBegin()/++itは次の一致まで不一致の候補を内部で走査するため、プール全体を1クエリにすると0件一致の検索がキャンセル不能になる
+        // リポジトリ単位のクエリに分割し、各リポジトリの境界と一致ごとにキャンセルとheartbeatを確認する (中断待ちは最大1リポジトリ分)
         std::vector<std::string> aliases;
         if (!options.repoAlias.isEmpty()) {
             aliases.push_back(options.repoAlias.toStdString());
-        } else {
+        }
+        else {
             for (const zypp::Repository &repo : zypp::sat::Pool::instance().repos())
                 aliases.push_back(repo.alias());
         }
@@ -197,26 +200,32 @@ std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &opti
                     m_lastError = "Operation cancelled";
                     return {};
                 }
+
                 const zypp::ui::Selectable::Ptr &sel = *it;
-                // 同名パッケージは複数リポジトリで一致するため 1 件にまとめる。
+
+                // 同名パッケージは複数リポジトリで一致するため1件にまとめる
                 if (sel && seen.insert(sel.get()).second)
                     result.push_back(makePackageInfo(sel));
+
                 if (++enumerated % 1000 == 0)
                     m_operation.heartbeat();
             }
         }
-    } catch (const zypp::MatchInvalidRegexException &e) {
+    }
+    catch (const zypp::MatchInvalidRegexException &e) {
         m_lastError = std::string("Invalid search regex: ") + e.msg();
         return {};
-    } catch (const zypp::Exception &e) {
+    }
+    catch (const zypp::Exception &e) {
         m_lastError = "Search error: " + e.asString();
         return {};
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         m_lastError = std::string("Search error: ") + e.what();
         return {};
     }
 
-    // ページングを決定的にするため、名前→バージョンの順に安定ソートする。
+    // ページングを決定的にするため、名前→バージョンの順に安定ソートする
     std::sort(result.begin(), result.end(),
               [](const PackageInfo &lhs, const PackageInfo &rhs) {
                   if (lhs.name != rhs.name)
@@ -226,9 +235,11 @@ std::vector<PackageInfo> ZyppManager::searchPackagesEx(const SearchOptions &opti
 
     if (options.offset >= result.size())
         return {};
+
     if (options.offset > 0)
         result.erase(result.begin(),
                      result.begin() + static_cast<std::ptrdiff_t>(options.offset));
+
     if (options.limit > 0 && result.size() > options.limit)
         result.resize(options.limit);
 

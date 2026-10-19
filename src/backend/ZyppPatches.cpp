@@ -1,18 +1,17 @@
-#include "ZyppManager.h"
-#include "TransactionSummary.h"
-
 #include <QDebug>
-
 #include <zypp/Patch.h>
 #include <zypp/ResKind.h>
+#include "ZyppManager.h"
+#include "TransactionSummary.h"
 
 namespace qZypper {
 
 /**
- * @brief パッチの安定識別子を生成する。
+ * @brief パッチの安定識別子を生成する
  *
- * 形式は "name-edition.arch@repo"。getPatches の結果に含め、
- * setPatchStatus の入力として使用する。
+ * 形式は、"name-edition.arch@repo"
+ * getPatchesの結果に含め、setPatchStatusの入力として使用する
+ *
  * @param name パッチ名
  * @param version エディション文字列
  * @param arch アーキテクチャ
@@ -26,12 +25,13 @@ std::string ZyppManager::makePatchId(const std::string &name, const std::string 
 }
 
 /**
- * @brief パッチの選択状態を変更する。
+ * @brief パッチの選択状態を変更する
  *
- * 識別子でパッチを特定し、Install / NoInst (NoChange) / Taboo を設定する。
- * @param id GetPatches が返す安定識別子
- * @param status PackageStatus (Install / NoInst / Taboo のみ許可)
- * @return 設定成功時 true
+ * 識別子でパッチを特定し、Install / NoInst (NoChange) / Tabooを設定する
+ *
+ * @param id GetPatchesが返す安定識別子
+ * @param status PackageStatus (Install / NoInst / Tabooのみ許可)
+ * @return 設定成功時true
  */
 bool ZyppManager::setPatchStatus(const std::string& id, int status)
 {
@@ -41,20 +41,21 @@ bool ZyppManager::setPatchStatus(const std::string& id, int status)
         m_lastError = "Backend not initialized";
         return false;
     }
+
     if (id.empty()) {
         m_lastError = "Empty patch identifier";
         return false;
     }
 
     zypp::ui::Status target = zypp::ui::S_NoInst;
-    if (!toZyppStatus(status, target)
-        || (target != zypp::ui::S_Install && target != zypp::ui::S_Taboo
-            && target != zypp::ui::S_NoInst)) {
+
+    if (!toZyppStatus(status, target) || (target != zypp::ui::S_Install && target != zypp::ui::S_Taboo && target != zypp::ui::S_NoInst)) {
         m_lastError = "Invalid patch status";
         return false;
     }
 
     auto pool = m_zypp->poolProxy();
+
     for (auto it = pool.byKindBegin<zypp::Patch>();
          it != pool.byKindEnd<zypp::Patch>(); ++it) {
 
@@ -73,7 +74,7 @@ bool ZyppManager::setPatchStatus(const std::string& id, int status)
         if (patchId != id)
             continue;
 
-        // ロック等で変更できない場合 libzypp は false を返す (成功扱いにしない)
+        // ロック等で変更できない場合libzyppはfalseを返す (成功扱いにしない)
         if (!sel->setStatus(target)) {
             m_lastError = "Cannot change status of patch: " + id;
             return false;
@@ -86,10 +87,10 @@ bool ZyppManager::setPatchStatus(const std::string& id, int status)
 }
 
 /**
- * @brief 必要なパッチを一括選択して依存解決する (zypper patch 相当)。
+ * @brief 必要なパッチを一括選択して依存解決する (zypper patch相当)
  *
- * カテゴリ・対話性・必要性でフィルタしたパッチを Install に設定し、
- * ソルバを実行する。
+ * カテゴリ・対話性・必要性でフィルタしたパッチをInstallに設定し、ソルバを実行する
+ *
  * @param securityOnly セキュリティパッチのみを対象にするか
  * @param includeOptional 任意・機能パッチも対象にするか
  * @param skipInteractive 対話操作が必要なパッチを除外するか
@@ -129,12 +130,16 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
                 continue;
 
             const std::string cat = patch->category();
+
             if (securityOnly && cat != "security")
                 continue;
+
             if (!includeOptional && (cat == "optional" || cat == "feature"))
                 continue;
+
             if (skipInteractive && patch->interactive())
                 continue;
+
             if (!includeOptional && !sel->isNeeded())
                 continue;
 
@@ -142,11 +147,13 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
         }
 
         result.success = resolver->resolvePool();
-    } catch (const zypp::Exception& e) {
+    }
+    catch (const zypp::Exception& e) {
         m_lastError = "Patch selection error: " + e.asString();
         result.success = false;
         return result;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         m_lastError = std::string("Patch selection error: ") + e.what();
         result.success = false;
         return result;
@@ -171,7 +178,8 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
 
                 result.problems.push_back(std::move(conflict));
             }
-        } catch (const std::exception& e) {
+        }
+        catch (const std::exception& e) {
             qWarning() << "Failed to get solver problems:" << e.what();
         }
     }

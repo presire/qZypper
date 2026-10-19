@@ -1,19 +1,19 @@
-#include "SnapshotInfo.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QDir>
 #include <QFile>
+#include "SnapshotInfo.h"
 
 using namespace qZypper;
 
 namespace {
 
 /**
- * @brief テスト用の info.xml を組み立てる。
+ * @brief テスト用のinfo.xmlを組み立てる
  * @param num スナップショット番号
  * @param type 種類
  * @param description 説明
- * @return XML バイト列
+ * @return XMLバイト列
  */
 QByteArray makeInfoXml(quint64 num, const QString &type, const QString &description)
 {
@@ -31,7 +31,7 @@ QByteArray makeInfoXml(quint64 num, const QString &type, const QString &descript
 }
 
 /**
- * @brief 一時ルートにスナップショット 1 件を書き出す。
+ * @brief 一時ルートにスナップショット1件を書き出す
  * @param root スナップショットルート
  * @param num 番号
  * @param description 説明
@@ -47,9 +47,17 @@ void writeSnapshot(const QString &root, quint64 num, const QString &description)
 
 } // namespace
 
+/**
+ * @class SnapshotInfoTest
+ * @brief スナップショット情報の解析と収集・差分・変換を検証する
+ *
+ * info.xmlの解析とnum欠落・0・不正XMLの拒否、最大番号の算出、差分の抽出、
+ * ルート走査時の番号順ソートと不在時の空結果、VariantMap/Listへの変換を対象にする
+ */
 class SnapshotInfoTest : public QObject {
     Q_OBJECT
 private slots:
+    /** @brief 妥当なinfo.xmlを解析して各項目を読み取ることを検証する */
     void parsesValidInfoXml()
     {
         const auto entry = parseSnapshotInfoXml(makeInfoXml(42, QStringLiteral("pre"), QStringLiteral("zypp")));
@@ -60,23 +68,27 @@ private slots:
         QCOMPARE(entry->date, QStringLiteral("2026-01-02 03:04:05"));
     }
 
+    /** @brief num要素のないXMLを拒否することを検証する */
     void rejectsMissingNum()
     {
         const QByteArray xml = "<snapshot><type>pre</type></snapshot>";
         QVERIFY(!parseSnapshotInfoXml(xml).has_value());
     }
 
+    /** @brief 番号0のスナップショットを拒否することを検証する */
     void rejectsZeroNum()
     {
         QVERIFY(!parseSnapshotInfoXml(makeInfoXml(0, QStringLiteral("post"), QStringLiteral("x"))).has_value());
     }
 
+    /** @brief 閉じていない不正なXMLを拒否することを検証する */
     void rejectsMalformedXml()
     {
         const QByteArray xml = "<snapshot><num>5</num>";
         QVERIFY(!parseSnapshotInfoXml(xml).has_value());
     }
 
+    /** @brief 最大のスナップショット番号を求め空では0を返すことを検証する */
     void maxSnapshotNumberWorks()
     {
         std::vector<SnapshotEntry> entries;
@@ -87,6 +99,7 @@ private slots:
         QCOMPARE(maxSnapshotNumber({}), quint64(0));
     }
 
+    /** @brief 前後の一覧から新規スナップショットの差分を抽出することを検証する */
     void newSnapshotsReturnsDiff()
     {
         std::vector<SnapshotEntry> before;
@@ -103,6 +116,7 @@ private slots:
         QCOMPARE(diff.at(1).num, quint64(4));
     }
 
+    /** @brief ルートを走査して番号順に並べることを検証する */
     void readSnapshotsListsSorted()
     {
         QTemporaryDir dir;
@@ -118,11 +132,13 @@ private slots:
         QCOMPARE(entries.at(2).num, quint64(9));
     }
 
+    /** @brief ルートが存在しない場合は空を返すことを検証する */
     void readSnapshotsMissingRootIsEmpty()
     {
         QVERIFY(readSnapshots(QStringLiteral("/nonexistent/qzypper/snapshots")).empty());
     }
 
+    /** @brief スナップショットをVariantMapとVariantListへ変換することを検証する */
     void variantMapConversion()
     {
         const SnapshotEntry entry{11, QStringLiteral("pre"), QStringLiteral("desc"), QStringLiteral("date")};

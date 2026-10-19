@@ -7,9 +7,10 @@
 #include "PackageManagerAdaptor.h"
 
 /**
- * @brief D-Busバックエンドサービスのエントリポイント。
+ * @brief D-Busバックエンドサービスのエントリポイント
  *
- * PackageManagerAdaptorを生成し、D-Busシステムバスにサービスを登録する。
+ * PackageManagerAdaptorを生成し、D-Busシステムバスにサービスを登録する
+ *
  * @param argc コマンドライン引数の数
  * @param argv コマンドライン引数の配列
  * @return アプリケーションの終了コード
@@ -20,10 +21,10 @@ int main(int argc, char *argv[])
     app.setApplicationName("qzypper-backend");
     app.setApplicationVersion(APP_VERSION);
 
-    // InstallLocalRpms(ah, as) の記述子配列をデマーシャリングするため登録する
+    // InstallLocalRpms(ah, as)の記述子配列をデマーシャリングするため登録する
     qDBusRegisterMetaType<QList<QDBusUnixFileDescriptor>>();
 
-    // QDBusContext を持つオブジェクトを直接登録する。
+    // QDBusContextを持つオブジェクトを直接登録する
     qZypper::PackageManagerAdaptor adaptor;
 
     // システムバスに接続

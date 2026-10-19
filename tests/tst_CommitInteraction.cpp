@@ -1,13 +1,19 @@
-#include "CommitInteraction.h"
 #include <QtTest>
-
 #include <chrono>
+#include "CommitInteraction.h"
 
 using namespace qZypper;
 
+/**
+ * @class CommitInteractionTest
+ * @brief CommitInteraction.hの補助関数とログ集約の挙動を検証する
+ *
+ * コミット処理で使うテキスト切り詰め・行サニタイズ・プロンプトデータ生成・スクリプト出力集約を対象にし、libzyppは起動しない
+ */
 class CommitInteractionTest : public QObject {
     Q_OBJECT
 private slots:
+    /** @brief 上限内の短いテキストは切り詰めずそのまま返すことを検証する */
     void capTextKeepsShortText()
     {
         bool truncated = true;
@@ -15,6 +21,7 @@ private slots:
         QVERIFY(!truncated);
     }
 
+    /** @brief ASCIIテキストを上限バイト数で切り詰めることを検証する */
     void capTextTruncatesAscii()
     {
         const QString text(5000, QLatin1Char('a'));
@@ -24,6 +31,7 @@ private slots:
         QCOMPARE(result.toUtf8().size(), 100);
     }
 
+    /** @brief UTF-8のマルチバイト文字を途中で分割しないことを検証する */
     void capTextDoesNotSplitMultibyte()
     {
         const QString text = QStringLiteral("ああ");
@@ -34,18 +42,21 @@ private slots:
         QVERIFY(!result.contains(QChar(0xFFFD)));
     }
 
+    /** @brief 制御文字を除去しつつタブは残すことを検証する */
     void sanitizeStripsControlButKeepsTab()
     {
         const QString line = QStringLiteral("a\nb\tc\x01");
         QCOMPARE(sanitizeScriptLine(line), QStringLiteral("ab\tc"));
     }
 
+    /** @brief 1行あたりのバイト数上限を超えないよう切り詰めることを検証する */
     void sanitizeCapsLineLength()
     {
         const QString line(CommitLimits::kMaxScriptLineBytes + 500, QLatin1Char('x'));
         QVERIFY(sanitizeScriptLine(line).toUtf8().size() <= CommitLimits::kMaxScriptLineBytes);
     }
 
+    /** @brief ライセンス同意プロンプトのボタン構成と本文サイズ上限を検証する */
     void licensePromptDataHasButtonsAndCap()
     {
         const QString big(CommitLimits::kMaxLicenseTextBytes + 4096, QLatin1Char('L'));
@@ -63,6 +74,7 @@ private slots:
         QCOMPARE(buttons.at(1).toMap().value(QStringLiteral("action")).toString(), QStringLiteral("reject"));
     }
 
+    /** @brief ライセンス同意の回答をacceptとrejectにマッピングすることを検証する */
     void licenseAnswerMapping()
     {
         QVERIFY(licenseAnswerAccepted(QVariantMap{{QStringLiteral("action"), QStringLiteral("accept")}}));
@@ -70,6 +82,7 @@ private slots:
         QVERIFY(!licenseAnswerAccepted(QVariantMap{}));
     }
 
+    /** @brief メディア交換プロンプトのリトライ・スキップ・中止ボタンを検証する */
     void mediaPromptDataHasButtons()
     {
         const QVariantMap data = buildMediaChangePromptData(
@@ -87,6 +100,7 @@ private slots:
         QCOMPARE(buttons.at(2).toMap().value(QStringLiteral("action")).toString(), QStringLiteral("abort"));
     }
 
+    /** @brief メディア交換の回答を正規化し不正値はabortにすることを検証する */
     void mediaAnswerMapping()
     {
         QCOMPARE(mediaAnswerAction(QVariantMap{{QStringLiteral("action"), QStringLiteral("retry")}}),
@@ -100,6 +114,7 @@ private slots:
                  QStringLiteral("abort"));
     }
 
+    /** @brief ファイル競合プロンプトの継続・中止ボタンと件数を検証する */
     void fileConflictPromptDataHasButtons()
     {
         const QVariantMap data = buildFileConflictPromptData(
@@ -114,6 +129,7 @@ private slots:
         QCOMPARE(buttons.at(1).toMap().value(QStringLiteral("action")).toString(), QStringLiteral("abort"));
     }
 
+    /** @brief ファイル競合の回答で継続可否を判定することを検証する */
     void fileConflictAnswerMapping()
     {
         QVERIFY(fileConflictAnswerContinue(QVariantMap{{QStringLiteral("action"), QStringLiteral("continue")}}));
@@ -121,6 +137,7 @@ private slots:
         QVERIFY(!fileConflictAnswerContinue(QVariantMap{}));
     }
 
+    /** @brief 先頭行は待たずに即時通知することを検証する */
     void aggregatorFlushesFirstLineImmediately()
     {
         QStringList emitted;
@@ -133,6 +150,7 @@ private slots:
         QCOMPARE(aggregator.pendingCount(), 0);
     }
 
+    /** @brief 行数閾値に達するまでバッファし、到達時にまとめて通知することを検証する */
     void aggregatorBatchesUntilThreshold()
     {
         QStringList emitted;
@@ -151,6 +169,7 @@ private slots:
         QCOMPARE(emitted.size(), CommitLimits::kFlushLineThreshold + 1);
     }
 
+    /** @brief 時間間隔を過ぎた行の追加で、バッファを通知することを検証する */
     void aggregatorFlushesOnTimeInterval()
     {
         QStringList emitted;
@@ -165,6 +184,7 @@ private slots:
         QCOMPARE(emitted.size(), 2);
     }
 
+    /** @brief 保持行数の上限を超えたら、古い行を切り捨てることを検証する */
     void aggregatorCapsCollectedLines()
     {
         ScriptOutputAggregator aggregator;
@@ -179,6 +199,7 @@ private slots:
                  QStringLiteral("line%1").arg(CommitLimits::kMaxScriptLines + 119));
     }
 
+    /** @brief rpmメッセージを通常行と分けて保持することを検証する */
     void aggregatorSeparatesRpmMessages()
     {
         ScriptOutputAggregator aggregator;
@@ -188,6 +209,7 @@ private slots:
         QVERIFY(aggregator.collected().isEmpty());
     }
 
+    /** @brief 空行はバッファにも通知にも含めないことを検証する */
     void aggregatorSkipsEmptyLines()
     {
         ScriptOutputAggregator aggregator;

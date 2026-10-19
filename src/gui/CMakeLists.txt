@@ -1,6 +1,9 @@
 set(GUI_SOURCES
     main.cpp
     controllers/PackageController.cpp
+    controllers/PackageControllerQueries.cpp
+    controllers/PackageControllerTransactions.cpp
+    controllers/PackageControllerRepos.cpp
     controllers/DBusClient.cpp
     controllers/RepoFilePreview.cpp
     models/PackageListModel.cpp
@@ -21,8 +24,8 @@ target_compile_definitions(qzypper PRIVATE
     APP_VERSION="${CMAKE_PROJECT_VERSION}"
 )
 
-# QMLシングルトン (pragma Singleton だけでは生成 qmldir に singleton 行が出力されないため明示する)
-# qt_add_qml_module() より前に設定する必要がある
+# QMLシングルトン (pragma Singletonだけでは生成qmldirにsingleton行が出力されないため明示する)
+# qt_add_qml_module()より前に設定する必要がある
 set_source_files_properties(
     qml/Theme.qml
     qml/PackageStatusInfo.qml
@@ -138,7 +141,7 @@ install(TARGETS qzypper
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# アプリケーションアイコン (hicolor テーマに各サイズをインストール)
+# アプリケーションアイコン (hicolorテーマに各サイズをインストール)
 foreach(ICON_SIZE 64 128 256 512 1024)
     install(FILES ${CMAKE_SOURCE_DIR}/src/gui/icons/qZypper@${ICON_SIZE}.png
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${ICON_SIZE}x${ICON_SIZE}/apps

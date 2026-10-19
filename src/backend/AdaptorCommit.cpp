@@ -3,6 +3,11 @@
 
 namespace qZypper {
 namespace {
+/**
+ * @brief パッケージ名の標準文字列配列をQt文字列リストへ変換する
+ * @param packages 変換するパッケージ名の配列
+ * @return D-Bus転送に使うパッケージ名リスト
+ */
 QStringList names(const std::vector<std::string> &packages)
 {
     QStringList result;
@@ -11,7 +16,7 @@ QStringList names(const std::vector<std::string> &packages)
 }
 }
 
-/** @brief 確認した選択のみを認可後にコミットし、全ステップの結果を返す。 */
+/** @brief 確認した選択のみを認可後にコミットし、全ステップの結果を返す */
 QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
 {
     if (!preparePrivileged()) return {};
@@ -39,16 +44,17 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
                 emitToOwner(QStringLiteral("PackageStateChanged"), {QString::fromStdString(package), QString::fromStdString(event)});
             }, Qt::QueuedConnection);
         }, [this](const PromptRequest &request) {
-            // libzypp ワーカースレッド上で所有者の回答を同期的に待つ
+            // libzyppワーカースレッド上で所有者の回答を同期的に待つ
             return m_executor.ask(request);
         }, [this](const QString &package, const QString &scriptType, const QString &line, bool isError) {
-            // スクリプト/rpm 出力は集約後に主スレッドへ引き渡して送信する
+            // スクリプト/rpm出力は集約後に主スレッドへ引き渡して送信する
             QMetaObject::invokeMethod(this, [this, package, scriptType, line, isError] {
                 emitToOwner(QStringLiteral("ScriptOutput"), {QVariantMap{
                     {"package", package}, {"scriptType", scriptType},
                     {"line", line}, {"isError", isError}}});
             }, Qt::QueuedConnection);
         });
+
         const auto &classification = commit.classification;
         QVariantMap value{{"success", commit.success},
             {"outcome", QString::fromLatin1(commitOutcomeName(classification.outcome))},
@@ -64,8 +70,11 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
             {"scriptOutputTruncated", commit.scriptOutputTruncated},
             {"rebootNeeded", commit.rebootNeeded}, {"restartSuggested", commit.restartSuggested},
             {"servicesToRestart", commit.servicesToRestart}, {"snapshots", snapshotsToVariantList(commit.snapshots)}};
+
         const auto error = QString::fromStdString(commit.errorMessage);
+
         if (!commit.success) value["errorMessage"] = error;
+
         AsyncOutcome result;
         result.value = value;
         result.transactionFinished = true;

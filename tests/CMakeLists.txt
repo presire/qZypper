@@ -16,7 +16,7 @@ target_link_libraries(test-ZyppSmoke PRIVATE qzypper-zypp Qt6::Test Qt6::DBus)
 add_test(NAME ZyppSmoke COMMAND test-ZyppSmoke)
 set_tests_properties(ZyppSmoke PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 60)
 
-# 一時ルートでの ZyppManager 結合テスト (root / ネットワーク不要)
+# 一時ルートでのZyppManager結合テスト (root / ネットワーク不要)
 add_executable(test-ZyppTempRoot tst_ZyppTempRoot.cpp)
 target_link_libraries(test-ZyppTempRoot PRIVATE qzypper-zypp Qt6::Test)
 add_test(NAME ZyppTempRoot COMMAND test-ZyppTempRoot)
@@ -28,7 +28,7 @@ target_link_libraries(test-ZyppExecutor PRIVATE qzypper-zypp Qt6::Test Qt6::DBus
 add_test(NAME ZyppExecutor COMMAND test-ZyppExecutor)
 set_tests_properties(ZyppExecutor PROPERTIES TIMEOUT 30)
 
-# GUI モデルのロジックテスト (root / バックエンド不要)
+# GUIモデルのロジックテスト (root / バックエンド不要)
 add_executable(test-PackageListModel tst_PackageListModel.cpp
     ../src/gui/models/PackageListModel.cpp
     ../src/gui/models/PackageFilterProxyModel.cpp)
@@ -37,7 +37,7 @@ target_link_libraries(test-PackageListModel PRIVATE Qt6::Test)
 add_test(NAME PackageListModel COMMAND test-PackageListModel)
 set_tests_properties(PackageListModel PROPERTIES TIMEOUT 30)
 
-# リポジトリファイルのプレビュー読み込み (通常ファイル判定 / サイズ上限, root 不要)
+# リポジトリファイルのプレビュー読み込み (通常ファイル判定 / サイズ上限、root不要)
 add_executable(test-RepoFilePreview tst_RepoFilePreview.cpp
     ../src/gui/controllers/RepoFilePreview.cpp)
 target_include_directories(test-RepoFilePreview PRIVATE ../src/gui/controllers)
@@ -45,7 +45,7 @@ target_link_libraries(test-RepoFilePreview PRIVATE Qt6::Test)
 add_test(NAME RepoFilePreview COMMAND test-RepoFilePreview)
 set_tests_properties(RepoFilePreview PROPERTIES TIMEOUT 30)
 
-# ローカル RPM / .repo 解析 / GPG プロンプト (root 不要)
+# ローカルRPM / .repo 解析 / GPGプロンプト (root不要)
 foreach(test IN ITEMS RepoFileParser LocalRpm KeyTrustPrompt)
     add_executable(test-${test} tst_${test}.cpp)
     target_link_libraries(test-${test} PRIVATE qzypper-zypp Qt6::Test)

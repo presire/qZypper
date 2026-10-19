@@ -1,12 +1,22 @@
+#include <QDBusError>
 #include "PackageManagerAdaptor.h"
 #include "ZyppManager.h"
-#include <QDBusError>
 
 namespace qZypper {
 namespace {
-/** @brief 公開メソッドから実行開始段階を選ぶ。 */
-OperationStage initialStage(const QString &member)
+/** @brief ソルバーを実行する分類検索かを判定する (ZyppManager::getPackagesByClassificationと同じ分類) */
+bool classificationNeedsSolver(const QDBusMessage &msg)
 {
+    const QList<QVariant> args = msg.arguments();
+    if (args.isEmpty()) return false;
+    const QString cls = args.first().toString().trimmed().toLower();
+    return cls == "recommended" || cls == "suggested" || cls == "orphaned" || cls == "unneeded";
+}
+
+/** @brief 公開メソッドと引数から実行開始段階を選ぶ */
+OperationStage initialStage(const QDBusMessage &msg)
+{
+    const QString member = msg.member();
     if (member == "Initialize") return OperationStage::Initializing;
     if (member == "ReleaseSession") return OperationStage::Releasing;
     if (member == "Commit") return OperationStage::Downloading;
@@ -14,13 +24,17 @@ OperationStage initialStage(const QString &member)
     if (member.startsWith("Refresh")) return OperationStage::Refreshing;
     if (member == "ResolveDependencies" || member == "UpdateAllPackages"
         || member == "ApplySolution" || member.startsWith("SetPackage") || member == "SetPatternStatus"
-        || member == "SetPatchStatus" || member == "DistUpgrade" || member == "SelectAllNeededPatches")
+        || member == "SetPatchStatus" || member == "DistUpgrade" || member == "SelectAllNeededPatches"
+        || member == "VerifySystem")
+        return OperationStage::Resolving;
+    if (member == "GetPackagesByClassification" && classificationNeedsSolver(msg))
         return OperationStage::Resolving;
     if (member.startsWith("Add") || member.startsWith("Remove") || member.startsWith("Modify")
         || member == "SetRepoEnabled" || member == "TrustKey") return OperationStage::RepoChange;
     return OperationStage::Reading;
 }
-/** @brief 選択やプールを変更する操作かを判定する。 */
+
+/** @brief 選択やプールを変更する操作かを判定する */
 bool changesSelection(const QString &member)
 {
     return !(member.startsWith("Get") || member == "SearchPackages"
@@ -29,7 +43,7 @@ bool changesSelection(const QString &member)
 }
 }
 
-/** @brief 所有者の読取も遅延返信で同じ常駐ワーカーへ送る。途中の取消しはエラーで返す。 */
+/** @brief 所有者の読取も遅延返信で同じ常駐ワーカーへ送る、途中の取消しはエラーで返す */
 QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
 {
     if (!checkRead()) return {};
@@ -47,7 +61,7 @@ QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
     return {};
 }
 
-/** @brief 所有者による選択操作をワーカーへ送る。旧同期APIの返信型は維持する。 */
+/** @brief 所有者による選択操作をワーカーへ送る。旧同期APIの返信型は維持する */
 QVariant PackageManagerAdaptor::runOwnerSync(const std::function<QVariant()> &job, bool bump, bool solver)
 {
     Q_UNUSED(bump)
@@ -57,7 +71,7 @@ QVariant PackageManagerAdaptor::runOwnerSync(const std::function<QVariant()> &jo
     return {};
 }
 
-/** @brief 主スレッドに複製した初期化状態で認可前の検査を行う。 */
+/** @brief 主スレッドに複製した初期化状態で認可前の検査を行う */
 bool PackageManagerAdaptor::preparePrivileged()
 {
     if (!checkNotBusy() || !checkOwner() || !checkArguments()) return false;
@@ -66,13 +80,14 @@ bool PackageManagerAdaptor::preparePrivileged()
     return false;
 }
 
-/** @brief 実行中フラグを維持したまま処理をキュー投入する。 */
+/** @brief 実行中フラグを維持したまま処理をキュー投入する */
 void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::function<AsyncOutcome()> &job)
 {
     if (calledFromDBus()) setDelayedReply(true);
-    // アイドルタイマーは止めない。期限が来ても実行中なら再設定され、終了時は所有者の要求だけが延長する。
+    // アイドルタイマーは止めない
+    // 期限が来ても実行中なら再設定され、終了時は所有者の要求だけが延長する
     m_busy = true;
-    m_executor.control().run(initialStage(msg.member()));
+    m_executor.control().run(initialStage(msg));
     m_executor.prompts().open();
     publishState();
     m_executor.submit(job, [this, msg](const AsyncOutcome &result) {
@@ -81,7 +96,7 @@ void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::func
     }, msg.member() == "Commit");
 }
 
-/** @brief Polkit待機中も主イベントループを止めない。 */
+/** @brief Polkit待機中も主イベントループを止めない */
 void PackageManagerAdaptor::startPrivileged(const QString &actionId, const std::function<AsyncOutcome()> &job)
 {
     const auto msg = message();
@@ -105,7 +120,7 @@ void PackageManagerAdaptor::startPrivileged(const QString &actionId, const std::
     });
 }
 
-/** @brief 真偽値の特権処理を既存のD-Bus返信型で実行する。 */
+/** @brief 真偽値の特権処理を既存のD-Bus返信型で実行する */
 bool PackageManagerAdaptor::runPrivilegedBool(const QString &actionId, const std::function<bool()> &job)
 {
     if (!preparePrivileged()) return false;
@@ -123,20 +138,26 @@ bool PackageManagerAdaptor::runPrivilegedBool(const QString &actionId, const std
     return false;
 }
 
-/** @brief ワーカー終了通知の後にだけbusyを解除する。void返信は引数なしにする。 */
+/** @brief ワーカー終了通知の後にだけbusyを解除する。
+ *         void返信は引数なしにする
+ */
 void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const AsyncOutcome &outcome)
 {
-    // 所有者の解放前に判定し、所有者以外の要求ではアイドル期限を延長しない。
+    // 所有者の解放前に判定し、所有者以外の要求ではアイドル期限を延長しない
     const bool fromOwner = !m_owner.isEmpty() && msg.service() == m_owner;
     m_executor.control().finishing();
     m_executor.prompts().interrupt();
     publishState();
+
     if (changesSelection(msg.member()) || outcome.poolReloaded) bumpRevision();
+
     if ((msg.member() == "ResolveDependencies" || msg.member() == "UpdateAllPackages"
          || msg.member() == "DistUpgrade" || msg.member() == "SelectAllNeededPatches")
         && outcome.errorName.isEmpty() && outcome.value.toMap().value("success").toBool())
         m_resolvedRevision = m_revision;
+
     if (outcome.poolReloaded) emitToOwner(QStringLiteral("PoolReloaded"), {});
+
     if (msg.member() == "Commit")
         emitToOwner(QStringLiteral("TransactionFinished"), {outcome.transactionFinished && outcome.transactionSuccess,
             outcome.transactionFinished ? outcome.transactionSummary : outcome.errorText});
@@ -145,13 +166,17 @@ void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const Asyn
     QDBusConnection::systemBus().send(reply);
     m_executor.control().complete();
     publishState();
+
     if (msg.member() == "ReleaseSession" || (msg.member() == "Initialize"
         && (!outcome.errorName.isEmpty() || !outcome.value.toBool()))) {
         m_ownerWatcher.removeWatchedService(m_owner);
         m_owner.clear();
     }
+
     if (m_quitWhenIdle) { releaseAbandonedSession(); return; }
+
     m_busy = false;
+
     if (fromOwner || !m_idleTimer.isActive()) m_idleTimer.start();
 }
 

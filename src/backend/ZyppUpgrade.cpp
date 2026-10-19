@@ -1,15 +1,15 @@
+#include <QDebug>
 #include "ZyppManager.h"
 #include "TransactionSummary.h"
-
-#include <QDebug>
 
 namespace qZypper {
 
 /**
- * @brief ディストリビューションアップグレード (zypper dup) を実行する。
+ * @brief ディストリビューションアップグレード (zypper dup) を実行する
  *
- * libzypp の Resolver::doUpgrade() を呼び出し、全リポジトリを跨いだ
- * ディストリビューション更新を解決する。openSUSE Tumbleweed 向け。
+ * libzyppのResolver::doUpgrade()を呼び出し、全リポジトリを跨いだディストリビューション更新を解決する
+ * (openSUSE Tumbleweed向け)
+ *
  * @param allowVendorChange ベンダ変更を許可するか
  * @return SolverResult (成功フラグ + 衝突リスト + リスクサマリ)
  */
@@ -29,24 +29,26 @@ ZyppManager::SolverResult ZyppManager::distUpgrade(bool allowVendorChange)
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
         resolver->setIgnoreAlreadyRecommended(true);
-        // DUP は専用フラグ (zypper dup --allow-vendor-change と同じ) を使う
+        // DUPは専用フラグ (zypper dup --allow-vendor-changeコマンドと同じ) を使用する
         resolver->dupSetAllowVendorChange(allowVendorChange);
 
         m_distUpgradeMode = true;
         m_dupAllowVendorChange = allowVendorChange;
         result.success = resolver->doUpgrade();
-    } catch (const zypp::Exception& e) {
+    }
+    catch (const zypp::Exception& e) {
         m_lastError = "Distribution upgrade error: " + e.asString();
         result.success = false;
         return result;
-    } catch (const std::exception& e) {
+    }
+    catch (const std::exception& e) {
         m_lastError = std::string("Distribution upgrade error: ") + e.what();
         result.success = false;
         return result;
     }
 
     if (!result.success) {
-        // 衝突あり — 問題リストを取得
+        // 衝突あり - 問題リストを取得
         try {
             m_problems = m_zypp->resolver()->problems();
 

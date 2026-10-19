@@ -3,10 +3,21 @@ add_library(qzypper-zypp STATIC
     InputValidation.cpp
     ZyppManager.cpp
     ZyppManager.h
+    ZyppResults.h
+    ZyppLogging.h
+    RepoPolicy.cpp RepoPolicy.h
+    ZyppRepos.cpp
+    ZyppServices.cpp
+    ZyppQueries.cpp
+    ZyppSelection.cpp
+    ZyppResolver.cpp
+    ZyppCommit.cpp
     ZyppCallbackReceiver.cpp
     ZyppCallbackReceiver.h
+    ZyppKeyReceiver.cpp ZyppKeyReceiver.h
     CommitOutcome.cpp CommitOutcome.h
     CommitInteraction.cpp CommitInteraction.h
+    CommitReceivers.cpp CommitReceivers.h
     SnapshotInfo.cpp SnapshotInfo.h
     RebootCheck.cpp RebootCheck.h
     OperationState.cpp OperationState.h

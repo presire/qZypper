@@ -2,16 +2,23 @@
 
 #include <QHash>
 #include <QSet>
+#include <utility>
 
 namespace qZypper {
 
 namespace {
 // 安定キーの区切り文字 (パッケージ名・アーキ・リポジトリに出現しない制御文字)
 constexpr QChar kKeySeparator = QChar(0x1f);
+
+// 行単位の差分通知 (削除行数 + 挿入行数) の上限
+// 超えた場合は一括リセットする
+// 行単位のbeginRemoveRows / beginInsertRowsは、ソート有効なQSortFilterProxyModelとListViewで1件ごとにO(n)の再計算を誘発するため、
+// リポジトリ切替のような一覧の入れ替えではO(n^2)となってGUIスレッドが長時間ブロックされる
+constexpr int kMaxIncrementalRowChanges = 64;
 } // namespace
 
 /**
- * @brief PackageListModel のコンストラクタ。
+ * @brief PackageListModelのコンストラクタ
  * @param parent 親オブジェクト
  */
 PackageListModel::PackageListModel(QObject *parent)
@@ -20,7 +27,7 @@ PackageListModel::PackageListModel(QObject *parent)
 }
 
 /**
- * @brief 行数を返す。
+ * @brief 行数を返す
  * @param parent 親インデックス (リストモデルでは常に無効)
  * @return 行数
  */
@@ -32,7 +39,7 @@ int PackageListModel::rowCount(const QModelIndex &parent) const
 }
 
 /**
- * @brief 指定インデックスのロール値を返す。
+ * @brief 指定インデックスのロール値を返す
  * @param index 対象インデックス
  * @param role ロール
  * @return ロール値
@@ -58,7 +65,7 @@ QVariant PackageListModel::data(const QModelIndex &index, int role) const
 }
 
 /**
- * @brief ロール名の対応表を返す。
+ * @brief ロール名の対応表を返す
  * @return ロール番号とロール名のマップ
  */
 QHash<int, QByteArray> PackageListModel::roleNames() const
@@ -77,25 +84,26 @@ QHash<int, QByteArray> PackageListModel::roleNames() const
 }
 
 /**
- * @brief パッケージマップから安定キーを生成する。
+ * @brief パッケージマップから安定キーを生成する
  * @param map パッケージマップ
  * @return 安定キー文字列
  */
 QString PackageListModel::stableKey(const QVariantMap &map)
 {
-    // repoAlias は候補バージョンの変更で変わる属性のためキーに含めない
+    // repoAliasは候補バージョンの変更で変わる属性のためキーに含めない
     // (含めると版変更で行が削除→再挿入され、選択行がずれる)
     return map.value(QStringLiteral("name")).toString() + kKeySeparator
          + map.value(QStringLiteral("arch")).toString();
 }
 
 /**
- * @brief パッケージ一覧を差分適用する。
+ * @brief パッケージ一覧を差分適用する
  *
- * 新一覧に無い行を削除し、相対順序が保存されていれば新規行を挿入、
- * 値が変化した行を dataChanged で通知する。順序が変化した場合のみ
- * モデルリセットにフォールバックする。
- * @param packages PackageInfo マップの QVariantList
+ * 新一覧に無い行を削除し、相対順序が保存されていれば新規行を挿入、値が変化した行をdataChangedで通知する
+ * 順序が変化した場合、および削除行数と挿入行数の合計がkMaxIncrementalRowChangesを超える場合 (一覧の入れ替え) は、
+ * モデルリセットにフォールバックする
+ *
+ * @param packages PackageInfoマップのQVariantList
  */
 void PackageListModel::applyPackages(const QVariantList &packages)
 {
@@ -125,8 +133,29 @@ void PackageListModel::applyPackages(const QVariantList &packages)
     for (const Entry &entry : incoming)
         newKeys.insert(entry.key);
 
-    // キー重複がある一覧は差分適用できないためリセットする
+    // キー重複がある一覧は差分適用できないため、リセットする
     if (newKeys.size() != incoming.size()) {
+        beginResetModel();
+        m_entries = incoming;
+        endResetModel();
+        return;
+    }
+
+    // 構造変更が多い場合 (リポジトリ切替等の一覧の入れ替え) は、行単位で通知せずにリセットする
+    QSet<QString> currentKeys;
+    currentKeys.reserve(m_entries.size());
+    int removals = 0;
+    for (const Entry &entry : std::as_const(m_entries)) {
+        currentKeys.insert(entry.key);
+        if (!newKeys.contains(entry.key))
+            ++removals;
+    }
+    int insertions = 0;
+    for (const Entry &entry : std::as_const(incoming)) {
+        if (!currentKeys.contains(entry.key))
+            ++insertions;
+    }
+    if (removals + insertions > kMaxIncrementalRowChanges) {
         beginResetModel();
         m_entries = incoming;
         endResetModel();
@@ -191,7 +220,7 @@ void PackageListModel::applyPackages(const QVariantList &packages)
 }
 
 /**
- * @brief 保持している全行を削除する。
+ * @brief 保持している全行を削除する
  */
 void PackageListModel::clear()
 {
@@ -203,7 +232,7 @@ void PackageListModel::clear()
 }
 
 /**
- * @brief 指定行の生データを返す。
+ * @brief 指定行の生データを返す
  * @param row 行番号
  * @return 行データ (範囲外は空マップ)
  */

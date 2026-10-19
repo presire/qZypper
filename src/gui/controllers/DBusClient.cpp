@@ -1,4 +1,5 @@
 #include <QDBusConnection>
+#include <QDBusConnectionInterface>
 #include <QDBusMetaType>
 #include <QDBusError>
 #include <QDBusMessage>
@@ -7,9 +8,8 @@
 #include <QDBusPendingCallWatcher>
 #include <QDebug>
 #include <QRegularExpression>
-
 #include <limits>
-
+#include <vector>
 #include "DBusClient.h"
 
 namespace qZypper {
@@ -24,12 +24,12 @@ constexpr int kNoTimeout = std::numeric_limits<int>::max();
 static QVariant normalizeDBusValue(const QVariant &value);
 
 /**
- * @brief QDBusArgument の現在要素を再帰的に QVariant へ変換する。
+ * @brief QDBusArgumentの現在要素を再帰的にQVariantへ変換する
  *
- * Qt D-Bus は variant 内の配列/辞書 (aa{sv}, a{sv}, av 等) を QDBusArgument のまま
- * 返すため、入れ子の summary / problems / snapshots 等を QML から参照できるよう
- * QVariantMap / QVariantList へ展開する。
- * @param arg 読み出し元の QDBusArgument (現在位置の要素を 1 つ消費する)
+ * Qt D-Busはvariant内の配列/辞書 (aa{sv}, a{sv}, av等) をQDBusArgumentのまま返すため、
+ * 入れ子のsummary / problems / snapshots等をQMLから参照できるよう、QVariantMap / QVariantListへ展開する
+ *
+ * @param arg 読み出し元のQDBusArgument (現在位置の要素を1つ消費する)
  * @return 変換後の値
  */
 static QVariant readDBusArgument(const QDBusArgument &arg)
@@ -70,7 +70,7 @@ static QVariant readDBusArgument(const QDBusArgument &arg)
 }
 
 /**
- * @brief QDBusVariant / QDBusArgument を含む値を再帰的に通常の QVariant へ正規化する。
+ * @brief QDBusVariant / QDBusArgumentを含む値を、再帰的に通常のQVariantへ正規化する
  * @param value 変換対象
  * @return 正規化後の値
  */
@@ -97,9 +97,9 @@ static QVariant normalizeDBusValue(const QVariant &value)
 }
 
 /**
- * @brief av / aa{sv} 形式の配列を QVariantList に変換する (入れ子も展開)。
+ * @brief av / aa{sv}形式の配列をQVariantListに変換する (入れ子も展開)
  * @param variant 変換対象の引数
- * @return QVariantMap のリスト
+ * @return QVariantMapのリスト
  */
 static QVariantList demarshallArrayOfMaps(const QVariant &variant)
 {
@@ -107,9 +107,9 @@ static QVariantList demarshallArrayOfMaps(const QVariant &variant)
 }
 
 /**
- * @brief a{sv} 形式のマップを QVariantMap に変換する (入れ子も展開)。
+ * @brief a{sv}形式のマップをQVariantMapに変換する (入れ子も展開)
  * @param variant 変換対象の引数
- * @return 変換後の QVariantMap
+ * @return 変換後のQVariantMap
  */
 static QVariantMap demarshallMap(const QVariant &variant)
 {
@@ -117,7 +117,7 @@ static QVariantMap demarshallMap(const QVariant &variant)
 }
 
 /**
- * @brief D-Busエラーをユーザ向けメッセージへ変換する。
+ * @brief D-Busエラーをユーザ向けメッセージへ変換する
  * @param error D-Busエラー
  * @return 表示用メッセージ
  */
@@ -136,13 +136,13 @@ static QString describeError(const QDBusError &error)
 }
 
 /**
- * @brief コンストラクタ。バックエンドサービスの登録/解除を監視する。
+ * @brief コンストラクタ、バックエンドサービスの登録/解除を監視する
  * @param parent 親オブジェクト
  */
 DBusClient::DBusClient(QObject *parent)
     : QObject(parent)
 {
-    // InstallLocalRpms(ah, as) で記述子配列を送るため登録する
+    // InstallLocalRpms(ah, as)で記述子配列を送るため登録する
     qDBusRegisterMetaType<QList<QDBusUnixFileDescriptor>>();
 
     // サービスの登録/解除を監視
@@ -153,14 +153,12 @@ DBusClient::DBusClient(QObject *parent)
         this
     );
 
-    connect(m_watcher, &QDBusServiceWatcher::serviceRegistered,
-            this, &DBusClient::onServiceRegistered);
-    connect(m_watcher, &QDBusServiceWatcher::serviceUnregistered,
-            this, &DBusClient::onServiceUnregistered);
+    connect(m_watcher, &QDBusServiceWatcher::serviceRegistered, this, &DBusClient::onServiceRegistered);
+    connect(m_watcher, &QDBusServiceWatcher::serviceUnregistered, this, &DBusClient::onServiceUnregistered);
 }
 
 /**
- * @brief デストラクタ。D-Busインターフェースを解放する。
+ * @brief デストラクタ、D-Busインターフェースを解放する
  */
 DBusClient::~DBusClient()
 {
@@ -168,10 +166,11 @@ DBusClient::~DBusClient()
 }
 
 /**
- * @brief D-Busバックエンドサービスに接続する。
+ * @brief D-Busバックエンドサービスに接続する
  *
- * システムバスに接続し、D-Busインターフェースを生成してシグナルを接続する。
- * @return 接続成功時: true
+ * システムバスに接続し、D-Busインターフェースを生成してシグナルを接続する
+ *
+ * @return 接続成功時はtrue
  */
 bool DBusClient::connectToBackend()
 {
@@ -185,6 +184,18 @@ bool DBusClient::connectToBackend()
         m_lastError = "Cannot connect to system D-Bus";
         qWarning() << "DBusClient:" << m_lastError;
         return false;
+    }
+
+    // QDBusInterfaceはイントロスペクション結果をキャッシュするため、2回目以降の生成ではD-Busの自動起動が起きない
+    // アイドル終了したバックエンドへ再接続できるよう、未起動時は明示的に起動する
+    auto *busIface = bus.interface();
+    if (busIface && !busIface->isServiceRegistered(SERVICE_NAME).value()) {
+        const QDBusReply<void> started = busIface->startService(SERVICE_NAME);
+        if (!started.isValid()) {
+            m_lastError = QString("Cannot start backend service: %1").arg(started.error().message());
+            qWarning() << "DBusClient:" << m_lastError;
+            return false;
+        }
     }
 
     m_iface = new QDBusInterface(
@@ -265,8 +276,8 @@ bool DBusClient::connectToBackend()
 }
 
 /**
- * @brief バックエンドとの接続状態を返す。
- * @return 接続済みかつインターフェースが有効な場合: true
+ * @brief バックエンドとの接続状態を返す
+ * @return 接続済みかつインターフェースが有効な場合はtrue
  */
 bool DBusClient::isConnected() const
 {
@@ -274,10 +285,11 @@ bool DBusClient::isConnected() const
 }
 
 /**
- * @brief バックエンドサービス登録時の処理。
+ * @brief バックエンドサービス登録時の処理
  *
- * 自分の初期化中は再入を避けるためスキップする。
- * 再接続後は非同期で初期化し、成功時に backendReconnected を発行する。
+ * 自分の初期化中は再入を避けるためスキップする
+ * 再接続後は非同期で初期化し、成功時にbackendReconnectedを発行する
+ *
  * @param serviceName 登録されたサービス名
  */
 void DBusClient::onServiceRegistered(const QString &serviceName)
@@ -295,7 +307,7 @@ void DBusClient::onServiceRegistered(const QString &serviceName)
 }
 
 /**
- * @brief バックエンドサービス解除時の処理。
+ * @brief バックエンドサービス解除時の処理
  * @param serviceName 解除されたサービス名
  */
 void DBusClient::onServiceUnregistered(const QString &serviceName)
@@ -308,49 +320,80 @@ void DBusClient::onServiceUnregistered(const QString &serviceName)
 }
 
 /**
- * @brief 待機中の呼び出しを破棄し、旧バックエンドの応答を無効化する。
+ * @brief 待機中の呼び出しを破棄し、旧バックエンドの応答を無効化する
  *
- * 世代番号を進めることで、既に送信済みで応答待ちの呼び出しのコールバックも破棄対象となる。
+ * 世代番号を進めることで、既に送信済みで応答待ちの呼び出しのコールバックも破棄対象となる
  */
 void DBusClient::resetPendingCalls()
 {
     ++m_generation;
     m_callQueue.clear();
     m_serialCallInFlight = false;
-    // 破棄した Initialize の応答では解除されないため、再接続時の初期化を妨げないよう解除する
+    // 破棄したInitializeの応答では解除されないため、再接続時の初期化を妨げないよう解除する
     m_initializing = false;
 }
 
 // -- 非同期呼び出し共通処理 --
 
 /**
- * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す。
+ * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す
  *
- * QDBusPendingCallWatcher を用いるためGUIスレッドをブロックしない。
- * エラー時は m_lastError を更新し、コールバックへエラー名/メッセージを返す。
+ * QDBusPendingCallWatcherを用いるため、UIスレッドをブロックしない
+ * エラー時はm_lastErrorを更新し、コールバックへエラー名/メッセージを返す
+ *
  * @param msg 送信するメソッド呼び出しメッセージ
  * @param timeout タイムアウト (ミリ秒)
  * @param callback 完了時に呼ばれるコールバック
  */
 void DBusClient::callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback)
 {
-    // バックエンドは処理中に別操作を Busy で拒否する。取消し・プロンプト応答・状態照会は
-    // 処理中でも受け付けられるため直列化せず即時送信し、それ以外は1件ずつ順番に送る。
+    // バックエンドは処理中に別操作をBusyで拒否する
+    // 取消し・プロンプト応答・状態照会は処理中でも受け付けられるため直列化せず即時送信し、それ以外は1件ずつ順番に送る
     static const QStringList kConcurrentMembers = {
         QStringLiteral("CancelOperation"), QStringLiteral("AnswerPrompt"),
         QStringLiteral("GetOperationState"), QStringLiteral("GetSelectionRevision"),
     };
+
+    // 詳細取得は最新の要求だけが意味を持つため、未送信の古い要求を破棄してから積む
+    // 選択を素早く切り替えても、古い詳細取得の完了を順番に待たない
+    static const QStringList kLatestOnlyMembers = {
+        QStringLiteral("GetPackageDetails"),
+    };
+
     if (kConcurrentMembers.contains(msg.member())) {
         dispatchCall(msg, timeout, std::move(callback), false);
         return;
     }
-    if (m_serialCallInFlight || !m_callQueue.empty()) {
-        m_callQueue.push_back({msg, timeout, std::move(callback)});
-        return;
+
+    std::vector<ReplyCallback> superseded;
+    if (kLatestOnlyMembers.contains(msg.member())) {
+        for (auto it = m_callQueue.begin(); it != m_callQueue.end();) {
+            if (it->msg.member() == msg.member()) {
+                superseded.push_back(std::move(it->callback));
+                it = m_callQueue.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
-    dispatchCall(msg, timeout, std::move(callback), true);
+
+    if (m_serialCallInFlight || !m_callQueue.empty())
+        m_callQueue.push_back({msg, timeout, std::move(callback)});
+    else
+        dispatchCall(msg, timeout, std::move(callback), true);
+
+    // コールバックが再入してキューを変更しても安全なよう、キュー操作の完了後に通知する
+    for (const ReplyCallback &cb : superseded) {
+        if (cb)
+            cb(false, QStringLiteral("org.presire.qzypper.Error.Superseded"),
+               QStringLiteral("Superseded by a newer request"), {});
+    }
 }
 
+/**
+ * @brief 直列化キューの先頭の呼び出しを送信する
+ * @note 直列呼び出しが処理中、またはキューが空の場合は何もしない
+ */
 void DBusClient::dispatchNextQueuedCall()
 {
     if (m_serialCallInFlight || m_callQueue.empty())
@@ -360,8 +403,14 @@ void DBusClient::dispatchNextQueuedCall()
     dispatchCall(next.msg, next.timeout, std::move(next.callback), true);
 }
 
-void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback,
-                              bool serialized)
+/**
+ * @brief メソッド呼び出しを非同期で送信し、応答をコールバックへ渡す
+ * @param msg 送信するメソッド呼び出しメッセージ
+ * @param timeout タイムアウト (ミリ秒)
+ * @param callback 完了時に呼ばれるコールバック
+ * @param serialized 直列化キューの対象であればtrue (完了時に次の呼び出しを送信する)
+ */
+void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized)
 {
     if (!isConnected()) {
         m_lastError = QStringLiteral("Not connected to backend");
@@ -401,16 +450,18 @@ void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallbac
             qWarning() << "DBusClient:" << member << m_lastError;
             emit lastErrorChanged();
             if (error.name() == QLatin1String("org.presire.qzypper.Error.ZyppLocked")) {
-                static const QRegularExpression lockedRe(
-                    QStringLiteral("locked by (.+) \\(PID (\\d+)\\)"));
+                static const QRegularExpression lockedRe(QStringLiteral("locked by (.+) \\(PID (\\d+)\\)"));
                 const QRegularExpressionMatch m = lockedRe.match(error.message());
                 const QString lockerName = m.hasMatch() ? m.captured(1) : QString();
                 const int lockerPid = m.hasMatch() ? m.captured(2).toInt() : 0;
+
                 emit packageLocked(lockerName, lockerPid, error.message());
             }
+
             if (callback)
                 callback(false, error.name(), m_lastError, {});
-        } else if (callback) {
+        }
+        else if (callback) {
             callback(true, QString(), QString(), reply.arguments());
         }
 
@@ -422,11 +473,13 @@ void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallbac
 // -- 初期化 --
 
 /**
- * @brief バックエンドを非同期で初期化する。
+ * @brief バックエンドを非同期で初期化する
  *
- * Polkit認証を含むためタイムアウト無制限で呼び出す。バックエンドは必ず応答し、
- * プロセスが終了した場合はバスがエラーを返す。完了時にコールバックへ
- * 成功可否とエラー情報を渡す。
+ * Polkit認証を含むためタイムアウト無制限で呼び出す
+ * バックエンドは必ず応答し、プロセスが終了した場合はバスがエラーを返す
+ *
+ * 完了時にコールバックへ成功可否とエラー情報を渡す
+ *
  * @param callback 完了時に呼ばれるコールバック
  */
 void DBusClient::initializeBackend(ReplyCallback callback)
@@ -438,6 +491,7 @@ void DBusClient::initializeBackend(ReplyCallback callback)
             callback(false, QStringLiteral("org.presire.qzypper.Error.Busy"), m_lastError, {});
         return;
     }
+
     if (!isConnected()) {
         m_lastError = QStringLiteral("Not connected to backend");
         emit lastErrorChanged();
@@ -460,7 +514,7 @@ void DBusClient::initializeBackend(ReplyCallback callback)
 // -- リポジトリ操作 --
 
 /**
- * @brief 全リポジトリのリフレッシュを非同期で要求する。
+ * @brief 全リポジトリのリフレッシュを非同期で要求する
  * @param callback 完了時に呼ばれるコールバック
  */
 void DBusClient::refreshReposAsync(ReplyCallback callback)
@@ -475,7 +529,7 @@ void DBusClient::refreshReposAsync(ReplyCallback callback)
 }
 
 /**
- * @brief 指定リポジトリのリフレッシュを非同期で要求する。
+ * @brief 指定リポジトリのリフレッシュを非同期で要求する
  * @param alias リフレッシュ対象のエイリアス
  * @param callback 完了時に呼ばれるコールバック
  */
@@ -492,7 +546,7 @@ void DBusClient::refreshSingleRepoAsync(const QString &alias, ReplyCallback call
 }
 
 /**
- * @brief 実行中の操作のキャンセルを要求する (fire-and-forget)。
+ * @brief 実行中の操作のキャンセルを要求する (fire-and-forget)
  */
 void DBusClient::cancelOperation()
 {
@@ -503,10 +557,10 @@ void DBusClient::cancelOperation()
 }
 
 /**
- * @brief リポジトリを追加する。
+ * @brief リポジトリを追加する
  * @param url リポジトリURL
  * @param name リポジトリ名
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::addRepo(const QString &url, const QString &name, ReplyCallback callback)
 {
@@ -521,9 +575,9 @@ void DBusClient::addRepo(const QString &url, const QString &name, ReplyCallback 
 }
 
 /**
- * @brief 全属性を指定してリポジトリを追加する。
+ * @brief 全属性を指定してリポジトリを追加する
  * @param properties リポジトリ属性マップ
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::addRepoFull(const QVariantMap &properties, ReplyCallback callback)
 {
@@ -538,7 +592,7 @@ void DBusClient::addRepoFull(const QVariantMap &properties, ReplyCallback callba
 }
 
 /**
- * @brief リポジトリを削除する。
+ * @brief リポジトリを削除する
  * @param alias 削除対象のエイリアス
  * @param callback 完了時に呼ばれるコールバック
  */
@@ -555,9 +609,9 @@ void DBusClient::removeRepo(const QString &alias, ReplyCallback callback)
 }
 
 /**
- * @brief リポジトリの有効/無効を切り替える。
+ * @brief リポジトリの有効/無効を切り替える
  * @param alias 対象エイリアス
- * @param enabled 有効にする場合 true
+ * @param enabled 有効にする場合true
  * @param callback 完了時に呼ばれるコールバック
  */
 void DBusClient::setRepoEnabled(const QString &alias, bool enabled, ReplyCallback callback)
@@ -573,7 +627,7 @@ void DBusClient::setRepoEnabled(const QString &alias, bool enabled, ReplyCallbac
 }
 
 /**
- * @brief リポジトリ属性を変更する。
+ * @brief リポジトリ属性を変更する
  * @param alias 対象エイリアス
  * @param properties 変更する属性マップ
  * @param callback 完了時に呼ばれるコールバック
@@ -593,7 +647,7 @@ void DBusClient::modifyRepo(const QString &alias, const QVariantMap &properties,
 // -- サービス操作 --
 
 /**
- * @brief サービスを追加する。
+ * @brief サービスを追加する
  * @param url サービスURL
  * @param alias サービスエイリアス
  * @param callback 完了時に呼ばれるコールバック
@@ -611,7 +665,7 @@ void DBusClient::addService(const QString &url, const QString &alias, ReplyCallb
 }
 
 /**
- * @brief サービスを削除する。
+ * @brief サービスを削除する
  * @param alias 削除対象エイリアス
  * @param callback 完了時に呼ばれるコールバック
  */
@@ -628,7 +682,7 @@ void DBusClient::removeService(const QString &alias, ReplyCallback callback)
 }
 
 /**
- * @brief サービス属性を変更する。
+ * @brief サービス属性を変更する
  * @param alias 対象エイリアス
  * @param properties 変更する属性マップ
  * @param callback 完了時に呼ばれるコールバック
@@ -646,7 +700,7 @@ void DBusClient::modifyService(const QString &alias, const QVariantMap &properti
 }
 
 /**
- * @brief サービスのリフレッシュを非同期で要求する。
+ * @brief サービスのリフレッシュを非同期で要求する
  * @param alias 対象エイリアス
  * @param callback 完了時に呼ばれるコールバック
  */
@@ -665,7 +719,7 @@ void DBusClient::refreshServiceAsync(const QString &alias, ReplyCallback callbac
 // -- パッケージ状態変更 --
 
 /**
- * @brief パッケージの状態を変更する。
+ * @brief パッケージの状態を変更する
  * @param name パッケージ名
  * @param status 新しいステータス
  * @param callback 完了時に呼ばれるコールバック
@@ -683,7 +737,7 @@ void DBusClient::setPackageStatus(const QString &name, int status, ReplyCallback
 }
 
 /**
- * @brief パッケージのバージョンを変更する。
+ * @brief パッケージのバージョンを変更する
  * @param name パッケージ名
  * @param version バージョン
  * @param arch アーキテクチャ
@@ -705,7 +759,7 @@ void DBusClient::setPackageVersion(const QString &name, const QString &version,
 }
 
 /**
- * @brief パターンの状態を変更する。
+ * @brief パターンの状態を変更する
  * @param name パターン名
  * @param status 新しいステータス
  * @param callback 完了時に呼ばれるコールバック
@@ -723,10 +777,10 @@ void DBusClient::setPatternStatus(const QString &name, int status, ReplyCallback
 }
 
 /**
- * @brief パッチの適用状態を変更する。
+ * @brief パッチの適用状態を変更する
  * @param patchId パッチID
- * @param status 新しいステータス (Install=1 / NoInst=0)
- * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ * @param status 新しいステータス (Install = 1 / NoInst = 0)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
  */
 void DBusClient::setPatchStatus(const QString &patchId, int status, ReplyCallback callback)
 {
@@ -741,9 +795,9 @@ void DBusClient::setPatchStatus(const QString &patchId, int status, ReplyCallbac
 }
 
 /**
- * @brief 必要な全パッチを選択する。
+ * @brief 必要な全パッチを選択する
  * @param options オプションマップ (securityOnly / includeOptional / skipInteractive)
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::selectAllNeededPatches(const QVariantMap &options, ReplyCallback callback)
 {
@@ -760,8 +814,8 @@ void DBusClient::selectAllNeededPatches(const QVariantMap &options, ReplyCallbac
 // -- 依存関係解決 --
 
 /**
- * @brief 全パッケージの更新を実行する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @brief 全パッケージの更新を実行する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::updateAllPackages(ReplyCallback callback)
 {
@@ -775,9 +829,9 @@ void DBusClient::updateAllPackages(ReplyCallback callback)
 }
 
 /**
- * @brief ディストリビューション更新 (dist-upgrade) を実行する。
+ * @brief ディストリビューション更新 (dist-upgrade) を実行する
  * @param options オプションマップ (allowVendorChange)
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::distUpgrade(const QVariantMap &options, ReplyCallback callback)
 {
@@ -792,8 +846,8 @@ void DBusClient::distUpgrade(const QVariantMap &options, ReplyCallback callback)
 }
 
 /**
- * @brief システムの整合性を検証する (VerifySystem)。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @brief システムの整合性を検証する (VerifySystem)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::verifySystem(ReplyCallback callback)
 {
@@ -807,8 +861,8 @@ void DBusClient::verifySystem(ReplyCallback callback)
 }
 
 /**
- * @brief 現在の解決済みトランザクションの概要を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @brief 現在の解決済みトランザクションの概要を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::getTransactionSummary(ReplyCallback callback)
 {
@@ -822,8 +876,8 @@ void DBusClient::getTransactionSummary(ReplyCallback callback)
 }
 
 /**
- * @brief 依存関係を解決する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @brief 依存関係を解決する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::resolveDependencies(ReplyCallback callback)
 {
@@ -837,7 +891,7 @@ void DBusClient::resolveDependencies(ReplyCallback callback)
 }
 
 /**
- * @brief 選択された解決策を適用する。
+ * @brief 選択された解決策を適用する
  * @param problemIndex 問題インデックス
  * @param solutionIndex 解決策インデックス
  * @param callback 完了時に呼ばれるコールバック
@@ -857,8 +911,8 @@ void DBusClient::applySolution(int problemIndex, int solutionIndex, ReplyCallbac
 // -- コミット --
 
 /**
- * @brief 現在の選択リビジョンを取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に quint64)
+ * @brief 現在の選択リビジョンを取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にquint64)
  */
 void DBusClient::getSelectionRevision(ReplyCallback callback)
 {
@@ -872,9 +926,9 @@ void DBusClient::getSelectionRevision(ReplyCallback callback)
 }
 
 /**
- * @brief 選択状態を非同期でコミットする。
+ * @brief 選択状態を非同期でコミットする
  * @param expectedRevision コミット対象の選択リビジョン
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::commitAsync(quint64 expectedRevision, ReplyCallback callback)
 {
@@ -891,7 +945,7 @@ void DBusClient::commitAsync(quint64 expectedRevision, ReplyCallback callback)
 // -- 署名鍵 --
 
 /**
- * @brief 署名鍵を承認する。
+ * @brief 署名鍵を承認する
  * @param fingerprint 鍵のフィンガープリント
  * @param callback 完了時に呼ばれるコールバック
  */
@@ -914,8 +968,8 @@ void DBusClient::trustKey(const QString &fingerprint, ReplyCallback callback)
 // -- 読み取り操作 --
 
 /**
- * @brief リポジトリ一覧を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief リポジトリ一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getRepos(ReplyCallback callback)
 {
@@ -929,10 +983,10 @@ void DBusClient::getRepos(ReplyCallback callback)
 }
 
 /**
- * @brief パッケージを検索する。
+ * @brief パッケージを検索する
  * @param query 検索クエリ
  * @param flags 検索フラグ
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::searchPackages(const QString &query, int flags, ReplyCallback callback)
 {
@@ -947,9 +1001,9 @@ void DBusClient::searchPackages(const QString &query, int flags, ReplyCallback c
 }
 
 /**
- * @brief 高度なパッケージ検索を実行する (マッチ方式・インストール済み限定・ページング対応)。
+ * @brief 高度なパッケージ検索を実行する (マッチ方式・インストール済み限定・ページング対応)
  * @param options オプションマップ (query / flags / match / offset / limit / installedOnly / repoAlias)
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::searchPackagesEx(const QVariantMap &options, ReplyCallback callback)
 {
@@ -964,9 +1018,9 @@ void DBusClient::searchPackagesEx(const QVariantMap &options, ReplyCallback call
 }
 
 /**
- * @brief 分類別のパッケージ一覧を取得する。
- * @param classification 分類名 (recommended / orphaned / unneeded 等)
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief 分類別のパッケージ一覧を取得する
+ * @param classification 分類名 (recommended / orphaned / unneeded等)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPackagesByClassification(const QString &classification, ReplyCallback callback)
 {
@@ -981,9 +1035,9 @@ void DBusClient::getPackagesByClassification(const QString &classification, Repl
 }
 
 /**
- * @brief パッケージ詳細を取得する。
+ * @brief パッケージ詳細を取得する
  * @param name パッケージ名
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::getPackageDetails(const QString &name, ReplyCallback callback)
 {
@@ -998,9 +1052,9 @@ void DBusClient::getPackageDetails(const QString &name, ReplyCallback callback)
 }
 
 /**
- * @brief 指定リポジトリのパッケージ一覧を取得する。
+ * @brief 指定リポジトリのパッケージ一覧を取得する
  * @param repoAlias リポジトリエイリアス
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPackagesByRepo(const QString &repoAlias, ReplyCallback callback)
 {
@@ -1015,8 +1069,8 @@ void DBusClient::getPackagesByRepo(const QString &repoAlias, ReplyCallback callb
 }
 
 /**
- * @brief パターン一覧を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief パターン一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPatterns(ReplyCallback callback)
 {
@@ -1030,9 +1084,9 @@ void DBusClient::getPatterns(ReplyCallback callback)
 }
 
 /**
- * @brief 指定パターンのパッケージ一覧を取得する。
+ * @brief 指定パターンのパッケージ一覧を取得する
  * @param patternName パターン名
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPackagesByPattern(const QString &patternName, ReplyCallback callback)
 {
@@ -1047,9 +1101,9 @@ void DBusClient::getPackagesByPattern(const QString &patternName, ReplyCallback 
 }
 
 /**
- * @brief パッチ一覧を取得する。
+ * @brief パッチ一覧を取得する
  * @param category パッチカテゴリ
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPatches(int category, ReplyCallback callback)
 {
@@ -1064,8 +1118,8 @@ void DBusClient::getPatches(int category, ReplyCallback callback)
 }
 
 /**
- * @brief パッケージロック一覧を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief パッケージロック一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getLocks(ReplyCallback callback)
 {
@@ -1079,9 +1133,9 @@ void DBusClient::getLocks(ReplyCallback callback)
 }
 
 /**
- * @brief パッケージロックを追加する。
+ * @brief パッケージロックを追加する
  * @param lock ロック定義マップ (name / kind / match / repoAlias / arch / version / comment)
- * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
  */
 void DBusClient::addLock(const QVariantMap &lock, ReplyCallback callback)
 {
@@ -1096,9 +1150,9 @@ void DBusClient::addLock(const QVariantMap &lock, ReplyCallback callback)
 }
 
 /**
- * @brief パッケージロックを削除する。
+ * @brief パッケージロックを削除する
  * @param lock 削除対象のロック定義マップ (追加時のキーと同じ)
- * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
  */
 void DBusClient::removeLock(const QVariantMap &lock, ReplyCallback callback)
 {
@@ -1113,9 +1167,9 @@ void DBusClient::removeLock(const QVariantMap &lock, ReplyCallback callback)
 }
 
 /**
- * @brief zypp 操作履歴を取得する。
+ * @brief zypp操作履歴を取得する
  * @param filter フィルタマップ (since / until / limit / offset / actions)
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getHistory(const QVariantMap &filter, ReplyCallback callback)
 {
@@ -1130,8 +1184,8 @@ void DBusClient::getHistory(const QVariantMap &filter, ReplyCallback callback)
 }
 
 /**
- * @brief 現在のソルバー問題のテストケースをファイルへ保存する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に保存パス QString)
+ * @brief 現在のソルバー問題のテストケースをファイルへ保存する
+ * @param callback 完了時に呼ばれるコールバック (args[0]に保存パスQString)
  */
 void DBusClient::createSolverTestcase(ReplyCallback callback)
 {
@@ -1145,8 +1199,8 @@ void DBusClient::createSolverTestcase(ReplyCallback callback)
 }
 
 /**
- * @brief サービス一覧を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief サービス一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getServices(ReplyCallback callback)
 {
@@ -1160,8 +1214,8 @@ void DBusClient::getServices(ReplyCallback callback)
 }
 
 /**
- * @brief ディスク使用量を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief ディスク使用量を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getDiskUsage(ReplyCallback callback)
 {
@@ -1175,8 +1229,8 @@ void DBusClient::getDiskUsage(ReplyCallback callback)
 }
 
 /**
- * @brief 変更予定パッケージ一覧を取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief 変更予定パッケージ一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::getPendingChanges(ReplyCallback callback)
 {
@@ -1192,7 +1246,7 @@ void DBusClient::getPendingChanges(ReplyCallback callback)
 // -- 状態保存・復元 --
 
 /**
- * @brief 選択状態を保存する (fire-and-forget)。
+ * @brief 選択状態を保存する (fire-and-forget)
  */
 void DBusClient::saveState()
 {
@@ -1203,7 +1257,7 @@ void DBusClient::saveState()
 }
 
 /**
- * @brief 選択状態を復元する。
+ * @brief 選択状態を復元する
  * @param callback 完了時に呼ばれるコールバック
  */
 void DBusClient::restoreState(ReplyCallback callback)
@@ -1220,8 +1274,8 @@ void DBusClient::restoreState(ReplyCallback callback)
 // -- 操作状態 (Wave1) --
 
 /**
- * @brief 現在の操作状態 (a{sv}) を非同期で取得する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantMap)
+ * @brief 現在の操作状態 (a{sv}) を非同期で取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
  */
 void DBusClient::getOperationState(ReplyCallback callback)
 {
@@ -1237,10 +1291,10 @@ void DBusClient::getOperationState(ReplyCallback callback)
 // -- 対話プロンプト (Wave1) --
 
 /**
- * @brief 対話プロンプトへ応答する。
+ * @brief 対話プロンプトへ応答する
  * @param promptId プロンプトID
- * @param answer 応答マップ (action キーを含む)
- * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ * @param answer 応答マップ (actionキーを含む)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
  */
 void DBusClient::answerPrompt(uint promptId, const QVariantMap &answer, ReplyCallback callback)
 {
@@ -1256,8 +1310,8 @@ void DBusClient::answerPrompt(uint promptId, const QVariantMap &answer, ReplyCal
 }
 
 /**
- * @brief 編集セッションを解放する。
- * @param callback 完了時に呼ばれるコールバック (args[0] に bool)
+ * @brief 編集セッションを解放する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
  */
 void DBusClient::releaseSession(ReplyCallback callback)
 {
@@ -1271,30 +1325,49 @@ void DBusClient::releaseSession(ReplyCallback callback)
 }
 
 
+/**
+ * @brief 未信頼鍵通知をQMLで扱えるマップへ正規化して中継する
+ * @param keyInfo バックエンドから受信した鍵情報
+ */
 void DBusClient::onUntrustedKeyDetected(const QVariantMap &keyInfo)
 {
     emit untrustedKeyDetected(demarshallMap(keyInfo));
 }
 
+/**
+ * @brief 操作状態通知をQMLで扱えるマップへ正規化して中継する
+ * @param state バックエンドから受信した操作状態
+ */
 void DBusClient::onOperationStateChanged(const QVariantMap &state)
 {
     emit operationStateChanged(demarshallMap(state));
 }
 
+/**
+ * @brief 対話プロンプトを正規化して中継する
+ * @param promptId プロンプト識別子
+ * @param promptType プロンプト種別
+ * @param data バックエンドから受信したプロンプト内容
+ */
 void DBusClient::onPromptRequested(uint promptId, const QString &promptType, const QVariantMap &data)
 {
     emit promptRequested(promptId, promptType, demarshallMap(data));
 }
 
+/**
+ * @brief RPMスクリプト出力を正規化して中継する
+ * @param line バックエンドから受信した1行分の出力
+ */
 void DBusClient::onScriptOutput(const QVariantMap &line)
 {
     emit scriptOutput(demarshallMap(line));
 }
 
 /**
- * @brief ローカルRPMファイルをインストール対象として選択し、ソルバーを実行する。
- * @param paths RPMファイルの絶対パス一覧
- * @param callback 完了時に呼ばれるコールバック (args[0] に結果 QVariantMap)
+ * @brief ローカルRPMファイルをインストール対象として選択し、ソルバーを実行する
+ * @param files 開いたRPMファイルの記述子一覧
+ * @param fileNames 表示用のRPMファイル名一覧
+ * @param callback 完了時に呼ばれるコールバック (args[0]に結果QVariantMap)
  */
 void DBusClient::installLocalRpms(const QList<QDBusUnixFileDescriptor> &files,
                                   const QStringList &fileNames, ReplyCallback callback)
@@ -1310,9 +1383,9 @@ void DBusClient::installLocalRpms(const QList<QDBusUnixFileDescriptor> &files,
 }
 
 /**
- * @brief .repo ファイルの内容を解析してリポジトリ一覧を返す (システムは変更しない)。
- * @param content .repo ファイルの内容
- * @param callback 完了時に呼ばれるコールバック (args[0] に QVariantList)
+ * @brief .repoファイルの内容を解析してリポジトリ一覧を返す (システムは変更しない)
+ * @param content .repoファイルの内容
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
 void DBusClient::parseRepoFile(const QString &content, ReplyCallback callback)
 {
@@ -1327,9 +1400,9 @@ void DBusClient::parseRepoFile(const QString &content, ReplyCallback callback)
 }
 
 /**
- * @brief .repo ファイルの内容からリポジトリを追加する。
- * @param content .repo ファイルの内容
- * @param callback 完了時に呼ばれるコールバック (args[0] に結果 QVariantMap)
+ * @brief .repoファイルの内容からリポジトリを追加する
+ * @param content .repoファイルの内容
+ * @param callback 完了時に呼ばれるコールバック (args[0]に結果QVariantMap)
  */
 void DBusClient::importRepoFile(const QString &content, ReplyCallback callback)
 {

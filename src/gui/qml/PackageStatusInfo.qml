@@ -1,10 +1,22 @@
 pragma Singleton
+/**
+ * @file PackageStatusInfo.qml
+ * @brief パッケージステータスの定数と表示情報をまとめたシングルトン
+ *
+ * src/common/Types.hのPackageStatusと1:1で対応する数値をQML側から参照するための窓口になる
+ * PackageTable、StatusFilterPanel、StatusIcon、Utilから参照される
+ *
+ * 入力 : なし
+ * 出力 : なし (ステータス値ごとの表示名・アイコン・判定結果のみ)
+ * 依存 : src/common/Types.h (PackageStatusの数値定義)
+ */
 import QtQuick
 
-// パッケージステータス (src/common/Types.h の PackageStatus と 1:1) の定数・表示情報
+// ステータスの定数・表示名・アイコン・判定関数を提供するシングルトン本体
 QtObject {
-    id: info
+    id: info  // シングルトン自身の参照名
 
+    // 数値はC++側のenumと一致させる必要があるため明示的に指定する
     enum Status {
         NoInst = 0,
         Install = 1,
@@ -19,12 +31,11 @@ QtObject {
     }
 
     // ステータス数 (ビットマスクの幅)
-    readonly property int count: 10
+    readonly property int count: 10           // フィルタ用ビットマスクのビット数
+    readonly property int defaultMask: 0x3FF  // 全ステータスを表示する初期マスク
 
-    // 全ステータスを表示するマスク (既定値)
-    readonly property int defaultMask: 0x3FF
-
-    // フィルタパネルの行順 (Myrlyn 準拠)。内側の配列ごとに区切りを入れる
+    // フィルタパネルのグループ定義 (行順はMyrlyn準拠)
+    // 内側の配列ごとに区切りを入れる
     readonly property var filterGroups: [
         [PackageStatusInfo.Install, PackageStatusInfo.Update, PackageStatusInfo.Del],
         [PackageStatusInfo.AutoInstall, PackageStatusInfo.AutoUpdate, PackageStatusInfo.AutoDel],
@@ -32,15 +43,21 @@ QtObject {
         [PackageStatusInfo.KeepInstalled, PackageStatusInfo.NoInst]
     ]
 
-    // filterGroups を平坦化した行順
+    // filterGroupsを平坦化した行順
+    // 現在はどこからも参照されていない (StatusFilterPanelはfilterGroupsを直接使用する)
     readonly property var filterOrder: {
         var order = []
-        for (var g = 0; g < filterGroups.length; ++g)
+        for (var g = 0; g < filterGroups.length; ++g) {
             order = order.concat(filterGroups[g])
+        }
         return order
     }
 
-    // ステータスの表示名
+    /**
+     * @brief ステータス値に対応する表示名を返す
+     * @param status PackageStatusの数値
+     * @return qsTrで翻訳された表示名、未知の値なら空文字列
+     */
     function label(status) {
         switch (status) {
             case PackageStatusInfo.NoInst:        return qsTr("Do Not Install")
@@ -57,7 +74,11 @@ QtObject {
         }
     }
 
-    // ステータスアイコンのリソースパス
+    /**
+     * @brief ステータス値に対応するアイコンのリソースURLを返す
+     * @param status PackageStatusの数値
+     * @return qrcスキームのSVGパス、未知の値なら空文字列
+     */
     function iconSource(status) {
         var base = "qrc:/qt/qml/org/presire/qzypper/gui/icons/status/"
         switch (status) {
@@ -75,7 +96,11 @@ QtObject {
         }
     }
 
-    // インストール済み、またはインストール/更新予定のステータスか (一覧のチェック状態)
+    /**
+     * @brief 一覧のチェックボックスをONで表示するステータスかを判定する
+     * @param status PackageStatusの数値
+     * @return インストール済み、または、インストール/更新予定ならtrue
+     */
     function isChecked(status) {
         return status === PackageStatusInfo.KeepInstalled
             || status === PackageStatusInfo.Install
@@ -85,12 +110,21 @@ QtObject {
             || status === PackageStatusInfo.Protected
     }
 
-    // 削除予定のステータスか
+    /**
+     * @brief 削除予定のステータスかを判定する
+     * @param status PackageStatusの数値
+     * @return DelまたはAutoDelならtrue
+     */
     function isMarkedForRemoval(status) {
         return status === PackageStatusInfo.Del || status === PackageStatusInfo.AutoDel
     }
 
-    // マスクにステータスが含まれるか
+    /**
+     * @brief フィルタ用ビットマスクに指定ステータスが含まれるかを判定する
+     * @param mask ステータスビットの集合
+     * @param status PackageStatusの数値
+     * @return ビットが立っていればtrue
+     */
     function maskHas(mask, status) {
         return ((mask >> status) & 1) === 1
     }

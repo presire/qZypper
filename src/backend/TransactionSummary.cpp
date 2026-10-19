@@ -1,23 +1,28 @@
-#include "TransactionSummary.h"
-
-#include "ZyppManager.h"
-
+#include <QVariantList>
 #include <zypp/Edition.h>
 #include <zypp/PoolItem.h>
-
-#include <QVariantList>
+#include "TransactionSummary.h"
+#include "ZyppManager.h"
 
 namespace qZypper {
 
+/**
+ * @brief 新旧パッケージ情報から変更種別とリスクを分類する
+ * @param tuple 導入前後のパッケージ属性
+ * @param cmp バージョン比較関数
+ * @return 導入、削除、更新、ダウングレード等のリスク
+ */
 ChangeRisk classifyChange(const ChangeTuple &tuple, const VersionCompareFn &cmp)
 {
     ChangeRisk risk;
 
     if (!tuple.hasOld && tuple.hasNew) {
         risk.install = true;
-    } else if (tuple.hasOld && !tuple.hasNew) {
+    }
+    else if (tuple.hasOld && !tuple.hasNew) {
         risk.remove = true;
-    } else if (tuple.hasOld && tuple.hasNew) {
+    }
+    else if (tuple.hasOld && tuple.hasNew) {
         const int comparison = cmp(tuple.oldVersion, tuple.newVersion);
         if (comparison > 0)
             risk.downgrade = true;
@@ -31,17 +36,25 @@ ChangeRisk classifyChange(const ChangeTuple &tuple, const VersionCompareFn &cmp)
     return risk;
 }
 
+/**
+ * @brief 変更項目を種別別カウンタと詳細一覧へ集計する
+ * @param tally 更新するトランザクション集計
+ * @param entry 集計する変更項目
+ */
 void accumulateChange(TransactionTally &tally, const ChangeEntry &entry)
 {
     if (entry.risk.remove) {
         ++tally.removeCount;
         tally.removals.push_back(entry);
-    } else if (entry.risk.downgrade) {
+    }
+    else if (entry.risk.downgrade) {
         ++tally.downgradeCount;
         tally.downgrades.push_back(entry);
-    } else if (entry.risk.install) {
+    }
+    else if (entry.risk.install) {
         ++tally.installCount;
-    } else if (entry.risk.update) {
+    }
+    else if (entry.risk.update) {
         ++tally.updateCount;
     }
 
@@ -56,6 +69,11 @@ void accumulateChange(TransactionTally &tally, const ChangeEntry &entry)
     }
 }
 
+/**
+ * @brief 変更項目をD-Bus転送用マップへ変換する
+ * @param entry 変換する変更項目
+ * @return 旧新属性とリポジトリを持つマップ
+ */
 QVariantMap changeEntryToVariantMap(const ChangeEntry &entry)
 {
     return {
@@ -70,6 +88,11 @@ QVariantMap changeEntryToVariantMap(const ChangeEntry &entry)
     };
 }
 
+/**
+ * @brief トランザクション集計をD-Bus転送用マップへ変換する
+ * @param tally 変換する集計結果
+ * @return 件数、容量、変更詳細を持つマップ
+ */
 QVariantMap tallyToVariantMap(const TransactionTally &tally)
 {
     auto toList = [](const std::vector<ChangeEntry> &entries) {
@@ -96,13 +119,13 @@ QVariantMap tallyToVariantMap(const TransactionTally &tally)
 }
 
 /**
- * @brief 現在のプール状態からトランザクションのリスクサマリを計算する。
+ * @brief 現在のプール状態からトランザクションのリスクサマリを計算する
  *
- * 導入予定/削除予定の Selectable を走査し、新規・更新・削除・ダウングレード・
- * ベンダ変更・アーキテクチャ変更を集計する。ResolveDependencies、
- * UpdateAllPackages、DistUpgrade、SelectAllNeededPatches、Commit の各結果に
- * 添付するサマリと同じ形状を返す。
- * @return サマリの a{sv}
+ * 導入予定/削除予定のSelectableを走査し、新規・更新・削除・ダウングレード・ベンダ変更・アーキテクチャ変更を集計する
+ *
+ * ResolveDependencies、UpdateAllPackages、DistUpgrade、SelectAllNeededPatches、Commitの各結果に添付するサマリと同じ形状を返す
+ *
+ * @return サマリのa{sv}
  */
 QVariantMap ZyppManager::computeTransactionSummary() const
 {
@@ -111,8 +134,8 @@ QVariantMap ZyppManager::computeTransactionSummary() const
 }
 
 /**
- * @brief 現在のプール状態からトランザクションのリスクサマリを計算する (m_mutex 保持中)。
- * @return サマリの a{sv}
+ * @brief 現在のプール状態からトランザクションのリスクサマリを計算する (m_mutex保持中)
+ * @return サマリのa{sv}
  */
 QVariantMap ZyppManager::computeTransactionSummaryLocked() const
 {
@@ -194,10 +217,12 @@ QVariantMap ZyppManager::computeTransactionSummaryLocked() const
 
             accumulateChange(tally, entry);
         }
-    } catch (const zypp::Exception &e) {
+    }
+    catch (const zypp::Exception &e) {
         m_lastError = "Transaction summary error: " + e.asString();
-        return {};   // 途中集計を返すと GUI が「危険な変更なし」と誤判定するため空を返す (fail-closed)
-    } catch (const std::exception &e) {
+        return {};   // 途中集計を返すとGUIが「危険な変更なし」と誤判定するため空を返す (fail-closed)
+    }
+    catch (const std::exception &e) {
         m_lastError = std::string("Transaction summary error: ") + e.what();
         return {};
     }
@@ -206,8 +231,8 @@ QVariantMap ZyppManager::computeTransactionSummaryLocked() const
 }
 
 /**
- * @brief 現在のプール状態のリスクサマリを取得する (D-Bus 公開用)。
- * @return サマリの a{sv}
+ * @brief 現在のプール状態のリスクサマリを取得する (D-Bus公開用)
+ * @return サマリのa{sv}
  */
 QVariantMap ZyppManager::getTransactionSummary()
 {

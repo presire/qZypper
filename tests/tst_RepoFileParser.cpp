@@ -1,16 +1,25 @@
-#include "RepoFileParser.h"
-
 #include <QtTest>
+#include "RepoFileParser.h"
 
 using namespace qZypper;
 
 namespace {
 
+/**
+ * @brief 常に妥当と判定する別名・URL検証関数 (未使用引数は無視する)
+ * @return 常にtrue
+ */
 bool alwaysValid(const QString &, QString &)
 {
     return true;
 }
 
+/**
+ * @brief goodで始まる値だけを妥当とし他はエラーにする検証関数
+ * @param value 検証する文字列
+ * @param err 失敗時に理由を格納する出力先
+ * @return 妥当ならtrue、不正ならfalse
+ */
 bool onlyGoodUrls(const QString &value, QString &err)
 {
     if (value.startsWith(QLatin1String("good")))
@@ -19,24 +28,43 @@ bool onlyGoodUrls(const QString &value, QString &err)
     return false;
 }
 
-constexpr std::size_t kCap = 64 * 1024;
+constexpr std::size_t kCap = 64 * 1024; ///< 既定の解析サイズ上限
 
 } // namespace
 
+/**
+ * @class RepoFileParserTest
+ * @brief リポジトリ定義ファイルの解析と検証を検証する
+ *
+ * 複数セクションの解析、コメント・空行の無視、未知キーを含むセクションのスキップ、サイズ上限、URL検証、
+ * セクション外キーや不正ヘッダのエラー、baseurl欠落や未対応type・mirrorlist・重複別名の拒否、セクションのVariantMap変換を対象にする
+ */
 class RepoFileParserTest : public QObject {
     Q_OBJECT
 private slots:
+    /** @brief 複数セクションを解析し各項目を読み取ることを検証する */
     void parsesMultipleSections();
+    /** @brief コメント行と空行を無視することを検証する */
     void ignoresCommentsAndBlankLines();
+    /** @brief 未知キーを含むセクションだけをスキップすることを検証する */
     void rejectsInvalidKeyPerSection();
+    /** @brief サイズ上限を超える内容を拒否することを検証する */
     void enforcesSizeCap();
+    /** @brief URL検証に失格したセクションをスキップすることを検証する */
     void rejectsBadUrlFromValidator();
+    /** @brief セクション外のキーで解析を失敗させることを検証する */
     void failsOnKeyOutsideSection();
+    /** @brief 閉じていないヘッダで解析を失敗させることを検証する */
     void failsOnMalformedHeader();
+    /** @brief baseurlのないセクションをスキップすることを検証する */
     void skipsMissingBaseurl();
+    /** @brief 未対応のtypeを持つセクションを拒否することを検証する */
     void rejectsUnsupportedType();
+    /** @brief mirrorlistを持つセクションを拒否することを検証する */
     void rejectsMirrorlist();
+    /** @brief 重複した別名を拒否し最初の定義を残すことを検証する */
     void rejectsDuplicateAlias();
+    /** @brief セクションをVariantMapへ変換することを検証する */
     void mapsSectionToVariantMap();
 };
 

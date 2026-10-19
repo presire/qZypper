@@ -1,25 +1,25 @@
-#include "PackageManagerAdaptor.h"
-
-#include "ZyppHistory.h"
-#include "ZyppLocks.h"
-#include "ZyppManager.h"
-
 #include <QDBusError>
 #include <QSet>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
-
 #include <string>
+#include "PackageManagerAdaptor.h"
+#include "ZyppHistory.h"
+#include "ZyppLocks.h"
+#include "ZyppManager.h"
 
 namespace qZypper {
 
 namespace {
 
-/// 永続ロック操作の Polkit アクション ID。
+/// 永続ロック操作のPolkitアクションID
 constexpr char kManageLocksAction[] = "org.presire.qzypper.manage-locks";
 
-/// GetPackagesByClassification で許可する分類名。
+/**
+ * @brief GetPackagesByClassificationで許可する分類名の集合を返す
+ * @return 許可された分類名の集合 (初回呼び出し時に生成する)
+ */
 const QSet<QString> &allowedClassifications()
 {
     static const QSet<QString> values = {
@@ -33,9 +33,9 @@ const QSet<QString> &allowedClassifications()
 }
 
 /**
- * @brief SolverResult を D-Bus 転送用マップへ変換する。
+ * @brief SolverResultをD-Bus転送用マップへ変換する
  * @param result ソルバー結果
- * @return success/problems/summary を持つマップ
+ * @return success/problems/summaryを持つマップ
  */
 QVariantMap solverResultMap(const ZyppManager::SolverResult &result)
 {
@@ -52,6 +52,10 @@ QVariantMap solverResultMap(const ZyppManager::SolverResult &result)
 
 } // namespace
 
+/**
+ * @brief 永続パッケージロックの一覧を取得する
+ * @return 各ロックをa{sv}へ変換したリスト
+ */
 QVariantList PackageManagerAdaptor::GetLocks()
 {
     return runRead([]() -> QVariant {
@@ -65,6 +69,11 @@ QVariantList PackageManagerAdaptor::GetLocks()
     }).toList();
 }
 
+/**
+ * @brief 検証済みロックを認可後に追加する
+ * @param lock 追加するロックの属性マップ
+ * @return 追加要求を開始できた場合はtrue
+ */
 bool PackageManagerAdaptor::AddLock(const QVariantMap &lock)
 {
     LockInfo info;
@@ -81,6 +90,11 @@ bool PackageManagerAdaptor::AddLock(const QVariantMap &lock)
     });
 }
 
+/**
+ * @brief 検証済みロックを認可後に削除する
+ * @param lock 削除するロックの属性マップ
+ * @return 削除要求を開始できた場合はtrue
+ */
 bool PackageManagerAdaptor::RemoveLock(const QVariantMap &lock)
 {
     LockInfo info;
@@ -97,6 +111,11 @@ bool PackageManagerAdaptor::RemoveLock(const QVariantMap &lock)
     });
 }
 
+/**
+ * @brief 許可済み分類に属するパッケージを取得する
+ * @param cls 問い合わせる分類名
+ * @return パッケージ情報をa{sv}へ変換したリスト
+ */
 QVariantList PackageManagerAdaptor::GetPackagesByClassification(const QString &cls)
 {
     const QString norm = cls.trimmed().toLower();
@@ -120,6 +139,11 @@ QVariantList PackageManagerAdaptor::GetPackagesByClassification(const QString &c
     }).toList();
 }
 
+/**
+ * @brief 検証済みページング条件で操作履歴を取得する
+ * @param options 履歴の絞込みとページング条件
+ * @return 履歴項目をa{sv}へ変換したリスト
+ */
 QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
 {
     HistoryOptions parsed;
@@ -130,7 +154,7 @@ QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
         }
         return {};
     }
-    // 上限超過などの失敗を空の履歴と区別できるよう、D-Bus エラーとして返す。
+    // 上限超過などの失敗を空の履歴と区別できるよう、D-Busエラーとして返す
     if (!checkRead()) return {};
     startWorker(message(), [parsed] {
         AsyncOutcome result;
@@ -154,6 +178,10 @@ QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
     return {};
 }
 
+/**
+ * @brief インストール済みシステムの依存関係を検証する
+ * @return 成否と問題一覧を持つソルバー結果
+ */
 QVariantMap PackageManagerAdaptor::VerifySystem()
 {
     return runOwnerSync([]() -> QVariant {
@@ -161,6 +189,10 @@ QVariantMap PackageManagerAdaptor::VerifySystem()
     }, true, true).toMap();
 }
 
+/**
+ * @brief 現在のソルバー状態を再現できるテストケースを作成する
+ * @return 作成したテストケースのパスまたは空文字列
+ */
 QString PackageManagerAdaptor::CreateSolverTestcase()
 {
     return runOwnerSync([]() -> QVariant {

@@ -1,34 +1,52 @@
-#include "LocalRpm.h"
-
 #include <QtTest>
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTextStream>
-
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "LocalRpm.h"
 
 using namespace qZypper;
 
+/**
+ * @class LocalRpmTest
+ * @brief ローカルrpmファイルの検証・オープン・コピー処理を検証する
+ *
+ * パス構文の検証、呼出側の読み取り可否、シンボリックリンクや非通常ファイルの拒否、サイズ上限、取消し可能なコピー、既存fdの取り込みを対象にする
+ */
 class LocalRpmTest : public QObject {
     Q_OBJECT
 private slots:
+    /** @brief validatesPathSyntaxの入力データを提供する */
     void validatesPathSyntax_data();
+    /** @brief rpmパス構文の妥当性を検証する */
     void validatesPathSyntax();
+    /** @brief checksCallerReadabilityの入力データを提供する */
     void checksCallerReadability_data();
+    /** @brief ファイル権限と所有者から呼出側が読めるかを判定することを検証する */
     void checksCallerReadability();
+    /** @brief シンボリックリンクを拒否することを検証する */
     void rejectsSymlink();
+    /** @brief 通常のrpmファイルを受け入れることを検証する */
     void acceptsRegularRpm();
+    /** @brief サイズ上限を超えるファイルを拒否することを検証する */
     void enforcesSizeLimit();
+    /** @brief ディレクトリなど非通常ファイルを拒否することを検証する */
     void rejectsNonRegularFile();
+    /** @brief rpmをコピー先へ正しく複製することを検証する */
     void copiesToDestination();
+    /** @brief 取消し要求でコピーを途中停止することを検証する */
     void copyStopsWhenCancelled();
+    /** @brief 既存の通常ファイルfdを取り込めることを検証する */
     void adoptsRegularFd();
+    /** @brief adoptRejectsBadNamesの入力データを提供する */
     void adoptRejectsBadNames_data();
+    /** @brief 不正なファイル名でのfd取り込みを拒否することを検証する */
     void adoptRejectsBadNames();
+    /** @brief FIFOや書き込み専用fdの取り込みを拒否することを検証する */
     void adoptRejectsFifoAndWriteOnly();
 };
 
@@ -190,7 +208,7 @@ void LocalRpmTest::copyStopsWhenCancelled()
     QCOMPARE(beats, 2);
     QVERIFY(QFileInfo(destPath).size() < 3 * 1024 * 1024);
 
-    // 取消し要求前なら最後までコピーし、読み込みごとに heartbeat を呼ぶ
+    // 取消し要求前なら最後までコピーし、読み込みごとにheartbeatを呼ぶ
     cancel = false;
     beats = 0;
     const QString fullPath = dir.filePath(QStringLiteral("full.rpm"));
@@ -215,14 +233,14 @@ void LocalRpmTest::adoptsRegularFd()
     LocalRpmFile out;
     std::string err;
     QVERIFY2(adoptLocalRpmFd(fd, "pkg.rpm", kMaxLocalRpmBytes, out, err), err.c_str());
-    ::close(fd);  // 呼出側の fd を閉じても複製 fd で読める
+    ::close(fd);  // 呼出側のfdを閉じても複製fdで読める
     const QString destPath = dir.filePath(QStringLiteral("copy.rpm"));
     QVERIFY2(copyLocalRpmTo(out, destPath.toStdString(), kMaxLocalRpmBytes, err), err.c_str());
     QFile copy(destPath);
     QVERIFY(copy.open(QIODevice::ReadOnly));
     QCOMPARE(copy.readAll(), QByteArray("rpmdata"));
 
-    // サイズ上限
+    // サイズ上限を超えるファイルは拒否する
     const int fd2 = ::open(path.toLocal8Bit().constData(), O_RDONLY | O_CLOEXEC);
     LocalRpmFile small;
     QVERIFY(!adoptLocalRpmFd(fd2, "pkg.rpm", 3, small, err));
@@ -261,7 +279,7 @@ void LocalRpmTest::adoptRejectsFifoAndWriteOnly()
     QTemporaryDir dir;
     const QString fifo = dir.filePath(QStringLiteral("pipe.rpm"));
     QCOMPARE(::mkfifo(fifo.toLocal8Bit().constData(), 0600), 0);
-    // O_NONBLOCK により書き手不在でもブロックしない (GUI 側と同じ開き方)
+    // O_NONBLOCKにより書き手不在でもブロックしない (GUI側と同じ開き方)
     const int fd = ::open(fifo.toLocal8Bit().constData(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
     QVERIFY(fd >= 0);
     LocalRpmFile out;

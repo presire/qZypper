@@ -22,356 +22,279 @@
 #include <zypp/ServiceInfo.h>
 #include "PackageInfo.h"
 #include "RepoInfo.h"
+#include "ServiceInfo.h"
+#include "PatternPatchInfo.h"
+#include "ResolverInfo.h"
 #include "ZyppLocks.h"
 #include "ZyppHistory.h"
 #include "ZyppCallbackReceiver.h"
+#include "ZyppKeyReceiver.h"
+#include "ZyppResults.h"
 #include "CommitOutcome.h"
 #include "OperationState.h"
 #include "CommitInteraction.h"
 #include "SnapshotInfo.h"
 #include "LocalRpm.h"
 
-
 namespace qZypper {
 
 struct SearchOptions;   // 拡張検索オプション (SearchOptions.h)
 
 /**
- * @brief libzypp のラッパークラス (シングルトン)。
+ * @class ZyppManager
+ * @brief libzyppのラッパークラス (シングルトン)
  *
- * libzypp の全操作をスレッドセーフに提供する。
- * PackageManagerAdaptor から呼び出される。
+ * libzyppの全操作をスレッドセーフに提供し、PackageManagerAdaptorから呼び出される
+ *
+ * 実装は責務ごとにZyppRepos.cpp、ZyppServices.cpp、ZyppQueries.cpp、ZyppSelection.cpp、ZyppResolver.cpp、ZyppCommit.cpp等のZypp*.cppへ分割している
+ *
+ * 入力値の検証とリポジトリ/サービスのポリシー検査はRepoPolicyが担う
+ *
+ * m_mutex : libzyppへのアクセスを直列化する非再帰mutex
+ *           鍵承認系のメソッドはワーカースレッドのコールバックと競合しないよう取得しない
  */
 class ZyppManager {
 public:
-    static ZyppManager& instance();                       // シングルトン取得
+    using SolverResult = qZypper::SolverResult;                    // ソルバーの結果 (ZyppResults.h)
+    using LocalRpmInstallResult = qZypper::LocalRpmInstallResult;  // ローカルRPMインストールの解決結果 (ZyppResults.h)
+    using CommitResult = qZypper::CommitResult;                    // コミットの結果 (ZyppResults.h)
+
+    static ZyppManager& instance();                                          // シングルトンの取得
 
     // 初期化・終了
-    bool initialize(const std::string& root = "/", bool cacheOnly = false); // libzypp初期化
-    void shutdown();                                      // リソース解放
-    bool isInitialized() const { return m_initialized; }  // 初期化済みか
-    bool reloadIfChanged();                             // 外部RPM DB変更時に再読込
-    OperationState &operationState() { return m_operation; } // libzypp非依存の共有制御
+    bool initialize(const std::string& root = "/", bool cacheOnly = false);  // libzyppの初期化
+    void shutdown();                                                         // リソースの解放
+    /** @brief 初期化済みかを返す */
+    bool isInitialized() const { return m_initialized; }
+    bool reloadIfChanged();                                                  // 外部でRPMデータベースが変更された場合に再読込
+    OperationState &operationState() { return m_operation; }                 // libzypp非依存の共有制御
 
     // リポジトリ管理
-    std::vector<RepoInfo> getRepos() const;                              // リポジトリ一覧取得
-    bool addRepo(const std::string& url, const std::string& name);       // リポ追加 (簡易)
-    bool addRepo(const RepoInfo& info);                                  // リポ追加 (全属性)
-    bool removeRepo(const std::string& alias);                           // リポ削除
-    bool setRepoEnabled(const std::string& alias, bool enabled);         // リポ有効 / 無効
-    bool modifyRepo(const std::string& alias, const RepoChanges& changes);  // リポ変更 (渡された項目のみ)
-    bool refreshRepos(std::function<void(const std::string&, int)> progressCallback = nullptr);                           // 全リポリフレッシュ
-    bool refreshRepo(const std::string& alias, std::function<void(const std::string&, int)> progressCallback = nullptr);  // 個別リポリフレッシュ
+    std::vector<RepoInfo> getRepos() const;                                                                               // リポジトリ一覧の取得
+    bool addRepo(const std::string& url, const std::string& name);                                                        // リポジトリの追加 (簡易)
+    bool addRepo(const RepoInfo& info);                                                                                   // リポジトリの追加 (全属性)
+    bool removeRepo(const std::string& alias);                                                                            // リポジトリの削除
+    bool setRepoEnabled(const std::string& alias, bool enabled);                                                          // リポジトリの有効/無効の切り替え
+    bool modifyRepo(const std::string& alias, const RepoChanges& changes);                                                // リポジトリの変更 (渡された項目のみ)
+    bool refreshRepos(std::function<void(const std::string&, int)> progressCallback = nullptr);                           // 全リポジトリのリフレッシュ
+    bool refreshRepo(const std::string& alias, std::function<void(const std::string&, int)> progressCallback = nullptr);  // 個別リポジトリのリフレッシュ
 
     // サービス管理
-    std::vector<ServiceInfo> getServices() const;                              // サービス一覧取得
-    bool addService(const std::string& url, const std::string& alias);         // サービス追加
-    bool removeService(const std::string& alias);                              // サービス削除
-    bool modifyService(const std::string& alias, const ServiceChanges& changes);  // サービス変更 (渡された項目のみ)
-    bool refreshService(const std::string& alias);                             // サービスリフレッシュ
+    std::vector<ServiceInfo> getServices() const;                                 // サービス一覧の取得
+    bool addService(const std::string& url, const std::string& alias);            // サービスの追加
+    bool removeService(const std::string& alias);                                 // サービスの削除
+    bool modifyService(const std::string& alias, const ServiceChanges& changes);  // サービスの変更 (渡された項目のみ)
+    bool refreshService(const std::string& alias);                                // サービスのリフレッシュ
 
     // パッケージ検索・一覧
-    std::vector<PackageInfo> searchPackages(const std::string& query, int flags);        // パッケージ検索
-    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options);             // 拡張検索 (PoolQuery)
-    PackageDetails getPackageDetails(const std::string& name) const;                     // パッケージ詳細取得
-    std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;      // リポ別パッケージ
+    std::vector<PackageInfo> searchPackages(const std::string& query, int flags);    // パッケージの検索
+    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options);         // 拡張検索 (PoolQuery)
+    PackageDetails getPackageDetails(const std::string& name) const;                 // パッケージ詳細の取得
+    std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;  // リポジトリ別のパッケージ
+    std::vector<PackageInfo> getPendingChanges() const;                              // 変更予定一覧の取得 (全プール横断)
 
-    // パターン・パッチ
-    std::vector<PatternInfo> getPatterns() const;                                         // パターン一覧取得
-    std::vector<PackageInfo> getPackagesByPattern(const std::string& patternName) const;  // パターン別パッケージ
-    std::vector<PatchInfo> getPatches(int category = -1) const;                           // パッチ一覧取得
-    bool setPatchStatus(const std::string& id, int status);                               // パッチ選択状態変更
-
-    // 変更予定パッケージ一覧 (全プール横断)
-    std::vector<PackageInfo> getPendingChanges() const;          // 変更予定一覧取得
-
-    // 永続ロック (zypper al/rl 互換、/etc/zypp/locks)
-    std::vector<LockInfo> getLocks() const;                      // ロック一覧取得
-    bool addLock(const LockInfo& info);                          // ロック追加 (永続化)
-    bool removeLock(const LockInfo& info);                       // ロック削除 (永続化)
-
-    // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/
-    //                  retracted/retractedInstalled/ptf/locked)
+    // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/retracted/retractedInstalled/ptf/locked)
     std::vector<PackageInfo> getPackagesByClassification(const std::string& cls) const;
 
-    // zypp ヒストリ (/var/log/zypp/history、新しい順)。ファイルが無ければ空で成功。
-    // 上限超過・取消し・読込失敗は false を返し error に理由を設定する。
+    // パターン・パッチ
+    std::vector<PatternInfo> getPatterns() const;                                         // パターン一覧の取得
+    std::vector<PackageInfo> getPackagesByPattern(const std::string& patternName) const;  // パターン別のパッケージ
+    std::vector<PatchInfo> getPatches(int category = -1) const;                           // パッチ一覧の取得
+    bool setPatchStatus(const std::string& id, int status);                               // パッチの選択状態の変更
+
+    // 永続ロック (zypper al/rl互換、/etc/zypp/locks)
+    std::vector<LockInfo> getLocks() const;                      // ロック一覧の取得
+    bool addLock(const LockInfo& info);                          // ロックの追加 (永続化)
+    bool removeLock(const LockInfo& info);                       // ロックの削除 (永続化)
+
+    /**
+     * @brief zyppヒストリ (/var/log/zypp/history) を新しい順に取得する
+     * @param options 取得範囲と絞り込み条件
+     * @param entries 取得したエントリの格納先
+     * @param error 失敗時の理由
+     * @return ファイルが無い場合は空で成功、上限超過・取消し・読込失敗はfalse
+     */
     bool getHistory(const HistoryOptions& options, std::vector<HistoryEntry>& entries,
                     std::string& error);
 
-    // ソルバーテストケース生成 (戻り値は作成したディレクトリパス)
-    std::string createSolverTestcase();                          // /var/log 配下に出力
+    std::string createSolverTestcase();                          // ソルバーテストケースを/var/log配下に生成し、作成したディレクトリパスを返す
 
-    // 状態管理
-    bool setPackageStatus(const std::string& name, int status);  // パッケージ状態変更
-    bool setPackageVersion(const std::string& name,             // パッケージバージョン変更
+    // 選択状態の管理
+    bool setPackageStatus(const std::string& name, int status);  // パッケージ状態の変更
+    bool setPackageVersion(const std::string& name,              // パッケージバージョンの変更
                            const std::string& version,
                            const std::string& arch,
                            const std::string& repoAlias);
-    bool setPatternStatus(const std::string& name, int status);  // パターン状態変更
-    void saveState();                                            // 選択状態を保存
-    static bool isValidPackageStatus(int status);                // PackageStatus の範囲内か
-    static bool validatePriority(long long priority, std::string &err);  // リポ優先度の検証 (1-200)
-    void restoreState();                                         // 選択状態を復元
+    bool setPatternStatus(const std::string& name, int status);  // パターン状態の変更
+    void saveState();                                            // 選択状態の保存
+    void restoreState();                                         // 選択状態の復元
+    static bool isValidPackageStatus(int status);                // PackageStatusの範囲内か
 
-    // 依存関係解決
-    /** @brief ソルバー結果 */
-    struct SolverResult {
-        bool success;                                            // 解決成功フラグ
-        std::vector<ConflictInfo> problems;                      // 衝突問題リスト
-        QVariantMap summary;                                     // リスクサマリ (TransactionSummary)
-    };
-
-    /** @brief ローカルRPMインストールの解決結果 */
-    struct LocalRpmInstallResult {
-        bool success;                                        // 解決成功フラグ
-        std::vector<ConflictInfo> problems;                  // 衝突問題リスト
-        QVariantMap summary;                                 // リスクサマリ (TransactionSummary)
-        std::vector<std::string> packages;                   // 追加対象パッケージ名
-        std::vector<std::string> unsignedPackages;           // 未署名パッケージ名 (GUI 警告用)
-    };
-
-    SolverResult resolveDependencies();                          // ソルバー実行
-    SolverResult updateAllPackages();                            // 全パッケージ更新 (doUpdate + 依存解決)
-    SolverResult verifySystem();                                 // システム整合性検証 (zypper verify 相当)
-    bool applySolution(int problemIndex, int solutionIndex);     // 解決策適用
-    SolverResult distUpgrade(bool allowVendorChange);            // ディストリビューション更新 (doUpgrade, zypper dup)
+    // 依存関係の解決
+    SolverResult resolveDependencies();                          // ソルバーの実行
+    SolverResult updateAllPackages();                            // 全パッケージの更新 (doUpdate +依存関係の解決)
+    SolverResult verifySystem();                                 // システム整合性の検証 (zypper verify相当)
+    bool applySolution(int problemIndex, int solutionIndex);     // 解決策の適用
+    SolverResult distUpgrade(bool allowVendorChange);            // ディストリビューションの更新 (doUpgrade、zypper dup)
     SolverResult selectAllNeededPatches(bool securityOnly, bool includeOptional,
-                                        bool skipInteractive);   // 必要パッチ一括選択 (zypper patch)
-    QVariantMap getTransactionSummary();                         // 現在のプール状態のリスクサマリ取得
+                                        bool skipInteractive);   // 必要なパッチの一括選択 (zypper patch)
+    QVariantMap getTransactionSummary();                         // 現在のプール状態のリスクサマリの取得
 
     // コミット
-    /** @brief コミット結果 */
-    struct CommitResult {
-        CommitClassification classification;            // 未実行を含む実行結果
-        bool success = false;                           // コミット成功フラグ
-        int installed = 0;                              // インストール件数
-        int updated = 0;                                // 更新件数
-        int removed = 0;                                // 削除件数
-        std::vector<std::string> failedPackages;        // 失敗パッケージ名
-        std::vector<std::string> installedPackages;     // インストール済みパッケージ名
-        std::vector<std::string> updatedPackages;       // 更新済みパッケージ名
-        std::vector<std::string> removedPackages;       // 削除済みパッケージ名
-        quint64 totalInstalledSize = 0;                 // インストールサイズ合計 (bytes)
-        quint64 totalDownloadSize = 0;                  // ダウンロードサイズ合計 (bytes)
-        double elapsedSeconds = 0.0;                    // 経過時間 (秒)
-        std::string errorMessage;                       // エラーメッセージ
-        QStringList scriptOutput;                       // スクリプト出力 (最新 500 行)
-        QStringList rpmMessages;                        // rpm メッセージ (最新 500 行)
-        bool scriptOutputTruncated = false;             // 出力が上限で切り捨てられたか
-        bool rebootNeeded = false;                      // 再起動が必要か
-        bool restartSuggested = false;                  // 再起動が推奨されるか (パッチ)
-        QStringList servicesToRestart;                  // 再起動が必要な systemd ユニット
-        std::vector<SnapshotEntry> snapshots;           // コミットで作成されたスナップショット
-    };
-
-    CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミット実行
+    CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミットの実行
                         StateEventCallbackFn stateCallback = nullptr,
                         PromptAskFn askCallback = nullptr,
                         ScriptOutputFn scriptOutputCallback = nullptr);
 
-    // ディスク使用量
-    std::vector<DiskUsageInfo> getDiskUsage() const;       // ディスク使用量取得
+    std::vector<DiskUsageInfo> getDiskUsage() const;             // ディスク使用量の取得
 
     // キャンセル
-    // NOTE: 要求フラグは操作の開始時 (アダプタの startWorker) にだけクリアする。
-    //       各操作の内部でクリアすると、事前検査中に届いた要求が失われるため。
-    void cancelOperation() { m_cancelRequested = true; }   // 操作キャンセル要求
-    void clearCancelRequest() { m_cancelRequested = false; m_lastOpCancelled = false; }  // 操作開始前にキャンセル要求と取消し結果を消去
-    bool isCancelRequested() const { return m_cancelRequested.load(); }  // キャンセル状態取得
-    bool lastOperationCancelled() const { return m_lastOpCancelled.load(); }  // 直前の操作が取消し要求で中断されたか
+    /**
+     * @brief 操作のキャンセルを要求する
+     * @note 要求フラグは操作の開始時 (アダプタのstartWorker) にだけクリアする
+     *       各操作の内部でクリアすると、事前検査中に届いた要求が失われるため
+     */
+    void cancelOperation() { m_cancelRequested = true; }
+    /** @brief 操作開始前にキャンセル要求と取消し結果を消去する */
+    void clearCancelRequest() { m_cancelRequested = false; m_lastOpCancelled = false; }
+    /** @brief キャンセルが要求されているかを返す */
+    bool isCancelRequested() const { return m_cancelRequested.load(); }
+    /** @brief 直前の操作が取消し要求で中断されたかを返す */
+    bool lastOperationCancelled() const { return m_lastOpCancelled.load(); }
+    /** @brief 操作の開始を記録する */
     void beginOperation() { m_lastOpCancelled = false; }
 
-    // エラー情報
-    std::string lastError() const {                        // 最新エラーメッセージ
+    /**
+     * @brief 最新のエラーメッセージを取得する
+     * @return エラーメッセージ
+     */
+    std::string lastError() const {
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_lastError;
     }
 
+    // GPG鍵の信頼
     /**
-     * @brief GPG鍵フィンガープリントを承認する (ワンショット)。
+     * @brief GPG鍵フィンガープリントを承認する (ワンショット)
      * @param fingerprint フィンガープリント (正規化前の生文字列も可)
-     * @return 正規化成功時 true。不正な場合は false を返し m_lastError を設定する。
-     * @note m_mutex は取得しない (receiver が独自 mutex を持つ)。
+     * @return 正規化成功時はtrue、不正な場合はfalseを返しm_lastErrorを設定する
+     * @note m_mutexは取得しない (receiverが独自mutexを持つ)
      */
     bool approveKeyFingerprint(const std::string &fingerprint);
 
     /**
-     * @brief 未信頼鍵通知コールバックを設定する。
+     * @brief 未信頼鍵の通知コールバックを設定する
      * @param cb 通知コールバック
-     * @note m_mutex は取得しない。initialize() 前の呼び出しも可能。
+     * @note m_mutexは取得しない。initialize()前の呼び出しも可能
      */
     void setUntrustedKeyCallback(UntrustedKeyCallbackFn cb);
 
     /**
-     * @brief 未知鍵の in-flight 信頼プロンプトコールバックを設定する。
+     * @brief 未知鍵のin-flight信頼プロンプトのコールバックを設定する
      * @param cb 回答コールバック (ワーカースレッドで実行)
      */
     void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
 
     /**
-     * @brief 検証済みローカルRPMを一時 plaindir リポジトリ経由で選択・解決する。
+     * @brief 検証済みのローカルRPMを一時plaindirリポジトリ経由で選択・解決する
      *
-     * 各パスは LocalRpm::validatePath で検証 (絶対パス/非シンボリックリンク/
-     * .rpm/サイズ上限/呼出元可読) したうえで、root 所有 0700 の一時ディレクトリへ
-     * TOCTOU-safe にコピーする。plaindir リポジトリは /etc/zypp/repos.d へは
-     * 永続化せず、Pool へロードして S_Install を選択後ソルバーを実行する。
-     * 未署名 RPM は許可するが unsignedPackages に列挙する。
-     * @param paths インストール対象のローカルRPMパス
-     * @param callerUid 呼出元の UID (所有者/権限検査用)
-     * @return 解決結果。失敗時は success=false かつ m_lastError を設定する。
+     * 各ファイルはLocalRpm::validatePathで検証済みであることが前提であり、root所有0700の一時ディレクトリへTOCTOU-safeにコピーする
+     *
+     * plaindirリポジトリは/etc/zypp/repos.dへは永続化せず、プールへロードしてS_Installを選択後にソルバーを実行する
+     *
+     * 未署名のRPMは許可するがunsignedPackagesに列挙する
+     *
+     * @param files インストール対象のローカルRPM
+     * @return 解決結果、失敗時はsuccess=falseかつm_lastErrorを設定する
      */
     LocalRpmInstallResult installLocalRpms(std::vector<LocalRpmFile> files);
 
-    /**
-     * @brief 一時ローカルRPMリポジトリとコピー済みファイルを破棄する。
-     */
-    void cleanupLocalRpms();
+    void cleanupLocalRpms();                                     // 一時ローカルRPMリポジトリとコピー済みファイルの破棄
 
 private:
-    ZyppManager() = default;                                                  // コンストラクタ (private)
-    ~ZyppManager() = default;                                                 // デストラクタ (private)
-    ZyppManager(const ZyppManager&) = delete;                                 // コピー禁止
-    ZyppManager& operator=(const ZyppManager&) = delete;                      // 代入禁止
-    PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;  // PackageInfo生成
-    QVariantMap computeTransactionSummary() const;                            // リスクサマリ生成 (内部でロック)
-    QVariantMap computeTransactionSummaryLocked() const;                      // リスクサマリ生成 (m_mutex 保持中に呼ぶ)
+    ZyppManager() = default;                                     // コンストラクタ (private)
+    ~ZyppManager() = default;                                    // デストラクタ (private)
+    ZyppManager(const ZyppManager&) = delete;                    // コピー禁止
+    ZyppManager& operator=(const ZyppManager&) = delete;         // 代入禁止
+
+    // セッション
+    void recordDatabaseStamp();                                  // RPMデータベースの変更検知用スタンプの記録
+
+    // パッケージ情報・ステータス変換
+    PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;                // PackageInfoの生成
+    static int fromZyppStatus(zypp::ui::Status status);                                     // zypp --> qZypperのステータス変換
+    static bool toZyppStatus(int status, zypp::ui::Status &out);                            // qZypper --> zyppのステータス変換 (範囲外はfalse)
     static std::string makePatchId(const std::string& name, const std::string& version,
-                                   const std::string& arch, const std::string& repoAlias); // パッチ安定識別子生成
-    static int fromZyppStatus(zypp::ui::Status status);                       // zypp --> qZypperステータス変換
-    static bool toZyppStatus(int status, zypp::ui::Status &out);              // qZypper --> zyppステータス変換 (範囲外は false)
-    void markCancelled() { m_lastError = "Operation cancelled"; m_lastOpCancelled = true; }  // 取消し要求による中断を記録 (m_mutex 保持中に呼ぶ)
+                                   const std::string& arch, const std::string& repoAlias);  // パッチの安定識別子の生成
+
+    // リスクサマリ
+    QVariantMap computeTransactionSummary() const;               // リスクサマリの生成 (内部でロック)
+    QVariantMap computeTransactionSummaryLocked() const;         // リスクサマリの生成 (m_mutex保持中に呼ぶ)
+
+    // 取消し
+    /** @brief 取消し要求による中断を記録する (m_mutex保持中に呼ぶ) */
+    void markCancelled() { m_lastError = "Operation cancelled"; m_lastOpCancelled = true; }
+
     /**
-     * @brief リポジトリ/サービスURLを検証する。
-     * @param url 検証対象URL
-     * @param err 失敗時のエラー詳細 (呼び出し側が m_lastError 用に利用)
-     * @param allowIsoNesting iso スキームの url クエリパラメータ再帰検証を許可するか
-     * @return 有効時 true
-     */
-public:
-    static bool validateUrl(const std::string &url, std::string &err,
-                            bool allowIsoNesting = true);
-    /**
-     * @brief リポジトリ/サービスエイリアスを検証する。
-     * @param alias 検証対象エイリアス
-     * @param err 失敗時のエラー詳細
-     * @return 有効時 true
-     */
-    static bool validateAlias(const std::string &alias, std::string &err);
-private:
-    /**
-     * @brief リポジトリポリシーを検査する。
+     * @brief サービス由来のリポジトリを浄化する
      *
-     * サービスやミラーリスト由来のリポジトリデータが URL/INI/GPG 検証を
-     * 迂回するのを防ぐ。制御文字・不正 URL・不審なミラーリスト/GPG 鍵 URL を拒否する。
-     * エラー文にはエイリアス・理由・スキームのみを含め、完全な URL は含めない。
-     * @param repo 検査対象リポジトリ
-     * @param err 失敗時のエラー詳細
-     * @return ポリシー準拠時 true
-     */
-    static bool checkRepoPolicy(const zypp::RepoInfo &repo, std::string &err);
-    /**
-     * @brief リポジトリの生 GPG 設定が弱体化されているか検査する。
+     * 指定サービスの全リポジトリを検査し、ポリシー違反や署名検査の弱体化があるものを削除する
+     * 残留.repoファイルは共有ファイルの削除を避けるため、ガード付きでのみ削除する
      *
-     * getRawGpgChecks の三値 (g, r, p) のいずれかが確定的に false の場合
-     * (例: gpgcheck=1 repo_gpgcheck=0 pkg_gpgcheck=0) true を返す。
-     * 実効ブール値では AllowUnsigned を検出できないため生値を見る。
-     * @param repo 検査対象リポジトリ
-     * @return 弱体化あり時 true
-     */
-    static bool rawGpgChecksWeakened(const zypp::RepoInfo &repo);
-    /**
-     * @brief ミラーリスト由来の全エンドポイント URL を検証する。
-     *
-     * repoOrigins() (MirroredOriginSet) を走査し validateUrl で検査する。
-     * ネットワーク I/O を伴う場合があるためオフライン必須箇所では呼ばない。
-     * @param repo 検査対象リポジトリ
-     * @param err 失敗時のエラー詳細 (エイリアスとスキームのみ)
-     * @return 全端点が有効時 true
-     */
-    static bool checkRepoOrigins(const zypp::RepoInfo &repo, std::string &err);
-    /**
-     * @brief サービス情報を検査する。
-     *
-     * リモート repoindex 由来のエイリアス/名前に含まれる制御文字、
-     * 不正 URL、PLUGIN 型、repoStates キーの INI メタ文字を拒否する。
-     * @param svc 検査対象サービス
-     * @param err 失敗時のエラー詳細
-     * @return ポリシー準拠時 true
-     */
-    static bool checkServicePolicy(const zypp::ServiceInfo &svc, std::string &err);
-    /**
-     * @brief on-disk の .service ファイルがメモリ上のサービスと一致するか検査する。
-     *
-     * 単一セクション・セクション名=alias・全 url/type 値の一致を要求する
-     * (改行注入による type=plugin / url= 行の差し込みを検出)。
-     * @param path .service ファイルパス
-     * @param svc メモリ上のサービス
-     * @return 一致時 true
-     */
-    static bool serviceFileMatches(const zypp::Pathname &path, const zypp::ServiceInfo &svc);
-    /**
-     * @brief サービス由来のリポジトリを浄化する。
-     *
-     * 指定サービスの全リポジトリを検査し、ポリシー違反や署名検査弱体化が
-     * あるものを削除する。残留 .repo ファイルは共有ファイル削除を避けるため
-     * ガード付きでのみ削除する。
-     * @param serviceAlias 対象サービスエイリアス
-     * @param report 削除内容の報告 (エイリアスと理由のみ、URL なし)
-     * @param preexistingRepoFiles サービス追加/更新前に存在した .repo ファイル
-     * @return 違反がなく全て健全時 true
-     * @note 呼び出し側の m_mutex 配下で呼ぶこと (内部でロックしない)。
+     * @param serviceAlias 対象サービスのエイリアス
+     * @param report 削除内容の報告 (エイリアスと理由のみ、URLなし)
+     * @param preexistingRepoFiles サービスの追加/更新前に存在した.repoファイル
+     * @return 違反がなく全て健全な場合はtrue
+     * @note 呼び出し側のm_mutex配下で呼ぶこと (内部でロックしない)
      */
     bool sanitizeServiceRepos(const std::string &serviceAlias, std::string &report,
                               const std::set<std::string> &preexistingRepoFiles);
+
     /**
-     * @brief 既知リポジトリパス直下の通常ファイルを列挙する。
-     * @return フルパス文字列の集合
-     */
-    static std::set<std::string> snapshotRepoFiles();
-    /**
-     * @brief サービスの .service ファイル汚染を検証し必要なら隔離する。
+     * @brief サービスの.serviceファイルの汚染を検証し、必要であれば隔離する
      *
-     * メモリ上のサービスに checkServicePolicy を適用し、さらに on-disk の
-     * .service ファイルを ServiceFileReader で解析して一致を要求する。
-     * 不一致時はサービスを削除し残留ファイルを除去する。
-     * 残留ファイル除去は操作前にファイルがこのサービス専有であったことが前提
-     * (addService は libzypp が新規ファイルを生成、refreshService は事前に
-     * serviceFileMatches で共有ファイルを拒否している)。
-     * @param serviceAlias 対象サービスエイリアス
-     * @return 健全時 true。隔離時は m_lastError を設定し false を返す
-     *         (削除できず残存した場合はその旨を m_lastError に設定する)。
-     * @note 呼び出し側の m_mutex 配下で呼ぶこと (内部でロックしない)。
+     * メモリ上のサービスにRepoPolicy::checkServicePolicyを適用し、更にディスク上の.serviceファイルをServiceFileReaderで解析して一致を要求する
+     * 不一致の場合はサービスを削除し、残留ファイルを除去する
+     *
+     * 残留ファイルの除去は、操作前にファイルがこのサービス専有であったことが前提となる
+     * (addServiceはlibzyppが新規ファイルを生成し、refreshServiceは事前にserviceFileMatchesで共有ファイルを拒否している)
+     *
+     * @param serviceAlias 対象サービスのエイリアス
+     * @return 健全な場合はtrue、隔離時はm_lastErrorを設定してfalseを返す
+     *         (削除できずに残存した場合はその旨をm_lastErrorに設定する)
+     * @note 呼び出し側のm_mutex配下で呼ぶこと (内部でロックしない)
      */
     bool quarantineServiceIfTainted(const std::string &serviceAlias);
-    /**
-     * @brief リポジトリ/サービス表示名を検証する。
-     * @param name 検証対象名 (API が空を許す箇所では空も有効)
-     * @param err 失敗時のエラー詳細
-     * @return 有効時 true
-     */
-public:
-    static bool validateName(const std::string &name, std::string &err);
-private:
-    void recordDatabaseStamp();
-    zypp::ZYpp::Ptr m_zypp;                                                   // ZYppシングルトン
-    std::unique_ptr<zypp::RepoManager> m_repoManager;                         // リポジトリマネージャ
-    bool m_initialized = false;                                               // 初期化済みフラグ
-    bool m_distUpgradeMode = false;                                           // DistUpgrade の選択を保持中 (再解決も dup で行う)
-    bool m_dupAllowVendorChange = false;                                      // DistUpgrade の vendor 変更許可
-    std::string m_rpmStamp;                                                   // RPM DB変更検知用
-    mutable std::string m_lastError;                                          // 最新エラーメッセージ
-    mutable std::mutex m_mutex;                                               // スレッド排他ロック
-    OperationState m_operation;                                              // 操作状態と取消要求
-    std::atomic<bool> &m_cancelRequested = m_operation.cancelFlag();           // キャンセル要求フラグ
-    std::atomic<bool> m_lastOpCancelled{false};                               // 直前の操作が取消しで中断された
-    zypp::ResolverProblemList m_problems;                                     // ソルバー問題リスト
-    KeyRingReceiver m_keyRingReceiver;                                        // GPG鍵信頼コールバック
-    DigestReceiver m_digestReceiver;                                          // ダイジェスト検証コールバック
-    std::set<std::string> m_acceptedLicenses;                                 // 承認済みライセンス (pkg|version)
-    void cleanupLocalRpmsLocked();                                            // 一時リポジトリ破棄 (m_mutex 保持中)
-    std::string m_localRpmAlias;                                              // 一時ローカルRPMリポジトリのエイリアス
-    std::string m_localRpmDir;                                                // 一時コピー先ディレクトリ
+
+    // ローカルRPM
+    void cleanupLocalRpmsLocked();                                    // 一時リポジトリの破棄 (m_mutex保持中に呼ぶ)
+
+    // libzyppの状態
+    zypp::ZYpp::Ptr m_zypp;                                           // ZYppシングルトン
+    std::unique_ptr<zypp::RepoManager> m_repoManager;                 // リポジトリマネージャ
+    bool m_initialized = false;                                       // 初期化済みフラグ
+    std::string m_rpmStamp;                                           // RPMデータベースの変更検知用
+    zypp::ResolverProblemList m_problems;                             // ソルバーの問題リスト
+
+    // ディストリビューション更新
+    bool m_distUpgradeMode = false;                                   // DistUpgradeの選択を保持中 (再解決もdupで行う)
+    bool m_dupAllowVendorChange = false;                              // DistUpgradeのベンダー変更許可
+
+    // 排他制御・エラー・取消し
+    mutable std::string m_lastError;                                  // 最新のエラーメッセージ
+    mutable std::mutex m_mutex;                                       // スレッド排他ロック
+    OperationState m_operation;                                       // 操作状態と取消し要求
+    std::atomic<bool> &m_cancelRequested = m_operation.cancelFlag();  // キャンセル要求フラグ
+    std::atomic<bool> m_lastOpCancelled{false};                       // 直前の操作が取消しで中断された
+
+    // コールバック受信器・コミット時の対話
+    KeyRingReceiver m_keyRingReceiver;                                // GPG鍵の信頼コールバック
+    DigestReceiver m_digestReceiver;                                  // ダイジェスト検証コールバック
+    std::set<std::string> m_acceptedLicenses;                         // 承認済みライセンス (pkg|version)
+
+    // ローカルRPM
+    std::string m_localRpmAlias;                                      // 一時ローカルRPMリポジトリのエイリアス
+    std::string m_localRpmDir;                                        // 一時コピー先ディレクトリ
 };
 
 } // namespace qZypper

@@ -1,5 +1,3 @@
-#include "ZyppManager.h"
-
 #include <zypp/Package.h>
 #include <zypp/PoolItem.h>
 #include <zypp/ResPool.h>
@@ -7,24 +5,23 @@
 #include <zypp/ResStatus.h>
 #include <zypp/Resolver.h>
 #include <zypp/ui/Selectable.h>
-
 #include <string>
 #include <vector>
+#include "ZyppManager.h"
 
 namespace qZypper {
 
 namespace {
 
 /**
- * @brief Selectable が指定の分類に該当するか判定する。
+ * @brief Selectableが指定の分類に該当するか判定する
  *
- * recommended/suggested/orphaned/unneeded はソルバー実行後の
- * PoolItem の ResStatus を参照する。それ以外は Selectable の
- * 補助述語のみで判定する。
+ * recommended/suggested/orphaned/unneededは、ソルバー実行後のPoolItemのResStatusを参照する
+ * それ以外は、Selectableの補助述語のみで判定する
  *
  * @param selectable 判定対象
  * @param cls 分類名 (小文字)
- * @return 該当する場合は true
+ * @return 該当する場合はtrue
  */
 bool matchesClassification(const zypp::ui::Selectable::Ptr &selectable, const std::string &cls)
 {
@@ -64,6 +61,14 @@ bool matchesClassification(const zypp::ui::Selectable::Ptr &selectable, const st
 
 } // namespace
 
+/**
+ * @brief 指定した分類に該当するパッケージを取得する
+ *
+ * recommended/suggested/orphaned/unneededは、ソルバー実行後の状態を参照するため、判定の前にresolvePoolでプールを解決する
+ *
+ * @param cls 分類名 (multiversion/locked/retracted/retractedInstalled/ptf/recommended/suggested/orphaned/unneeded)
+ * @return 該当するパッケージ情報の一覧
+ */
 std::vector<PackageInfo> ZyppManager::getPackagesByClassification(const std::string &cls) const
 {
     std::lock_guard<std::mutex> guard(m_mutex);

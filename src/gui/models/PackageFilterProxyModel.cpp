@@ -4,7 +4,7 @@
 namespace qZypper {
 
 /**
- * @brief PackageFilterProxyModel のコンストラクタ。
+ * @brief PackageFilterProxyModelのコンストラクタ
  * @param parent 親オブジェクト
  */
 PackageFilterProxyModel::PackageFilterProxyModel(QObject *parent)
@@ -15,8 +15,8 @@ PackageFilterProxyModel::PackageFilterProxyModel(QObject *parent)
 }
 
 /**
- * @brief ステータスフィルタマスクを設定する。
- * @param mask ビット n が 1 のときステータス n を表示
+ * @brief ステータスフィルタマスクを設定する
+ * @param mask ビットnが1の時にステータスnを表示
  */
 void PackageFilterProxyModel::setStatusMask(int mask)
 {
@@ -28,9 +28,9 @@ void PackageFilterProxyModel::setStatusMask(int mask)
 }
 
 /**
- * @brief ソート列を設定する。
+ * @brief ソート列を設定する
  *
- * -1 を指定するとソース順 (挿入順) に戻す。
+ * -1を指定するとソース順 (挿入順) に戻す
  * @param column ソート列
  */
 void PackageFilterProxyModel::setSortColumn(int column)
@@ -41,9 +41,9 @@ void PackageFilterProxyModel::setSortColumn(int column)
     if (column < 0) {
         QSortFilterProxyModel::sort(-1);
     } else {
-        // PackageListModel は単一カラム (0) のリストモデルのため、
-        // 論理ソート列 (CheckColumn/NameColumn) ではなく
-        // 実カラム 0 に対してソートを有効化する。ソートキーの選択は lessThan() が行う。
+        // PackageListModelは単一カラム (0) のリストモデルのため、
+        // 論理ソート列 (CheckColumn/NameColumn) ではなく実カラム0に対してソートを有効化する
+        // ソートキーの選択は、lessThan()が行う
         QSortFilterProxyModel::sort(0,
             m_sortAscending ? Qt::AscendingOrder : Qt::DescendingOrder);
     }
@@ -51,8 +51,8 @@ void PackageFilterProxyModel::setSortColumn(int column)
 }
 
 /**
- * @brief ソート方向を設定する。
- * @param ascending 昇順なら true
+ * @brief ソート方向を設定する
+ * @param ascending 昇順ならtrue
  */
 void PackageFilterProxyModel::setSortAscending(bool ascending)
 {
@@ -68,9 +68,9 @@ void PackageFilterProxyModel::setSortAscending(bool ascending)
 }
 
 /**
- * @brief 表示中の行から名前が指定プレフィックスで始まる最初の行を探す。
- * @param prefix 検索プレフィックス (大文字小文字は区別しない)
- * @return プロキシ行番号、見つからなければ -1
+ * @brief 指定プロキシ行のパッケージ名を返す
+ * @param row プロキシ行番号
+ * @return パッケージ名、範囲外なら空文字列
  */
 QString PackageFilterProxyModel::nameAt(int row) const
 {
@@ -79,6 +79,11 @@ QString PackageFilterProxyModel::nameAt(int row) const
     return data(index(row, 0), PackageListModel::NameRole).toString();
 }
 
+/**
+ * @brief 表示中の行から指定プレフィックスで始まる最初の名前を探す
+ * @param prefix 検索プレフィックス (大文字小文字は区別しない)
+ * @return プロキシ行番号、見つからなければ-1
+ */
 int PackageFilterProxyModel::indexOfNamePrefix(const QString &prefix) const
 {
     const QString p = prefix.toLower();
@@ -95,10 +100,10 @@ int PackageFilterProxyModel::indexOfNamePrefix(const QString &prefix) const
 }
 
 /**
- * @brief 行を表示するかをステータスフィルタで判定する。
+ * @brief 行を表示するかをステータスフィルタで判定する
  * @param sourceRow ソース行
  * @param sourceParent ソース親
- * @return 表示するなら true
+ * @return 表示するならtrue
  */
 bool PackageFilterProxyModel::filterAcceptsRow(int sourceRow,
                                                const QModelIndex &sourceParent) const
@@ -114,10 +119,10 @@ bool PackageFilterProxyModel::filterAcceptsRow(int sourceRow,
 }
 
 /**
- * @brief 2 行の大小比較 (チェック状態またはパッケージ名)。
+ * @brief 2行の大小比較 (チェック状態またはパッケージ名)
  * @param left 左辺
  * @param right 右辺
- * @return left < right なら true
+ * @return left < rightならtrue
  */
 bool PackageFilterProxyModel::lessThan(const QModelIndex &left,
                                        const QModelIndex &right) const
@@ -140,11 +145,11 @@ bool PackageFilterProxyModel::lessThan(const QModelIndex &left,
 }
 
 /**
- * @brief 一覧のチェック状態 (インストール済み/予定) を返す。
+ * @brief 一覧のチェック状態 (インストール済み/予定) を返す
  *
- * PackageStatusInfo.isChecked (QML) と同一の判定。
+ * PackageStatusInfo.isChecked (QML) と同一の判定
  * @param status パッケージ状態
- * @return チェック状態なら true
+ * @return チェック状態ならtrue
  */
 bool PackageFilterProxyModel::isCheckedStatus(int status)
 {

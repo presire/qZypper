@@ -1,33 +1,32 @@
-#include "ZyppCallbackReceiver.h"
-
+#include <QLoggingCategory>
 #include <algorithm>
 #include <cctype>
-#include <QLoggingCategory>
-
+#include "ZyppCallbackReceiver.h"
 
 namespace qZypper {
 
 namespace {
 
 /**
- * @brief 全体進捗率を計算するヘルパー。
+ * @brief 全体進捗率を計算するヘルパー
  * @param completedSteps 完了済みステップ数
- * @param currentPercent 現在パッケージの進捗率 (0-100)
+ * @param currentPercent 現在パッケージの進捗率 (0〜100)
  * @param totalSteps 全ステップ数
- * @return 全体進捗率 (0-100)
+ * @return 全体進捗率 (0〜100)
  */
 int calcOverall(int completedSteps, int currentPercent, int totalSteps)
 {
     if (totalSteps <= 0) return 0;
+
     return std::min(100, (completedSteps * 100 + currentPercent) / totalSteps);
 }
 
 } // anonymous namespace
 
-// ─── InstallReceiver ────────────────────────
+// --- InstallReceiver ---
 
 /**
- * @brief InstallReceiver を構築する。
+ * @brief InstallReceiverを構築する
  * @param cb 進捗コールバック
  * @param completedSteps 完了ステップ数への参照
  * @param totalSteps 全ステップ数
@@ -47,17 +46,18 @@ InstallReceiver::InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn sta
 }
 
 /**
- * @brief パッケージインストール中のエラー対応コールバック。
+ * @brief パッケージインストール中のエラー対応コールバック
  *
- * libzypp は問題発生時にこのコールバックで対応を問い合わせる。
- * デフォルト実装は ABORT を返すため override しないと
- * 軽微なエラーでもコミット全体が中断される。
- * インストールエラーはリトライしても解消しないため ABORT を返すが、
- * ユーザーに分かりやすいエラーメッセージを保存する。
+ * libzyppは問題発生時にこのコールバックで対応を問い合わせる
+ *
+ * デフォルト実装はABORTを返すためoverrideしないと、軽微なエラーでもコミット全体が中断される
+ *
+ * インストールエラーはリトライしても解消しないためABORTを返すが、ユーザに分かりやすいエラーメッセージを保存する
  */
-InstallReceiver::Action InstallReceiver::problem(
-    zypp::Resolvable::constPtr resolvable,
-    Error /*error*/, const std::string &description, RpmLevel /*level*/)
+InstallReceiver::Action InstallReceiver::problem(zypp::Resolvable::constPtr resolvable,
+                                                 Error /*error*/,
+                                                 const std::string &description,
+                                                 RpmLevel /*level*/)
 {
     std::string pkg = resolvable ? resolvable->name() : m_currentPkg;
     m_problemDetail = "Install failed: " + pkg + ": " + description;
@@ -65,7 +65,7 @@ InstallReceiver::Action InstallReceiver::problem(
 }
 
 /**
- * @brief パッケージインストール開始時のコールバック。
+ * @brief パッケージインストール開始時のコールバック
  * @param resolvable インストール対象パッケージ
  */
 void InstallReceiver::start(zypp::Resolvable::constPtr resolvable)
@@ -89,10 +89,10 @@ void InstallReceiver::start(zypp::Resolvable::constPtr resolvable)
 }
 
 /**
- * @brief パッケージインストール進捗コールバック。
- * @param value 進捗率 (0-100)
+ * @brief パッケージインストール進捗コールバック
+ * @param value 進捗率 (0〜100)
  * @param resolvable インストール対象パッケージ
- * @return false でキャンセル
+ * @return falseでキャンセル
  */
 bool InstallReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable*/)
 {
@@ -106,25 +106,28 @@ bool InstallReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvabl
         info.overallPercentage = calcOverall(m_completedSteps, value, m_totalSteps);
         m_callback(info);
     }
+
     return true;
 }
 
 /**
- * @brief パッケージインストール完了コールバック。
+ * @brief パッケージインストール完了コールバック
  */
 void InstallReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
-                             Error /*error*/, const std::string &/*reason*/,
+                             Error /*error*/,
+                             const std::string &/*reason*/,
                              RpmLevel /*level*/)
 {
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "install_end");
+
     ++m_completedSteps;
 }
 
-// ─── RemoveReceiver ─────────────────────────
+// --- RemoveReceiver ---─
 
 /**
- * @brief RemoveReceiver を構築する。
+ * @brief RemoveReceiverを構築する
  */
 RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                int &completedSteps,
@@ -140,14 +143,13 @@ RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn state
 }
 
 /**
- * @brief パッケージ削除中のエラー対応コールバック。
+ * @brief パッケージ削除中のエラー対応コールバック
  *
- * 削除エラーはリトライでは解消しないため ABORT を返すが、
- * エラー詳細を保存してユーザーに提示する。
+ * 削除エラーはリトライでは解消しないためABORTを返すが、エラー詳細を保存してユーザに提示する
  */
-RemoveReceiver::Action RemoveReceiver::problem(
-    zypp::Resolvable::constPtr resolvable,
-    Error /*error*/, const std::string &description)
+RemoveReceiver::Action RemoveReceiver::problem(zypp::Resolvable::constPtr resolvable,
+                                               Error /*error*/,
+                                               const std::string &description)
 {
     std::string pkg = resolvable ? resolvable->name() : m_currentPkg;
     m_problemDetail = "Remove failed: " + pkg + ": " + description;
@@ -155,7 +157,7 @@ RemoveReceiver::Action RemoveReceiver::problem(
 }
 
 /**
- * @brief パッケージ削除開始時のコールバック。
+ * @brief パッケージ削除開始時のコールバック
  * @param resolvable 削除対象パッケージ
  */
 void RemoveReceiver::start(zypp::Resolvable::constPtr resolvable)
@@ -179,10 +181,10 @@ void RemoveReceiver::start(zypp::Resolvable::constPtr resolvable)
 }
 
 /**
- * @brief パッケージ削除進捗コールバック。
- * @param value 進捗率 (0-100)
+ * @brief パッケージ削除進捗コールバック
+ * @param value 進捗率 (0〜100)
  * @param resolvable 削除対象パッケージ
- * @return false でキャンセル
+ * @return falseでキャンセル
  */
 bool RemoveReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable*/)
 {
@@ -200,20 +202,22 @@ bool RemoveReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable
 }
 
 /**
- * @brief パッケージ削除完了コールバック。
+ * @brief パッケージ削除完了コールバック
  */
 void RemoveReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
-                            Error /*error*/, const std::string &/*reason*/)
+                            Error /*error*/,
+                            const std::string &/*reason*/)
 {
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "remove_end");
+
     ++m_completedSteps;
 }
 
-// ─── DownloadReceiver ───────────────────────
+// --- DownloadReceiver ---
 
 /**
- * @brief DownloadReceiver を構築する。
+ * @brief DownloadReceiverを構築する
  */
 DownloadReceiver::DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                    int &completedSteps,
@@ -229,26 +233,25 @@ DownloadReceiver::DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn s
 }
 
 /**
- * @brief パッケージダウンロード中のエラー対応コールバック。
+ * @brief パッケージダウンロード中のエラー対応コールバック
  *
- * libzypp のデフォルト実装は ABORT を返すため、
- * ネットワーク瞬断やIOエラーで即座にコミット全体が中断されてしまう。
- * IO エラー (一時的な障害の可能性がある) に限り、パッケージごとに最大
- * kMaxRetries 回まで自動リトライする。NOT_FOUND / INVALID は再試行しても
- * 解消しない (INVALID は改ざんの可能性もある) ため、即座に ABORT を返して通知する。
+ * libzyppのデフォルト実装はABORTを返すため、ネットワーク瞬断やIOエラーで即座にコミット全体が中断されてしまう
+ *
+ * IOエラー (一時的な障害の可能性がある) に限り、パッケージごとに最大kMaxRetries回まで自動リトライする
+ *
+ * NOT_FOUND / INVALIDは、再試行しても解消しない (INVALIDは改ざんの可能性もある) ため、即座にABORTを返して通知する
+ *
  * @param resolvable 対象パッケージ
  * @param error エラー種別
  * @param description エラー詳細
- * @return RETRY または ABORT
+ * @return RETRYまたはABORT
  */
-DownloadReceiver::Action DownloadReceiver::problem(
-    zypp::Resolvable::constPtr resolvable,
-    Error error, const std::string &description)
+DownloadReceiver::Action DownloadReceiver::problem(zypp::Resolvable::constPtr resolvable, Error error, const std::string &description)
 {
     if (m_cancelFlag.load())
         return ABORT;
 
-    // start() を経ずに別パッケージの problem() が届いた場合も回数を引き継がない
+    // start()を経ずに別パッケージのproblem()が届いた場合も回数を引き継がない
     if (resolvable && resolvable->satSolvable() != m_retrySolvable) {
         m_retrySolvable = resolvable->satSolvable();
         m_retryCount = 0;
@@ -259,38 +262,40 @@ DownloadReceiver::Action DownloadReceiver::problem(
         ++m_retryCount;
         return RETRY;
     }
+
     m_problemDetail = "Download failed: " + pkg + ": " + description;
     return ABORT;
 }
 
 /**
- * @brief キャッシュ済みパッケージの通知コールバック。
+ * @brief キャッシュ済みパッケージの通知コールバック
  *
- * ダウンロード不要の場合、start/progress/finish の代わりにこれだけが呼ばれる。
- * ダウンロードステップを完了としてカウントする。
+ * ダウンロード不要の場合、start/progress/finishの代わりにこれだけが呼ばれる
+ * ダウンロードステップを完了としてカウントする
+ *
  * @param resolvable キャッシュ済みパッケージ
  * @param localfile ローカルファイルパス
  */
-void DownloadReceiver::infoInCache(zypp::Resolvable::constPtr resolvable,
-                                   const zypp::Pathname &/*localfile*/)
+void DownloadReceiver::infoInCache(zypp::Resolvable::constPtr resolvable, const zypp::Pathname &/*localfile*/)
 {
     if (m_stateCallback && resolvable)
         m_stateCallback(resolvable->name(), "cached");
+
     ++m_completedSteps;
 }
 
 /**
- * @brief パッケージダウンロード開始時のコールバック。
+ * @brief パッケージダウンロード開始時のコールバック
  * @param resolvable ダウンロード対象パッケージ
  * @param url ダウンロードURL
  */
-void DownloadReceiver::start(zypp::Resolvable::constPtr resolvable,
-                             const zypp::Url &/*url*/)
+void DownloadReceiver::start(zypp::Resolvable::constPtr resolvable, const zypp::Url &/*url*/)
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
-    // リトライ回数は対象パッケージが変わったときだけリセットする。
-    // RETRY 後の再ダウンロードで start() が再度呼ばれても回数を保持し、無限リトライを防ぐ。
+
+    // リトライ回数は対象パッケージが変わったときだけリセットする
+    // RETRY後の再ダウンロードでstart()が再度呼ばれても回数を保持し、無限リトライを防ぐ
     const zypp::sat::Solvable solvable = resolvable ? resolvable->satSolvable() : zypp::sat::Solvable();
     if (solvable != m_retrySolvable) {
         m_retrySolvable = solvable;
@@ -313,10 +318,10 @@ void DownloadReceiver::start(zypp::Resolvable::constPtr resolvable,
 }
 
 /**
- * @brief パッケージダウンロード進捗コールバック。
- * @param value 進捗率 (0-100)
+ * @brief パッケージダウンロード進捗コールバック
+ * @param value 進捗率 (0〜100)
  * @param resolvable ダウンロード対象パッケージ
- * @return false でキャンセル
+ * @return falseでキャンセル
  */
 bool DownloadReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvable*/)
 {
@@ -332,24 +337,27 @@ bool DownloadReceiver::progress(int value, zypp::Resolvable::constPtr /*resolvab
         info.overallPercentage = calcOverall(m_completedSteps, value, m_totalSteps);
         m_callback(info);
     }
+
     return true;
 }
 
 /**
- * @brief パッケージダウンロード完了コールバック。
+ * @brief パッケージダウンロード完了コールバック
  */
 void DownloadReceiver::finish(zypp::Resolvable::constPtr /*resolvable*/,
-                              Error /*error*/, const std::string &/*reason*/)
+                              Error /*error*/,
+                              const std::string &/*reason*/)
 {
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "download_end");
+
     ++m_completedSteps;
 }
 
-// ─── InstallReceiverSA (SingleTransaction版) ─────
+// --- InstallReceiverSA (SingleTransaction版) ---──
 
 /**
- * @brief InstallReceiverSA を構築する。
+ * @brief InstallReceiverSAを構築する
  */
 InstallReceiverSA::InstallReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                      int &completedSteps,
@@ -363,10 +371,9 @@ InstallReceiverSA::InstallReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn
 }
 
 /**
- * @brief パッケージインストール開始 (SA版)。
+ * @brief パッケージインストール開始 (SA版)
  */
-void InstallReceiverSA::start(zypp::Resolvable::constPtr resolvable,
-                              const zypp::callback::UserData &/*userData*/)
+void InstallReceiverSA::start(zypp::Resolvable::constPtr resolvable, const zypp::callback::UserData &/*userData*/)
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
@@ -387,10 +394,9 @@ void InstallReceiverSA::start(zypp::Resolvable::constPtr resolvable,
 }
 
 /**
- * @brief パッケージインストール進捗 (SA版)。
+ * @brief パッケージインストール進捗 (SA版)
  */
-void InstallReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvable*/,
-                                 const zypp::callback::UserData &/*userData*/)
+void InstallReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvable*/, const zypp::callback::UserData &/*userData*/)
 {
     if (m_callback) {
         CommitProgressInfo info;
@@ -405,20 +411,20 @@ void InstallReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolva
 }
 
 /**
- * @brief パッケージインストール完了 (SA版)。
+ * @brief パッケージインストール完了 (SA版)
  */
-void InstallReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
-                               Error /*error*/, const zypp::callback::UserData &/*userData*/)
+void InstallReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/, Error /*error*/, const zypp::callback::UserData &/*userData*/)
 {
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "install_end");
+
     ++m_completedSteps;
 }
 
-// ─── RemoveReceiverSA (SingleTransaction版) ──────
+// --- RemoveReceiverSA (SingleTransaction版) ------
 
 /**
- * @brief RemoveReceiverSA を構築する。
+ * @brief RemoveReceiverSAを構築する
  */
 RemoveReceiverSA::RemoveReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                    int &completedSteps,
@@ -432,10 +438,9 @@ RemoveReceiverSA::RemoveReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn s
 }
 
 /**
- * @brief パッケージ削除開始 (SA版)。
+ * @brief パッケージ削除開始 (SA版)
  */
-void RemoveReceiverSA::start(zypp::Resolvable::constPtr resolvable,
-                             const zypp::callback::UserData &/*userData*/)
+void RemoveReceiverSA::start(zypp::Resolvable::constPtr resolvable, const zypp::callback::UserData &/*userData*/)
 {
     if (resolvable)
         m_currentPkg = resolvable->name();
@@ -456,10 +461,9 @@ void RemoveReceiverSA::start(zypp::Resolvable::constPtr resolvable,
 }
 
 /**
- * @brief パッケージ削除進捗 (SA版)。
+ * @brief パッケージ削除進捗 (SA版)
  */
-void RemoveReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvable*/,
-                                const zypp::callback::UserData &/*userData*/)
+void RemoveReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvable*/, const zypp::callback::UserData &/*userData*/)
 {
     if (m_callback) {
         CommitProgressInfo info;
@@ -474,243 +478,14 @@ void RemoveReceiverSA::progress(int value, zypp::Resolvable::constPtr /*resolvab
 }
 
 /**
- * @brief パッケージ削除完了 (SA版)。
+ * @brief パッケージ削除完了 (SA版)
  */
-void RemoveReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/,
-                              Error /*error*/, const zypp::callback::UserData &/*userData*/)
+void RemoveReceiverSA::finish(zypp::Resolvable::constPtr /*resolvable*/, Error /*error*/, const zypp::callback::UserData &/*userData*/)
 {
     if (m_stateCallback)
         m_stateCallback(m_currentPkg, "remove_end");
+
     ++m_completedSteps;
-}
-
-// ─── KeyRingReceiver (fail-closed) ────────────────────────
-
-/**
- * @brief フィンガープリントを正規化する。
- *
- * ASCII 空白を除去して大文字化する。結果が40桁または64桁の16進数で
- * なければ "" を返す (不正な指紋は承認集合に載せないため)。
- * @param raw 生フィンガープリント文字列
- * @return 正規化済みフィンガープリント、または ""
- */
-std::string KeyRingReceiver::normalizeFingerprint(const std::string &raw)
-{
-    std::string out;
-    out.reserve(raw.size());
-    for (unsigned char c : raw) {
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v')
-            continue;
-        out += static_cast<char>(std::toupper(c));
-    }
-    if (out.size() != 40 && out.size() != 64)
-        return "";
-    for (unsigned char c : out) {
-        if (!std::isxdigit(c))
-            return "";
-    }
-    return out;
-}
-
-/**
- * @brief フィンガープリントを承認済み集合に登録する (mutex 保護)。
- * @param normalizedFingerprint 正規化済みフィンガープリント
- */
-void KeyRingReceiver::approveFingerprint(const std::string &normalizedFingerprint)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_approved.insert(normalizedFingerprint);
-}
-
-/** @brief セッション間で署名鍵の承認を引き継がない。 */
-void KeyRingReceiver::clearApprovals()
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_approved.clear();
-}
-
-/**
- * @brief 未信頼鍵通知コールバックを設定する (mutex 保護)。
- * @param cb 通知コールバック
- */
-void KeyRingReceiver::setUntrustedKeyCallback(UntrustedKeyCallbackFn cb)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_untrustedCb = std::move(cb);
-}
-
-/**
- * @brief 未知鍵の in-flight 信頼プロンプトコールバックを設定する (mutex 保護)。
- * @param cb 回答コールバック
- */
-void KeyRingReceiver::setKeyTrustPromptCallback(KeyTrustPromptFn cb)
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_keyTrustPrompt = std::move(cb);
-}
-
-/**
- * @brief GPG鍵を信頼するか確認する (fail-closed)。
- *
- * 事前に approveFingerprint で承認されたフィンガープリントと一致した
- *場合のみ KEY_TRUST_AND_IMPORT を返す (承認はワンショット消費)。
- * それ以外の鍵は UntrustedKeyInfo をコールバック通知して KEY_DONT_TRUST を返す。
- * @param key 対象の公開鍵
- * @param keycontext 鍵のコンテキスト (リポジトリ情報)
- * @return 承認済みの場合 KEY_TRUST_AND_IMPORT、それ以外は KEY_DONT_TRUST
- */
-KeyRingReceiver::KeyTrust KeyRingReceiver::askUserToAcceptKey(
-    const zypp::PublicKey &key,
-    const zypp::KeyContext &keycontext)
-{
-    const std::string rawFp = key.fingerprint();
-    const std::string fp = normalizeFingerprint(rawFp);
-
-    UntrustedKeyCallbackFn cb;
-    KeyTrustPromptFn prompt;
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (!fp.empty()) {
-            auto it = m_approved.find(fp);
-            if (it != m_approved.end()) {
-                m_approved.erase(it);
-                return KEY_TRUST_AND_IMPORT;
-            }
-        }
-        cb = m_untrustedCb;
-        prompt = m_keyTrustPrompt;
-    }
-
-    KeyTrustAnswerInfo answerInfo;
-    answerInfo.fingerprint = fp.empty() ? rawFp : fp;
-    answerInfo.id = key.id();
-    answerInfo.name = key.name();
-    answerInfo.created = static_cast<std::int64_t>(key.created());
-    answerInfo.expires = static_cast<std::int64_t>(key.expires());
-    answerInfo.repoAlias = keycontext.repoInfo().alias();
-    answerInfo.repoName = keycontext.repoInfo().name();
-
-    // in-flight プロンプトが設定されていれば、その場で回答を待つ。
-    // 未回答・タイムアウト・不正回答はすべて拒否 (fail-closed)。
-    if (prompt) {
-        switch (prompt(answerInfo).value_or(KeyTrustDecision::Reject)) {
-        case KeyTrustDecision::TrustTemporarily:
-            return KEY_TRUST_TEMPORARILY;
-        case KeyTrustDecision::TrustPermanently:
-            return KEY_TRUST_AND_IMPORT;
-        case KeyTrustDecision::Reject:
-        default:
-            return KEY_DONT_TRUST;
-        }
-    }
-
-    UntrustedKeyInfo info;
-    info.fingerprint = answerInfo.fingerprint;
-    info.id = answerInfo.id;
-    info.name = answerInfo.name;
-    info.created = answerInfo.created;
-    info.expires = answerInfo.expires;
-    info.repoAlias = answerInfo.repoAlias;
-    info.repoName = answerInfo.repoName;
-
-    qWarning("Refusing to trust GPG key id=%s fingerprint=%s repo=%s (no explicit approval)",
-             info.id.c_str(), info.fingerprint.c_str(), info.repoAlias.c_str());
-
-    // ロック外で通知する (デッドロック回避)
-    if (cb)
-        cb(info);
-
-    return KEY_DONT_TRUST;
-}
-
-/**
- * @brief 未署名ファイルを受け入れるか確認する — 常に拒否する。
- * @param file 対象ファイル名
- * @param keycontext 鍵のコンテキスト
- * @return 常に false (libzypp の安全なデフォルトと同様)
- */
-bool KeyRingReceiver::askUserToAcceptUnsignedFile(
-    const std::string &file,
-    const zypp::KeyContext &/*keycontext*/)
-{
-    qWarning("Refusing unsigned file: %s", file.c_str());
-    return false;
-}
-
-/**
- * @brief 未知の鍵IDを受け入れるか確認する — 常に拒否する。
- * @param file 対象ファイル名
- * @param id 未知の鍵ID
- * @param keycontext 鍵のコンテキスト
- * @return 常に false (libzypp の安全なデフォルトと同様)
- */
-bool KeyRingReceiver::askUserToAcceptUnknownKey(
-    const std::string &file,
-    const std::string &id,
-    const zypp::KeyContext &/*keycontext*/)
-{
-    qWarning("Refusing unknown key id=%s for file: %s", id.c_str(), file.c_str());
-    return false;
-}
-
-/**
- * @brief 署名検証失敗を受け入れるか確認する — 常に拒否する。
- * @param file 対象ファイル名
- * @param key 検証に使われた公開鍵
- * @param keycontext 鍵のコンテキスト
- * @return 常に false (libzypp の安全なデフォルトと同様)
- */
-bool KeyRingReceiver::askUserToAcceptVerificationFailed(
-    const std::string &file,
-    const zypp::PublicKey &key,
-    const zypp::KeyContext &/*keycontext*/)
-{
-    qWarning("Refusing file with failed verification: %s key id=%s",
-             file.c_str(), key.id().c_str());
-    return false;
-}
-
-// ─── DigestReceiver (fail-closed) ─────────────────────────
-
-/**
- * @brief ダイジェストなしファイルを受け入れるか — 常に拒否する。
- * @param file 対象ファイルパス
- * @return 常に false
- */
-bool DigestReceiver::askUserToAcceptNoDigest(const zypp::Pathname &file)
-{
-    qWarning("Refusing file without digest: %s", file.c_str());
-    return false;
-}
-
-/**
- * @brief 未知のダイジェスト種別を受け入れるか — 常に拒否する。
- * @param file 対象ファイルパス
- * @param name ダイジェスト名
- * @return 常に false
- */
-bool DigestReceiver::askUserToAccepUnknownDigest(
-    const zypp::Pathname &file,
-    const std::string &name)
-{
-    qWarning("Refusing file with unknown digest %s: %s", name.c_str(), file.c_str());
-    return false;
-}
-
-/**
- * @brief 不一致ダイジェストを受け入れるか — 常に拒否する。
- * @param file 対象ファイルパス
- * @param requested 要求されたダイジェスト
- * @param found 実際のダイジェスト
- * @return 常に false
- */
-bool DigestReceiver::askUserToAcceptWrongDigest(
-    const zypp::Pathname &file,
-    const std::string &/*requested*/,
-    const std::string &/*found*/)
-{
-    qWarning("Refusing file with wrong digest: %s", file.c_str());
-    return false;
 }
 
 } // namespace qZypper

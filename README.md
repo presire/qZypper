@@ -294,13 +294,14 @@ The backend is auto-started by D-Bus activation. It has no explicit shutdown met
 - A single-shot 5-minute idle timer starts when the backend starts.  
 - The timer is not stopped when a worker operation starts; it is restarted when the session owner's operation finishes.  
 - Calls from the session owner restart the timer.  
-- When the timer fires, the backend exits if no operation is running and no `Initialize` authorization is pending. Otherwise it re-arms and waits again.  
+- When the timer fires, the backend exits if no operation is running and no session owner is connected. If an operation is running or an owner is connected, it re-arms and waits again.  
+- If `Initialize` authorizations are still pending when the timer fires, the backend waits only for those requests to finish, and rejects new `Initialize` calls with `AccessDenied` in the meantime. It exits as soon as the last of them ends without producing an owner. Each authorization waits at most 5 minutes, so repeated authorization requests cannot keep the backend running indefinitely.  
 
-When the session owner's D-Bus connection disappears (GUI exit or crash), the backend does not hand the session to another client. It releases the owner session and restarts the 5-minute idle timer; the process then exits when that timer fires, not immediately.  
+While the GUI holds the session, the backend therefore never exits from inactivity, however long the GUI stays idle.  
 
-There is no "idle timer permanently stopped after long-running operations" mode.  
+When the session owner's D-Bus connection disappears (GUI exit or crash) or the owner calls `ReleaseSession` (End Editing Session), the backend does not hand the session to another client. It releases the owner session and restarts the 5-minute idle timer; the process then exits when that timer fires, not immediately.  
 
-On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection closes, which triggers the rule above. If the backend crashes unexpectedly, the GUI's `QDBusServiceWatcher` detects the service re-registration and reconnects automatically: the `backendReconnected` signal triggers `Initialize()` and a repository reload. The user's session is not interrupted.
+On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection closes, which triggers the rule above. If the backend exits or crashes while the GUI is running, the GUI shows the Session Ended dialog. Start Session restarts the backend through D-Bus activation and runs `Initialize()` again. If the service is registered again by another trigger, the GUI's `QDBusServiceWatcher` reconnects automatically: the `backendReconnected` signal triggers `Initialize()` and a repository reload.
 
 ### Authorization and Ownership
 

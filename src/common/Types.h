@@ -8,10 +8,10 @@ namespace qZypper {
 Q_NAMESPACE
 
 /**
- * @brief パッケージの状態 (libzypp zypp::ui::Status に対応)。
+ * @brief パッケージの状態 (libzypp zypp::ui::Statusに対応)
  *
- * qZypper 独自の順序で定義されており、ZyppManager::fromZyppStatus() /
- * toZyppStatus() で libzypp の zypp::ui::Status と相互変換する。
+ * qZypper独自の順序で定義されており、
+ * ZyppManager::fromZyppStatus() / toZyppStatus()でlibzyppのzypp::ui::Statusと相互変換する
  */
 enum class PackageStatus {
     NoInst = 0,         // 未インストール、選択なし
@@ -28,30 +28,30 @@ enum class PackageStatus {
 Q_ENUM_NS(PackageStatus)
 
 /**
- * @brief パッケージ検索のフラグ (ビットマスク)。
+ * @brief パッケージ検索のフラグ (ビットマスク)
  */
 enum class SearchFlag {
-    Name        = 1 << 0,
-    Keywords    = 1 << 1,
-    Summary     = 1 << 2,
-    Description = 1 << 3,
-    Requires    = 1 << 4,
-    Provides    = 1 << 5,
-    FileList    = 1 << 6
+    Name        = 1 << 0,  // パッケージ名を対象にする
+    Keywords    = 1 << 1,  // キーワードを対象にする
+    Summary     = 1 << 2,  // 概要を対象にする
+    Description = 1 << 3,  // 説明文を対象にする
+    Requires    = 1 << 4,  // 必要ケーパビリティを対象にする
+    Provides    = 1 << 5,  // 提供ケーパビリティを対象にする
+    FileList    = 1 << 6   // インストールファイルを対象にする
 };
 Q_ENUM_NS(SearchFlag)
 Q_DECLARE_FLAGS(SearchFlags, SearchFlag)
 Q_DECLARE_OPERATORS_FOR_FLAGS(SearchFlags)
 
 /**
- * @brief パッチカテゴリの分類。
+ * @brief パッチカテゴリの分類
  */
 enum class PatchCategory {
-    Security = 0,
-    Recommended,
-    Optional,
-    Feature,
-    All
+    Security = 0,  // セキュリティ更新
+    Recommended,   // 推奨更新
+    Optional,      // 任意更新
+    Feature,       // 機能更新
+    All            // 全カテゴリ
 };
 Q_ENUM_NS(PatchCategory)
 

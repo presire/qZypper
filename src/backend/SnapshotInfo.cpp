@@ -1,17 +1,16 @@
-#include "SnapshotInfo.h"
-
 #include <QDir>
 #include <QFile>
 #include <QXmlStreamReader>
 #include <algorithm>
 #include <set>
+#include "SnapshotInfo.h"
 
 namespace qZypper {
 
 /**
- * @brief info.xml の 1 項目を解析する。
- * @param xml XML 文字列
- * @return SnapshotEntry、解析失敗時は std::nullopt
+ * @brief info.xmlの1項目を解析する
+ * @param xml XML文字列
+ * @return SnapshotEntry、解析失敗時はstd::nullopt
  */
 std::optional<SnapshotEntry> parseSnapshotInfoXml(const QByteArray &xml)
 {
@@ -26,11 +25,14 @@ std::optional<SnapshotEntry> parseSnapshotInfoXml(const QByteArray &xml)
             const QString name = reader.name().toString();
             if (name == QStringLiteral("num")) {
                 entry.num = reader.readElementText().toULongLong(&haveNum);
-            } else if (name == QStringLiteral("type")) {
+            }
+            else if (name == QStringLiteral("type")) {
                 entry.type = reader.readElementText();
-            } else if (name == QStringLiteral("description")) {
+            }
+            else if (name == QStringLiteral("description")) {
                 entry.description = reader.readElementText();
-            } else if (name == QStringLiteral("date")) {
+            }
+            else if (name == QStringLiteral("date")) {
                 entry.date = reader.readElementText();
             }
         }
@@ -44,9 +46,9 @@ std::optional<SnapshotEntry> parseSnapshotInfoXml(const QByteArray &xml)
 }
 
 /**
- * @brief スナップショット番号の最大値を求める。
+ * @brief スナップショット番号の最大値を求める
  * @param snapshots 対象一覧
- * @return 最大番号 (空なら 0)
+ * @return 最大番号 (空の場合は0)
  */
 quint64 maxSnapshotNumber(const std::vector<SnapshotEntry> &snapshots)
 {
@@ -57,7 +59,7 @@ quint64 maxSnapshotNumber(const std::vector<SnapshotEntry> &snapshots)
 }
 
 /**
- * @brief 指定ルート配下のスナップショットを列挙する。
+ * @brief 指定ルート配下のスナップショットを列挙する
  * @param snapshotsRoot スナップショットルート
  * @return 読み取れた一覧 (番号昇順)
  */
@@ -90,7 +92,7 @@ std::vector<SnapshotEntry> readSnapshots(const QString &snapshotsRoot)
 }
 
 /**
- * @brief after のうち before に存在しないスナップショットを返す。
+ * @brief afterのうちbeforeに存在しないスナップショットを返す
  * @param before コミット前の一覧
  * @param after コミット後の一覧
  * @return 新規スナップショット (番号昇順)
@@ -111,7 +113,7 @@ std::vector<SnapshotEntry> newSnapshots(const std::vector<SnapshotEntry> &before
 }
 
 /**
- * @brief SnapshotEntry を D-Bus 転送用のマップへ変換する。
+ * @brief SnapshotEntryをD-Bus転送用のマップへ変換する
  * @param snapshot 変換対象
  * @return {num, type, description, date}
  */
@@ -126,9 +128,9 @@ QVariantMap snapshotToVariantMap(const SnapshotEntry &snapshot)
 }
 
 /**
- * @brief スナップショット一覧を D-Bus 転送用のリストへ変換する。
+ * @brief スナップショット一覧をD-Bus転送用のリストへ変換する
  * @param snapshots 変換対象の一覧
- * @return 各要素が snapshotToVariantMap の結果であるリスト
+ * @return 各要素がsnapshotToVariantMapの結果であるリスト
  */
 QVariantList snapshotsToVariantList(const std::vector<SnapshotEntry> &snapshots)
 {

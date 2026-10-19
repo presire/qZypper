@@ -9,20 +9,23 @@
 namespace qZypper {
 
 /**
- * @brief D-Bus経由で転送するパッケージ情報。
+ * @brief D-Bus経由で転送するパッケージ情報
  */
 struct PackageInfo {
-    QString name;                                       // パッケージ名
-    QString summary;                                    // 概要
-    QString version;                                    // 候補バージョン
-    QString installedVersion;                           // インストール済みバージョン
-    QString arch;                                       // アーキテクチャ
-    QString repoAlias;                                  // リポジトリエイリアス
-    QString repoName;                                   // リポジトリ名
-    quint64 size = 0;                                   // インストールサイズ (bytes)
-    int status = static_cast<int>(PackageStatus::NoInst); // パッケージ状態
+    QString name;                                          // パッケージ名
+    QString summary;                                       // 概要
+    QString version;                                       // 候補バージョン
+    QString installedVersion;                              // インストール済みバージョン
+    QString arch;                                          // アーキテクチャ
+    QString repoAlias;                                     // リポジトリエイリアス
+    QString repoName;                                      // リポジトリ名
+    quint64 size = 0;                                      // インストールサイズ (bytes)
+    int status = static_cast<int>(PackageStatus::NoInst);  // パッケージ状態
 
-    /** @brief QVariantMap に変換する (D-Bus転送用)。 */
+    /**
+     * @brief D-Bus転送用のQVariantMapへ変換する
+     * @return パッケージ属性を持つマップ
+     */
     QVariantMap toVariantMap() const {
         return {
             {"name",             name},
@@ -37,7 +40,11 @@ struct PackageInfo {
         };
     }
 
-    /** @brief QVariantMap から PackageInfo を生成する。 */
+    /**
+     * @brief D-Busで受信したQVariantMapから生成する
+     * @param map パッケージ属性を持つマップ
+     * @return 復元したパッケージ情報
+     */
     static PackageInfo fromVariantMap(const QVariantMap &map) {
         PackageInfo info;
         info.name             = map.value("name").toString();
@@ -54,7 +61,7 @@ struct PackageInfo {
 };
 
 /**
- * @brief パッケージ詳細情報 (単一パッケージの全情報)。
+ * @brief パッケージ詳細情報 (単一パッケージの全情報)
  */
 struct PackageDetails {
     PackageInfo basic;                                  // 基本情報
@@ -74,9 +81,12 @@ struct PackageDetails {
     QStringList suggests;                               // 提案ケーパビリティ
     QStringList fileList;                               // インストールファイル一覧
     QStringList changeLog;                              // 変更履歴
-    QList<QVariantMap> availableVersions;                // 利用可能バージョン
+    QList<QVariantMap> availableVersions;               // 利用可能バージョン
 
-    /** @brief QVariantMap に変換する (D-Bus転送用)。 */
+    /**
+     * @brief D-Bus転送用のQVariantMapへ変換する
+     * @return 基本情報と詳細属性を持つマップ
+     */
     QVariantMap toVariantMap() const {
         QVariantMap map = basic.toVariantMap();
         map["description"]       = description;

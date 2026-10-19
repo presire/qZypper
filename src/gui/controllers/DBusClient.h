@@ -13,16 +13,18 @@
 #include <deque>
 #include <functional>
 
-
 namespace qZypper {
 
 /**
- * @brief D-Busバックエンドとの通信を担当するクライアントクラス。
+ * @class DBusClient
+ * @brief D-Busバックエンドとの通信を担当するクライアントクラス
  *
- * system bus経由でqzypper-backendのメソッドを非同期で呼び出し、シグナルを中継する。
- * 全メソッド呼び出しはQDBusPendingCallWatcherベースで行われ、GUIスレッドを
- * ブロックしない。結果は呼び出しごとの完了コールバックで通知される。
- * デマーシャリング処理を内包する。
+ * system bus経由でqzypper-backendのメソッドを非同期で呼び出し、シグナルを中継する
+ * 全メソッド呼び出しはQDBusPendingCallWatcherベースで行われ、UIスレッドをブロックしない
+ *
+ * 結果は呼び出しごとの完了コールバックで通知される
+ *
+ * デマーシャリング処理を内包する
  */
 class DBusClient : public QObject
 {
@@ -30,11 +32,11 @@ class DBusClient : public QObject
 
 public:
     /**
-     * @brief 非同期D-Bus呼び出しの完了通知コールバック。
-     * @param success D-Bus転送が成功し正常応答が得られた場合 true
+     * @brief 非同期D-Bus呼び出しの完了通知コールバック
+     * @param success D-Bus転送が成功し正常応答が得られた場合はtrue
      * @param errorName D-Busエラー名 (成功時は空)
      * @param errorMessage エラーメッセージ (成功時は空)
-     * @param args 正規化済みの戻り値。成功時のみ設定される。
+     * @param args 正規化済みの戻り値、成功時のみ設定される、
      *             読み取り系は {QVariantList} / {QVariantMap}、bool系は {bool}
      */
     using ReplyCallback = std::function<void(bool success,
@@ -42,111 +44,113 @@ public:
                                              const QString &errorMessage,
                                              const QVariantList &args)>;
 
-    explicit DBusClient(QObject *parent = nullptr);
-    ~DBusClient() override;
+    explicit DBusClient(QObject *parent = nullptr);                 /* D-Busサービス監視を開始する */
+    ~DBusClient() override;                                         /* 保持するD-Busインターフェースを解放する */
 
-    bool connectToBackend();                                        // バックエンドに接続
-    bool isConnected() const;                                       // 接続状態を返す
-    QString lastError() const { return m_lastError; }               // 最新エラーメッセージ
+    bool connectToBackend();                                        /* バックエンドへ接続する */
+    bool isConnected() const;                                       /* 接続状態を返す */
+    QString lastError() const { return m_lastError; }               /* 最新エラーメッセージを返す */
 
     // 初期化 (バックエンド側)
     void initializeBackend(ReplyCallback callback);
 
     // リポジトリ操作 (特権)
-    void refreshReposAsync(ReplyCallback callback);                  // 全リポ非同期リフレッシュ
-    void refreshSingleRepoAsync(const QString &alias,                // 個別リポ非同期リフレッシュ
+    void refreshReposAsync(ReplyCallback callback);                 // 全リポ非同期リフレッシュ
+    void refreshSingleRepoAsync(const QString &alias,               // 個別リポ非同期リフレッシュ
                                 ReplyCallback callback);
     void cancelOperation();                                         // 操作キャンセル
-    void addRepo(const QString &url, const QString &name,            // リポ追加
+    void addRepo(const QString &url, const QString &name,           // リポ追加
                  ReplyCallback callback);
-    void addRepoFull(const QVariantMap &properties,                  // リポ追加 (全属性)
+    void addRepoFull(const QVariantMap &properties,                 // リポ追加 (全属性)
                      ReplyCallback callback);
-    void removeRepo(const QString &alias, ReplyCallback callback);    // リポ削除
-    void setRepoEnabled(const QString &alias, bool enabled,           // リポ有効 / 無効
+    void removeRepo(const QString &alias, ReplyCallback callback);  // リポ削除
+    void setRepoEnabled(const QString &alias, bool enabled,         // リポ有効 / 無効
                         ReplyCallback callback);
-    void modifyRepo(const QString &alias, const QVariantMap &properties,  // リポ変更
+    void modifyRepo(const QString &alias,                           // リポ変更
+                    const QVariantMap &properties,
                     ReplyCallback callback);
 
     // サービス操作 (特権)
-    void addService(const QString &url, const QString &alias,        // サービス追加
+    void addService(const QString &url, const QString &alias,                // サービス追加
                     ReplyCallback callback);
-    void removeService(const QString &alias, ReplyCallback callback);  // サービス削除
+    void removeService(const QString &alias, ReplyCallback callback);        // サービス削除
     void modifyService(const QString &alias, const QVariantMap &properties,  // サービス変更
                        ReplyCallback callback);
     void refreshServiceAsync(const QString &alias, ReplyCallback callback);  // サービスリフレッシュ
 
     // パッケージ状態変更
-    void setPackageStatus(const QString &name, int status,          // パッケージ状態変更
+    void setPackageStatus(const QString &name, int status,                   // パッケージ状態変更
                           ReplyCallback callback);
-    void setPatchStatus(const QString &patchId, int status,         // パッチ状態変更
+    void setPatchStatus(const QString &patchId, int status,                  // パッチ状態変更
                         ReplyCallback callback);
-    void selectAllNeededPatches(const QVariantMap &options,         // 必要パッチ一括選択
+    void selectAllNeededPatches(const QVariantMap &options,                  // 必要パッチ一括選択
                                 ReplyCallback callback);
-    void setPackageVersion(const QString &name, const QString &version,  // パッケージ版変更
+    void setPackageVersion(const QString &name, const QString &version,      // パッケージ版変更
                            const QString &arch, const QString &repoAlias,
                            ReplyCallback callback);
-    void setPatternStatus(const QString &name, int status,          // パターン状態変更
+    void setPatternStatus(const QString &name, int status,                   // パターン状態変更
                           ReplyCallback callback);
 
     // 依存関係解決
-    void updateAllPackages(ReplyCallback callback);                  // 全パッケージ更新
-    void distUpgrade(const QVariantMap &options,                     // ディストリビューション更新
+    void updateAllPackages(ReplyCallback callback);                      // 全パッケージ更新
+    void distUpgrade(const QVariantMap &options,                         // ディストリビューション更新
                      ReplyCallback callback);
-    void verifySystem(ReplyCallback callback);                       // システム整合性検証
-    void resolveDependencies(ReplyCallback callback);                // 依存関係解決
-    void applySolution(int problemIndex, int solutionIndex,          // 解決策適用
+    void verifySystem(ReplyCallback callback);                           // システム整合性検証
+    void resolveDependencies(ReplyCallback callback);                    // 依存関係解決
+    void applySolution(int problemIndex, int solutionIndex,              // 解決策適用
                        ReplyCallback callback);
 
     // コミット
-    void getSelectionRevision(ReplyCallback callback);               // 選択リビジョン取得
+    void getSelectionRevision(ReplyCallback callback);                   // 選択リビジョン取得
     void commitAsync(quint64 expectedRevision, ReplyCallback callback);  // 非同期コミット
 
     // 署名鍵
-    void trustKey(const QString &fingerprint, ReplyCallback callback);  // 署名鍵承認
+    void trustKey(const QString &fingerprint, ReplyCallback callback);   // 署名鍵承認
 
     // 読み取り操作
-    void getRepos(ReplyCallback callback);                           // リポジトリ一覧
-    void searchPackages(const QString &query, int flags,             // パッケージ検索
+    void getRepos(ReplyCallback callback);                               // リポジトリ一覧
+    void searchPackages(const QString &query, int flags,                 // パッケージ検索
                         ReplyCallback callback);
-    void searchPackagesEx(const QVariantMap &options,                // 高度な検索 (マッチ方式等)
+    void searchPackagesEx(const QVariantMap &options,                    // 高度な検索 (マッチ方式等)
                           ReplyCallback callback);
-    void getPackagesByClassification(const QString &classification,  // 分類別パッケージ一覧
+    void getPackagesByClassification(const QString &classification,      // 分類別パッケージ一覧
                                       ReplyCallback callback);
-    void getPackageDetails(const QString &name, ReplyCallback callback);  // パッケージ詳細
-    void getPackagesByRepo(const QString &repoAlias,                 // リポジトリ別一覧
+    void getPackageDetails(const QString &name, ReplyCallback callback); // パッケージ詳細
+    void getPackagesByRepo(const QString &repoAlias,                     // リポジトリ別一覧
                            ReplyCallback callback);
-    void getPatterns(ReplyCallback callback);                        // パターン一覧
-    void getPackagesByPattern(const QString &patternName,            // パターン別一覧
+    void getPatterns(ReplyCallback callback);                            // パターン一覧
+    void getPackagesByPattern(const QString &patternName,                // パターン別一覧
                               ReplyCallback callback);
-    void getPatches(int category, ReplyCallback callback);           // パッチ一覧
-    void getServices(ReplyCallback callback);                        // サービス一覧
-    void getDiskUsage(ReplyCallback callback);                       // ディスク使用量
-    void getPendingChanges(ReplyCallback callback);                  // 変更予定一覧
-    void getTransactionSummary(ReplyCallback callback);              // トランザクション概要 (リスク情報込み)
-    void getLocks(ReplyCallback callback);                           // パッケージロック一覧
-    void addLock(const QVariantMap &lock, ReplyCallback callback);   // パッケージロック追加
-    void removeLock(const QVariantMap &lock, ReplyCallback callback);  // パッケージロック削除
+    void getPatches(int category, ReplyCallback callback);               // パッチ一覧
+    void getServices(ReplyCallback callback);                            // サービス一覧
+    void getDiskUsage(ReplyCallback callback);                           // ディスク使用量
+    void getPendingChanges(ReplyCallback callback);                      // 変更予定一覧
+    void getTransactionSummary(ReplyCallback callback);                  // トランザクション概要 (リスク情報込み)
+    void getLocks(ReplyCallback callback);                               // パッケージロック一覧
+    void addLock(const QVariantMap &lock, ReplyCallback callback);       // パッケージロック追加
+    void removeLock(const QVariantMap &lock, ReplyCallback callback);    // パッケージロック削除
     void getHistory(const QVariantMap &filter, ReplyCallback callback);  // zypp履歴一覧
-    void createSolverTestcase(ReplyCallback callback);               // ソルバーテストケース作成
+    void createSolverTestcase(ReplyCallback callback);                   // ソルバーテストケース作成
 
     // 状態保存・復元
-    void saveState();                                               // 選択状態の保存 (fire-and-forget)
-    void restoreState(ReplyCallback callback);                       // 選択状態の復元
+    void saveState();                                                    // 選択状態の保存 (fire-and-forget)
+    void restoreState(ReplyCallback callback);                           // 選択状態の復元
 
     // 操作状態 (Wave1)
-    void getOperationState(ReplyCallback callback);                  // 現在の操作状態取得 (a{sv})
+    void getOperationState(ReplyCallback callback);                      // 現在の操作状態取得 (a{sv})
 
     // 対話プロンプト (Wave1)
-    void answerPrompt(uint promptId, const QVariantMap &answer,      // プロンプトへの応答
+    void answerPrompt(uint promptId, const QVariantMap &answer,          // プロンプトへの応答
                       ReplyCallback callback);
-    void releaseSession(ReplyCallback callback);                     // 編集セッション解放
+    void releaseSession(ReplyCallback callback);                         // 編集セッション解放
 
-    // ローカルRPM / .repo 取り込み
-    void installLocalRpms(const QList<QDBusUnixFileDescriptor> &files,  // ローカルRPMのインストール選択
-                          const QStringList &fileNames, ReplyCallback callback);
-    void parseRepoFile(const QString &content,                       // .repo ファイルの解析 (読み取り専用)
+    // ローカルRPM / .repo取り込み
+    void installLocalRpms(const QList<QDBusUnixFileDescriptor> &files,   // ローカルRPMのインストール選択
+                          const QStringList &fileNames,
+                          ReplyCallback callback);
+    void parseRepoFile(const QString &content,                           // .repoファイルの解析 (読み取り専用)
                        ReplyCallback callback);
-    void importRepoFile(const QString &content,                      // .repo ファイルの取り込み
+    void importRepoFile(const QString &content,                          // .repoファイルの取り込み
                         ReplyCallback callback);
 
 signals:
@@ -184,7 +188,7 @@ signals:
     void scriptOutput(const QVariantMap &line);                 // RPMスクリプト出力 (1行)
 
 private slots:
-    // 入れ子の QDBusArgument を正規化してから中継する
+    // 入れ子のQDBusArgumentを正規化してから中継する
     void onUntrustedKeyDetected(const QVariantMap &keyInfo);
     void onOperationStateChanged(const QVariantMap &state);
     void onPromptRequested(uint promptId, const QString &promptType, const QVariantMap &data);
@@ -202,17 +206,18 @@ private:
     QString m_lastError;                                // 最新エラーメッセージ
 
     /**
-     * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す。
+     * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す
      *
-     * GUIスレッドをブロックしないようQDBusPendingCallWatcherを使用する。
-     * エラー時はm_lastErrorを更新し、コールバックへエラー名/メッセージを返す。
+     * GUIスレッドをブロックしないようQDBusPendingCallWatcherを使用する
+     * エラー時は、m_lastErrorを更新し、コールバックへエラー名/メッセージを返す
+     *
      * @param msg 送信するメソッド呼び出しメッセージ
      * @param timeout タイムアウト (ミリ秒)
      * @param callback 完了時に呼ばれるコールバック
      */
-    void callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback);
-    void dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized);
-    void dispatchNextQueuedCall();
+    void callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback); /* 非同期呼び出しを要求する */
+    void dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized); /* 呼び出しを送信する */
+    void dispatchNextQueuedCall();                              /* 次の直列化済み呼び出しを送信する */
 
     /** @brief バックエンドは同時に1操作しか受け付けないため、直列化待ちの呼び出し */
     struct QueuedCall {
@@ -224,17 +229,17 @@ private:
     bool m_serialCallInFlight = false;    // 直列化対象の呼び出しが応答待ちか
 
     /**
-     * @brief 世代番号。バックエンド再接続/切断のたびに増加する。
+     * @brief 世代番号、バックエンド再接続/切断のたびに増加する
      *
-     * 送信時点の世代と不一致になった応答はバックエンド消滅後の古い応答とみなし破棄する。
+     * 送信時点の世代と不一致になった応答は、バックエンド消滅後の古い応答とみなし破棄する
      */
     quint64 m_generation = 0;
 
-    /** @brief バックエンド消滅時に待機中の呼び出しを破棄し、応答を無効化する。 */
+    /** @brief バックエンド消滅時に待機中の呼び出しを破棄し、応答を無効化する */
     void resetPendingCalls();
 
-    void onServiceRegistered(const QString &serviceName);    // サービス登録ハンドラ
-    void onServiceUnregistered(const QString &serviceName);  // サービス解除ハンドラ
+    void onServiceRegistered(const QString &serviceName);    /* サービス登録を処理する */
+    void onServiceUnregistered(const QString &serviceName);  /* サービス解除を処理する */
 };
 
 } // namespace qZypper

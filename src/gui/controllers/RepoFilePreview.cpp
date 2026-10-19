@@ -1,23 +1,20 @@
-#include "RepoFilePreview.h"
-
 #include <QCoreApplication>
 #include <QFile>
-
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "RepoFilePreview.h"
 
 namespace qZypper {
 
 namespace {
 
 /**
- * @brief errno を英語のユーザー向け文言へ変換する。
- * @param errnoValue 変換する errno 値
+ * @brief errnoを英語のユーザ向け文言へ変換する
+ * @param errnoValue 変換するerrno値
  * @return 文言
  */
 QString errorString(int errnoValue)
@@ -28,16 +25,19 @@ QString errorString(int errnoValue)
 } // namespace
 
 /**
- * @brief ユーザー指定の .repo ファイルをプレビュー用に安全に読み込む。
+ * @brief ユーザ指定の.repoファイルをプレビュー用に安全に読み込む
  *
- * O_NONBLOCK で開き、fstat で通常ファイルであることを確認したうえで上限バイト数
- * まで読み込む。名前付きパイプやデバイス、ディレクトリ、上限を超えるファイルは
- * 拒否する。FUSE 等で read 自体がブロックし得るため、呼出し側はワーカースレッドで実行すること。
+ * O_NONBLOCKで開き、fstatで通常ファイルであることを確認したうえで上限バイト数まで読み込む
+ *
+ * 名前付きパイプやデバイス、ディレクトリ、上限を超えるファイルは拒否する
+ *
+ * FUSE等でread自体がブロックし得るため、呼出し側はワーカースレッドで実行すること
+ *
  * @param path 読み込むファイルのパス
  * @param maxSize 許可する最大バイト数
  * @param content 成功時の出力先 (ファイル内容そのままのバイト列)
- * @param error 失敗時の理由 (英語のユーザー向け文言)
- * @return 成功時 true
+ * @param error 失敗時の理由 (英語のユーザ向け文言)
+ * @return 成功時true
  */
 bool readRepoFileForPreview(const QString &path, qint64 maxSize, QByteArray &content, QString &error)
 {
@@ -59,7 +59,7 @@ bool readRepoFileForPreview(const QString &path, qint64 maxSize, QByteArray &con
         ::close(fd);
         return false;
     }
-    // 名前付きパイプ・デバイス・ディレクトリは read で停止し得るため通常ファイル以外は拒否する
+    // 名前付きパイプ・デバイス・ディレクトリはreadで停止し得るため、通常ファイル以外は拒否する
     if (!S_ISREG(st.st_mode)) {
         error = QCoreApplication::translate("qZypper::PackageController",
                                             "The selected item is not a regular file");

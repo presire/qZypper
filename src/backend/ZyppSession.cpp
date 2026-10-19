@@ -1,10 +1,10 @@
-#include "ZyppManager.h"
 #include <zypp/target/rpm/RpmDb.h>
 #include <sys/stat.h>
+#include "ZyppManager.h"
 
 namespace qZypper {
 namespace {
-/** @brief RPM DB本体とSQLite WALの高精度タイムスタンプを比較する。 */
+/** @brief RPM DB本体とSQLite WALの高精度タイムスタンプを比較する */
 std::string databaseStamp(zypp::Target &target)
 {
     const auto directory = target.assertRootPrefix(target.rpmDb().dbPath());
@@ -22,13 +22,22 @@ std::string databaseStamp(zypp::Target &target)
 }
 }
 
-/** @brief 初回読込時のDB世代を記録する。呼出側がマネージャをロックする。 */
+/**
+ * @brief 初回読込時のDB世代を記録する
+ * @note 呼び出し側がマネージャのmutexを保持して呼ぶ
+ */
 void ZyppManager::recordDatabaseStamp()
 {
     m_rpmStamp = databaseStamp(*m_zypp->target());
 }
 
-/** @brief 初期化済みセッションを再利用する直前に外部変更を検出する。 */
+/**
+ * @brief 初期化済みセッションを再利用する直前に外部変更を検出する
+ *
+ * RPM DBのタイムスタンプが変化していれば解決結果を破棄し、ターゲットを再読込する
+ *
+ * @return 再読込を行った場合はtrue、変更なしまたは未初期化ならfalse
+ */
 bool ZyppManager::reloadIfChanged()
 {
     std::lock_guard<std::mutex> lock(m_mutex);

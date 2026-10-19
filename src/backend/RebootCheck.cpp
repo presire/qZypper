@@ -1,24 +1,24 @@
-#include "RebootCheck.h"
-
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSet>
 #include <algorithm>
+#include "RebootCheck.h"
 
 namespace qZypper {
 
 namespace {
-// /proc/<pid>/maps の読み取り上限 (壊れた巨大ファイルでも有界にする)
-constexpr qint64 kMaxMapsBytes = 4 * 1024 * 1024;
-// /proc/<pid>/cgroup の読み取り上限
-constexpr qint64 kMaxCgroupBytes = 64 * 1024;
+    // /proc/<pid>/mapsの読み取り上限 (壊れた巨大ファイルでも有界にする)
+    constexpr qint64 kMaxMapsBytes = 4 * 1024 * 1024;
+
+    // /proc/<pid>/cgroupの読み取り上限
+    constexpr qint64 kMaxCgroupBytes = 64 * 1024;
 } // namespace
 
 /**
- * @brief 再起動要求フラグの存在を検査する。
+ * @brief 再起動要求フラグの存在を検査する
  * @param path 検査対象パス
- * @return 存在すれば true
+ * @return 存在すればtrue
  */
 bool rebootFlagPresent(const QString &path)
 {
@@ -28,8 +28,8 @@ bool rebootFlagPresent(const QString &path)
 }
 
 /**
- * @brief cgroup 内容から systemd ユニット名を抽出する。
- * @param cgroup cgroup ファイルの内容
+ * @brief cgroup内容からsystemdユニット名を抽出する
+ * @param cgroup cgroupファイルの内容
  * @return ユニット名 (判定不能なら空)
  */
 QString serviceUnitFromCgroup(const QByteArray &cgroup)
@@ -39,7 +39,9 @@ QString serviceUnitFromCgroup(const QByteArray &cgroup)
         const QByteArray line = rawLine.trimmed();
         if (line.isEmpty())
             continue;
-        // "0::/system.slice/sshd.service" 形式。最後の ':' 以降がパス。
+
+        // "0::/system.slice/sshd.service"形式
+        // 最後の':'以降がパス
         const int sep = line.lastIndexOf(':');
         const QByteArray path = (sep >= 0) ? line.mid(sep + 1) : line;
         const QList<QByteArray> components = path.split('/');
@@ -56,8 +58,8 @@ QString serviceUnitFromCgroup(const QByteArray &cgroup)
 }
 
 /**
- * @brief 削除済みファイルを使用中の systemd ユニットを列挙する。
- * @param procRoot /proc 相当のルート
+ * @brief 削除済みファイルを使用中のSystemdサービスユニットを列挙する
+ * @param procRoot /proc相当のルート
  * @param maxProcesses 走査するプロセス数の上限
  * @param maxUnits 返すユニット数の上限
  * @return ソート済みユニット名一覧

@@ -15,27 +15,31 @@
 
 namespace {
 /**
- * @brief self-pipe trick による SIGINT/SIGTERM ハンドリング。
+ * @brief self-pipe trickによるSIGINT/SIGTERMハンドリング
  *
- * UNIX シグナルハンドラからは async-signal-safe な操作しか
- * 実行できないため、パイプに 1 バイト書き込むだけで復帰する。
- * 読み出し側を QSocketNotifier で監視し、Qt イベントループ内で
- * QCoreApplication::quit() を呼ぶ。
+ * UNIXシグナルハンドラからはasync-signal-safeな操作しか
+ * 実行できないため、パイプに1バイト書き込むだけで復帰する
+ * 読み出し側をQSocketNotifierで監視し、Qtイベントループ内でQCoreApplication::quit()を呼ぶ
  */
 int g_signalPipe[2] = {-1, -1};
 
+/**
+ * @brief 受信シグナルをQtイベントループへ通知する
+ * @param signo 受信したシグナル番号
+ * @note async-signal-safeなwrite()だけを実行する
+ */
 void unixSignalHandler(int /*signo*/)
 {
     const char c = 1;
     ssize_t n = ::write(g_signalPipe[1], &c, sizeof(c));
-    (void)n;  // async-signal-safe 文脈のためエラー処理不可
+    (void)n;  // async-signal-safe文脈のためエラー処理不可
 }
 } // anonymous namespace
 
 /**
- * @brief GUIアプリケーションのエントリポイント。
+ * @brief GUIアプリケーションのエントリポイント
  *
- * QMLエンジンを初期化し、Fusionスタイルを設定してメインウィンドウを起動する。
+ * QMLエンジンを初期化し、Fusionスタイルを設定してメインウィンドウを起動する
  * @param argc コマンドライン引数の数
  * @param argv コマンドライン引数の配列
  * @return アプリケーションの終了コード
@@ -44,9 +48,8 @@ int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
 
-    // SIGINT (Ctrl+C) / SIGTERM ハンドラを登録
-    // self-pipe にバイトを書き込み、QSocketNotifier が Qt イベントループで
-    // これを読み取って quit() を呼ぶ
+    // SIGINT ([Ctrl] + [C]) / SIGTERMハンドラを登録
+    // self-pipeにバイトを書き込み、QSocketNotifierがQtイベントループにおいて、これを読み取りquit()を呼ぶ
     if (::pipe(g_signalPipe) == 0) {
         struct sigaction sa;
         sa.sa_handler = unixSignalHandler;
@@ -87,7 +90,7 @@ int main(int argc, char *argv[])
         app.installTranslator(&translator);
     }
 
-    // Fusion スタイルをデフォルトに (openSUSEテーマとの親和性)
+    // Fusionスタイルをデフォルトへ (SUSEテーマとの親和性)
     QQuickStyle::setStyle("Fusion");
 
     QQmlApplicationEngine engine;
@@ -102,10 +105,10 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("qtVersion", QString(qVersion()));
 
     // システムのカラースキームを検出してQMLに渡す
-    // Qt.styleHints.colorScheme が正しく検出できない環境向けのフォールバック
+    // Qt.styleHints.colorSchemeが正しく検出できない環境向けのフォールバック
     bool systemDarkMode = app.styleHints()->colorScheme() == Qt::ColorScheme::Dark;
     if (!systemDarkMode) {
-        // gsettings からGNOME/GTKのテーマ設定を確認
+        // gsettingsからGNOME/GTKのテーマ設定を確認
         QProcess proc;
         proc.start("gsettings", {"get", "org.gnome.desktop.interface", "color-scheme"});
         if (proc.waitForFinished(500)) {
@@ -116,7 +119,7 @@ int main(int argc, char *argv[])
     }
     engine.rootContext()->setContextProperty("systemDarkMode", systemDarkMode);
 
-    // PackageController をシングルトンとして登録
+    // PackageControllerをシングルトンとして登録
     auto *controller = new qZypper::PackageController(&app);
     qmlRegisterSingletonInstance("org.presire.qzypper.gui", 1, 0, "PackageController", controller);
 

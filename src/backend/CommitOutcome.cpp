@@ -2,9 +2,8 @@
 
 namespace qZypper {
 
-/** @brief 未実行と失敗を区別してコミットを分類する。 */
-CommitClassification classifyCommit(const std::vector<CommitStep> &steps,
-                                    bool cancelRequested, bool exception)
+/** @brief 未実行と失敗を区別してコミットを分類する */
+CommitClassification classifyCommit(const std::vector<CommitStep> &steps, bool cancelRequested, bool exception)
 {
     CommitClassification result;
     for (const auto &step : steps) {
@@ -22,7 +21,8 @@ CommitClassification classifyCommit(const std::vector<CommitStep> &steps,
             break;
         }
     }
-    // 例外は取消しより優先する。取消しだけで全完了を失敗に変えない。
+    // 例外は取消しより優先する
+    // 取消しだけで全完了を失敗に変えない
     if (exception)
         result.outcome = CommitOutcome::Failed;
     else if (result.errorCount == 0 && result.skippedCount == 0)
@@ -34,14 +34,14 @@ CommitClassification classifyCommit(const std::vector<CommitStep> &steps,
     return result;
 }
 
-/** @brief 例外で終わったコミットを分類する。取消し要求に起因する中断だけを取消しとする。 */
+/** @brief 例外で終わったコミットを分類する。取消し要求に起因する中断だけを取消しとする */
 CommitOutcome classifyCommitException(bool cancelRequested, bool userRequestException)
 {
     return cancelRequested && userRequestException ? CommitOutcome::Cancelled
                                                    : CommitOutcome::Failed;
 }
 
-/** @brief D-Busで使用する安定した結果識別子を返す。 */
+/** @brief D-Busで使用する安定した結果識別子を返す */
 const char *commitOutcomeName(CommitOutcome outcome)
 {
     switch (outcome) {

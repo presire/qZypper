@@ -1,23 +1,29 @@
-#include "SearchOptions.h"
-
 #include <QtTest>
+#include "SearchOptions.h"
 
 using namespace qZypper;
 
+/**
+ * @class SearchOptionsTest
+ * @brief 検索オプションの解析・既定値・不正入力の拒否を検証する
+ *
+ * クエリのみを渡した時の既定値、一致モードの解析、全オプションの反映、POSIX EREと範囲付き繰り返しの受理、正規表現DoSを含む不正オプションの拒否を対象にする
+ */
 class SearchOptionsTest : public QObject {
     Q_OBJECT
 private slots:
+    /** @brief クエリのみを渡すと既定のオプションが設定されることを検証する */
     void appliesDefaultsWhenOnlyQueryGiven()
     {
-        // Given
+        // 準備 : クエリのみを指定する
         const QVariantMap options{{QStringLiteral("query"), QStringLiteral("kernel")}};
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : クエリが反映され他は既定値になることを確認する
         QVERIFY2(accepted, qPrintable(error));
         QCOMPARE(out.query, QStringLiteral("kernel"));
         QCOMPARE(out.flags, 1);
@@ -28,24 +34,22 @@ private slots:
         QVERIFY(out.repoAlias.isEmpty());
     }
 
+    /** @brief parsesMatchModesの入力データを提供する */
     void parsesMatchModes_data()
     {
         QTest::addColumn<QString>("match");
         QTest::addColumn<int>("expected");
 
-        QTest::newRow("substring") << QStringLiteral("substring")
-                                   << static_cast<int>(SearchMatchMode::Substring);
-        QTest::newRow("exact") << QStringLiteral("exact")
-                               << static_cast<int>(SearchMatchMode::Exact);
-        QTest::newRow("glob") << QStringLiteral("glob")
-                              << static_cast<int>(SearchMatchMode::Glob);
-        QTest::newRow("regex") << QStringLiteral("regex")
-                               << static_cast<int>(SearchMatchMode::Regex);
+        QTest::newRow("substring") << QStringLiteral("substring") << static_cast<int>(SearchMatchMode::Substring);
+        QTest::newRow("exact") << QStringLiteral("exact") << static_cast<int>(SearchMatchMode::Exact);
+        QTest::newRow("glob") << QStringLiteral("glob") << static_cast<int>(SearchMatchMode::Glob);
+        QTest::newRow("regex") << QStringLiteral("regex") << static_cast<int>(SearchMatchMode::Regex);
     }
 
+    /** @brief 一致モード文字列を対応するモードへ解析することを検証する */
     void parsesMatchModes()
     {
-        // Given
+        // 準備 : 一致モード文字列と期待値を受け取る
         QFETCH(QString, match);
         QFETCH(int, expected);
         const QVariantMap options{{QStringLiteral("query"), QStringLiteral("k.*l")},
@@ -53,17 +57,18 @@ private slots:
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : 解析されたモードが期待値と一致することを確認する
         QVERIFY2(accepted, qPrintable(error));
         QCOMPARE(static_cast<int>(out.match), expected);
     }
 
+    /** @brief 既定値と異なる全オプションを反映することを検証する */
     void parsesFullOptionSet()
     {
-        // Given: 既定値と異なる全オプションを明示する
+        // 準備 : 既定値と異なる全オプションを明示する
         const QVariantMap options{{QStringLiteral("query"), QStringLiteral("libzypp")},
                                   {QStringLiteral("flags"), 7},
                                   {QStringLiteral("match"), QStringLiteral("glob")},
@@ -74,10 +79,10 @@ private slots:
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : 指定した値がすべて反映されることを確認する
         QVERIFY2(accepted, qPrintable(error));
         QCOMPARE(out.query, QStringLiteral("libzypp"));
         QCOMPARE(out.flags, 7);
@@ -88,23 +93,25 @@ private slots:
         QCOMPARE(out.repoAlias, QStringLiteral("repo-oss"));
     }
 
+    /** @brief 妥当なPOSIX拡張正規表現を受理することを検証する */
     void acceptsValidPosixEre()
     {
-        // Given
+        // 準備 : 妥当なPOSIX拡張正規表現を指定する
         const QVariantMap options{{QStringLiteral("query"), QStringLiteral("^lib.*-devel$")},
                                   {QStringLiteral("match"), QStringLiteral("regex")}};
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : 受理され正規表現モードになることを確認する
         QVERIFY2(accepted, qPrintable(error));
         QCOMPARE(out.query, QStringLiteral("^lib.*-devel$"));
         QCOMPARE(static_cast<int>(out.match), static_cast<int>(SearchMatchMode::Regex));
     }
 
+    /** @brief acceptsBoundedRepetitionの入力データを提供する */
     void acceptsBoundedRepetition_data()
     {
         QTest::addColumn<QString>("query");
@@ -120,22 +127,24 @@ private slots:
         QTest::newRow("quantifier-char-in-bracket") << QStringLiteral("[+*?]+");
     }
 
+    /** @brief 範囲付き繰り返しを含む正規表現を受理することを検証する */
     void acceptsBoundedRepetition()
     {
-        // Given
+        // 準備 : 範囲付き繰り返しを含むクエリを受け取る
         QFETCH(QString, query);
         const QVariantMap options{{QStringLiteral("query"), query},
                                   {QStringLiteral("match"), QStringLiteral("regex")}};
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : エラーなく受理されることを確認する
         QVERIFY2(accepted, qPrintable(error));
     }
 
+    /** @brief rejectsInvalidOptionsの入力データを提供する */
     void rejectsInvalidOptions_data()
     {
         QTest::addColumn<QVariantMap>("options");
@@ -216,17 +225,18 @@ private slots:
                            {QStringLiteral("match"), QStringLiteral("regex")}};
     }
 
+    /** @brief 不正な検索オプションをエラーとして拒否することを検証する */
     void rejectsInvalidOptions()
     {
-        // Given
+        // 準備 : 不正なオプションを入力する
         QFETCH(QVariantMap, options);
         SearchOptions out;
         QString error;
 
-        // When
+        // 実行 : オプションを解析する
         const bool accepted = parseSearchOptions(options, out, error);
 
-        // Then
+        // 確認 : 拒否されエラーメッセージが設定されることを確認する
         QVERIFY(!accepted);
         QVERIFY(!error.isEmpty());
     }
