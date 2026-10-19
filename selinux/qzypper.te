@@ -790,6 +790,16 @@ allow qzypper_dbus_t passwd_file_t:file { getattr open read };
 allow qzypper_dbus_t etc_t:dir { getattr open read search write remove_name };
 allow qzypper_dbus_t etc_t:file { getattr open read unlink };
 allow qzypper_dbus_t etc_t:lnk_file { getattr read };
+# watch: inotify watch on /etc/sysconfig (etc_t). libzypp dlopens libproxy
+# (ProxyInfoLibproxy) on the first media access of a refresh/download, and the
+# libproxy 0.5 config-sysconfig plugin (libpxbackend-1.0.so) monitors
+# /etc/sysconfig/proxy with GFileMonitor, which watches the parent directory.
+# appstream-util, run by the libzypp appdata plugin after a refresh, does the
+# same through glib-networking. When the watch is denied GLib puts the path on
+# its "missing" list and retries every 4 seconds for the lifetime of the
+# process, logging one AVC per retry. GLib's directory mask has no
+# IN_ACCESS/IN_CLOSE_NOWRITE, so watch_reads is not needed.
+allow qzypper_dbus_t etc_t:dir watch;
 # Opt-in for the RPM helper / direct-script file-write path, shared with the
 # /usr and lib_t blocks below. Needed for the single_rpmtrans mode and for
 # legacy update scripts (/var/adm/update-scripts) that write such files: in
@@ -797,7 +807,7 @@ allow qzypper_dbus_t etc_t:lnk_file { getattr read };
 # RPM scriptlet section).
 bool qzypper_rpm_helper_write false;
 if (qzypper_rpm_helper_write) {
-    allow qzypper_dbus_t etc_t:dir { setattr add_name create rmdir watch relabelfrom relabelto };
+    allow qzypper_dbus_t etc_t:dir { setattr add_name create rmdir relabelfrom relabelto };
     allow qzypper_dbus_t etc_t:file { setattr write append create rename link lock map relabelfrom relabelto };
     allow qzypper_dbus_t etc_t:lnk_file { create unlink };
 }
@@ -933,6 +943,13 @@ allow system_dbusd_t qzypper_dbus_t:dbus send_msg;
 allow qzypper_dbus_t system_dbusd_var_run_t:dir { getattr open read search };
 allow qzypper_dbus_t system_dbusd_var_run_t:sock_file { getattr open read write };
 
+# /var/lib/dbus/machine-id: symlink to /etc/machine-id (machineid_t, readable by
+# every domain in the base policy). GLib reads the D-Bus machine ID through this
+# path first; observed from the dconf worker of appstream-util, which the libzypp
+# appdata plugin runs in this domain after a refresh.
+allow qzypper_dbus_t system_dbusd_var_lib_t:dir { getattr search };
+allow qzypper_dbus_t system_dbusd_var_lib_t:lnk_file { getattr read };
+
 ########################################
 # qZypper-specific: libzypp / RPM access
 ########################################
@@ -960,6 +977,13 @@ optional {
 # On SUSE 16, /var/cache/zypp is labeled var_t (no var_cache_t type)
 allow qzypper_dbus_t var_t:dir { getattr setattr open read search write add_name remove_name rename create rmdir ioctl };
 allow qzypper_dbus_t var_t:file { getattr setattr open read write append create unlink rename link lock map };
+# ioctl FICLONE (0x9409) only: after a refresh the libzypp appdata plugin
+# (/usr/lib/zypp/plugins/appdata/InstallAppdata -> /usr/lib/AsHelper ->
+# appstream-util) installs the AppStream catalog into /var/cache/swcatalog
+# (var_t) with g_file_copy(), which first tries a btrfs reflink. allowxperm
+# limits the ioctl permission on var_t files to that single command.
+allow qzypper_dbus_t var_t:file ioctl;
+allowxperm qzypper_dbus_t var_t:file ioctl 0x9409;
 allow qzypper_dbus_t var_t:lnk_file { getattr read create unlink };
 allow qzypper_dbus_t var_t:sock_file { getattr open read write create unlink };
 

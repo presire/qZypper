@@ -4,7 +4,7 @@
  *
  * Main.qmlから開かれ、リフレッシュ完了まで他の操作をブロックする
  *
- * 入力 : cancelling (キャンセル要求済みか)
+ * 入力 : cancellable (キャンセル操作を提供するか), cancelling (キャンセル要求済みか)
  * 出力 : なし
  * 依存 : PackageController (statusMessage, cancelRefresh(), refreshFinishedシグナル)
  */
@@ -17,6 +17,7 @@ import org.presire.qzypper.gui
 Popup {
     id: refreshOverlay  // オーバーレイ自身の参照名
 
+    property bool cancellable: true  // キャンセル操作を提供するか (サービス更新はlibzyppが途中中断に対応しないためfalseにする)
     property bool cancelling: false  // キャンセル要求を送信済みか
 
     /**
@@ -37,6 +38,7 @@ Popup {
 
     // 再度開いた時にキャンセル表示が残らないよう状態を戻す
     onClosed: {
+        cancellable = true
         cancelling = false
     }
 
@@ -49,7 +51,7 @@ Popup {
     // Popup内のShortcutはモーダル中でもウィンドウレベルで動作する
     Shortcut {
         sequence: "Escape"                                             // Escキーでキャンセルする
-        enabled: refreshOverlay.visible && !refreshOverlay.cancelling  // 表示中かつ未要求の場合のみ有効 (2重送信を防ぐ)
+        enabled: refreshOverlay.visible && refreshOverlay.cancellable && !refreshOverlay.cancelling  // 表示中・キャンセル可能・未要求の場合のみ有効 (2重送信を防ぐ)
 
         // Escキーが押されたのでキャンセルを要求する
         onActivated: {
@@ -80,13 +82,11 @@ Popup {
                 font.pixelSize: 16                                 // 文字サイズ
             }
 
-            // キャンセルは現在のリポジトリ処理の区切りで反映される
+            // キャンセル操作の案内 (要求後はstatusMessageの"Cancelling... Please wait"で状況を示す)
             Label {
-                anchors.horizontalCenter: parent.horizontalCenter  // 左右中央に配置する
-                // キャンセル要求済みかどうかで案内文を切り替える
-                text: refreshOverlay.cancelling
-                      ? qsTr("Will be cancelled after the current repository finishes")
-                      : qsTr("Press Esc or button to cancel")
+                anchors.horizontalCenter: parent.horizontalCenter                  // 左右中央に配置する
+                visible: refreshOverlay.cancellable && !refreshOverlay.cancelling  // キャンセル不可の更新、または要求済みの場合は案内しない
+                text: qsTr("Press Esc or button to cancel")                        // キャンセル操作の案内文
                 opacity: 0.6                                       // 補足情報として控えめに表示する
                 font.pixelSize: 13                                 // 文字サイズ
             }
@@ -94,7 +94,7 @@ Popup {
             // [Cancel]ボタン
             Button {
                 anchors.horizontalCenter: parent.horizontalCenter  // 左右中央に配置する
-                visible: !refreshOverlay.cancelling                // 要求済みなら押下できないようにする
+                visible: refreshOverlay.cancellable && !refreshOverlay.cancelling  // キャンセル不可または要求済みなら押下できないようにする
                 text: qsTr("Cancel")                               // ボタンの表示文字列
 
                 // [Cancel]ボタンが押されたのでキャンセルを要求する

@@ -6,8 +6,8 @@
  * 表示の切替はMain.qmlのfilterTabBarの選択インデックスで行う
  *
  * 入力 : なし
- * 出力 : なし
- * 依存 : PackageController (repos、loadPackagesByRepo())
+ * 出力 : packageLoadStarted (リポジトリ選択によるパッケージ読込の開始)
+ * 依存 : PackageController (repos、connected、busy、loadPackagesByRepo())
  */
 import QtQuick
 import QtQuick.Controls
@@ -17,6 +17,11 @@ import org.presire.qzypper.gui
 
 // [Repository]タブで表示するビュー本体
 Pane {
+    id: repositoryView  // リポジトリビュー自身の参照名
+
+    // リポジトリ選択でパッケージ読込を開始したことを通知する (Main.qmlのウェイトポップアップ用)
+    signal packageLoadStarted()
+
     padding: 0  // リスト表示を枠いっぱいに広げるため余白なし
 
     // リポジトリ名の一覧 (modelはC++側のQVariantList)
@@ -39,8 +44,14 @@ Pane {
             // 選択したリポジトリのパッケージだけを読み込ませる
             // PackageController::loadPackagesByRepoを呼び出し、結果はpackagesChangedで一覧へ反映される
             onClicked: {
+                // 未接続/処理中は読込要求が破棄されるため、選択行も変えない (選択行と一覧の内容がずれるのを防ぐ)
+                if (!PackageController.connected || PackageController.busy) {
+                    return
+                }
+
                 repoListView.currentIndex = index
                 PackageController.loadPackagesByRepo(modelData.alias)
+                repositoryView.packageLoadStarted()
             }
 
             // リポジトリ名はメタデータ由来のためPlainTextで表示する

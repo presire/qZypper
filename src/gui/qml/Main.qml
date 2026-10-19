@@ -353,6 +353,28 @@ ApplicationWindow {
                         refreshOverlay.open()
                         PackageController.refreshReposAsync()
                     }
+
+                    // [Refresh]メニューの[Selected Repository] : 選択中のリポジトリのリフレッシュを開始する
+                    onRefreshRepoRequested: function(alias) {
+                        // 未接続または処理中は要求が即時に破棄されrefreshFinishedが届かないため、オーバーレイを開かない
+                        if (!PackageController.connected || PackageController.busy) {
+                            return
+                        }
+                        refreshOverlay.open()
+                        PackageController.refreshSingleRepo(alias)
+                    }
+
+                    // [Services]タブの[Refresh]ボタン : 選択中のサービスのリフレッシュを開始する
+                    onRefreshServiceRequested: function(alias) {
+                        // 未接続または処理中は要求が即時に破棄されrefreshFinishedが届かないため、オーバーレイを開かない
+                        if (!PackageController.connected || PackageController.busy) {
+                            return
+                        }
+                        // libzyppのサービス更新は途中で中断できないため、キャンセル操作を出さない
+                        refreshOverlay.cancellable = false
+                        refreshOverlay.open()
+                        PackageController.refreshService(alias)
+                    }
                 }
             }
         }
@@ -551,6 +573,11 @@ ApplicationWindow {
                     // [Repository]タブのビュー
                     RepositoryView {
                         id: repositoryView  // リポジトリビューの参照名
+
+                        // リポジトリ選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        onPackageLoadStarted: {
+                            packageLoadWaitDialog.start()
+                        }
                     }
 
                     // [Patterns]タブのビュー
@@ -759,6 +786,11 @@ ApplicationWindow {
 
         // 他のモーダル表示中は重ねて表示しない
         blocked: startupDialog.visible || commitProgressDialog.visible || conflictDialog.visible || refreshOverlay.visible
+    }
+
+    // パッケージ一覧読込中のウェイトダイアログ (一定時間を超えた読込のみ表示し、短時間の読込ではちらつかせない)
+    Dialogs.PackageLoadWaitDialog {
+        id: packageLoadWaitDialog  // パッケージ読込待機ダイアログの参照名
     }
 
     // コミット進捗ダイアログ (myrlyn風To Do / Downloads / Doing / Done)

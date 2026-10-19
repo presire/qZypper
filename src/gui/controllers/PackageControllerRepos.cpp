@@ -204,11 +204,15 @@ void PackageController::refreshSingleRepo(const QString &alias)
     setBusy(true);
     setStatusMessage(tr("Refreshing repository: %1").arg(alias));
 
-    m_dbus->refreshSingleRepoAsync(alias, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+    m_dbus->refreshSingleRepoAsync(alias, [this](bool ok, const QString &errorName, const QString &, const QVariantList &args) {
         const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        const bool cancelled = !ok && errorName == QLatin1String("org.presire.qzypper.Error.Cancelled");
+
         if (success) {
             setStatusMessage(tr("Repository refresh completed"));
             loadRepos();
+        } else if (cancelled) {
+            setStatusMessage(tr("Refresh cancelled"));
         } else {
             setStatusMessage(tr("Refresh failed"));
             emit errorOccurred(m_dbus->lastError());

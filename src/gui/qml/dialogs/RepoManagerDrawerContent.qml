@@ -23,8 +23,10 @@ Pane {
     property var originalRepos: []                          // 変更検出用に保持する読み込み時点のリポジトリ一覧
     property bool repoTabActive: tabBar.currentIndex === 0  // リポジトリタブが選択されているか
 
-    signal closeRequested()       // ドロワーを閉じる要求
-    signal refreshAllRequested()  // 有効な全リポジトリの更新要求
+    signal closeRequested()                      // ドロワーを閉じる要求
+    signal refreshAllRequested()                 // 有効な全リポジトリの更新要求
+    signal refreshRepoRequested(string alias)    // 指定リポジトリの更新要求
+    signal refreshServiceRequested(string alias) // 指定サービスの更新要求
 
     /**
      * @brief リポジトリとサービスを読み込む
@@ -207,9 +209,9 @@ Pane {
                                 enabled: repoTable.selectedRepo !== null  // リポジトリ選択中のみ選べる
                                 text: qsTr("Selected Repository")         // 項目の文字列
 
-                                // 選択中のリポジトリだけを更新する
+                                // 選択中のリポジトリだけの更新を要求する
                                 onTriggered: {
-                                    PackageController.refreshSingleRepo(repoTable.selectedRepo.alias)
+                                    root.refreshRepoRequested(repoTable.selectedRepo.alias)
                                 }
                             }
 
@@ -731,7 +733,7 @@ Pane {
                         text: qsTr("Refresh")      // ボタンの文字列
                         icon.name: "view-refresh"  // 更新アイコン
 
-                        // 選択中のサービスを更新する
+                        // 選択中のサービスの更新を要求する
                         onClicked: {
                             // 選択位置が一覧の範囲外の場合は何もしない
                             if (serviceListView.currentIndex < 0
@@ -746,7 +748,7 @@ Pane {
                                 return
                             }
 
-                            PackageController.refreshService(svc.alias)
+                            root.refreshServiceRequested(svc.alias)
                         }
                     }
                 }

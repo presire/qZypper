@@ -79,6 +79,7 @@ qt_add_qml_module(qzypper
         qml/dialogs/PromptDialog.qml
         qml/dialogs/PackageLockDialog.qml
         qml/dialogs/SolverWaitDialog.qml
+        qml/dialogs/PackageLoadWaitDialog.qml
         qml/dialogs/SessionEndedDialog.qml
     RESOURCES
         icons/Qt.png
