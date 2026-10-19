@@ -34,7 +34,7 @@ void ZyppManager::shutdown()
     std::lock_guard<std::mutex> lock(m_mutex);
 
     cleanupLocalRpmsLocked();
-    m_problems.clear();
+    resetSolverOverridesLocked();
     m_keyRingReceiver.disconnect();
     m_digestReceiver.disconnect();
     m_keyRingReceiver.clearApprovals();
@@ -136,7 +136,9 @@ bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
         m_zypp->target()->load();
 
         // zypp.confからソルバーデフォルトフラグを適用 (YaSTと同等)
-        m_zypp->resolver()->setDefaultSolverFlags();
+        const zypp::Resolver_Ptr resolver = m_zypp->resolver();
+        resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
 
         // ディスク使用量計算用のマウントポイントを設定
         m_zypp->setPartitions(zypp::DiskUsageCounter::detectMountPoints());
@@ -150,6 +152,8 @@ bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
         }
 
         m_initialized = true;
+        // 初期化直後の要求ロケールを差分表示の基準として保持する
+        m_savedRequestedLocales = zypp::sat::Pool::instance().getRequestedLocales();
         m_distUpgradeMode = false;
         recordDatabaseStamp();
         return true;
@@ -247,6 +251,9 @@ std::vector<DiskUsageInfo> ZyppManager::getDiskUsage() const
 
 /**
  * @brief SelectableからPackageInfoを生成するヘルパー
+ *
+ * 導入済みパッケージは、libzyppの更新候補 (updateCandidateObj) の有無をupdatableへ設定する
+ *
  * @param sel libzypp Selectableポインタ
  * @return パッケージ情報
  */
@@ -273,6 +280,10 @@ PackageInfo ZyppManager::makePackageInfo(const zypp::ui::Selectable::Ptr& sel) c
 
         if (info.arch.isEmpty())
             info.arch = QString::fromStdString(inst.arch().asString());
+
+        // 候補の版は優先度などで導入済みより古くなる場合があるため、版の大小は文字列ではなくlibzyppに判定させる
+        // 一括操作の[update]と同じupdateCandidateObjを基準にし、GUIの[Update]操作の可否と一致させる
+        info.updatable = static_cast<bool>(sel->updateCandidateObj());
     }
 
     return info;

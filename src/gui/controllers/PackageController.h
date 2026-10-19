@@ -6,8 +6,10 @@
 #include <QPalette>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QStringList>
 #include <QUrl>
 #include <functional>
+#include <utility>
 #include <vector>
 
 namespace qZypper {
@@ -38,6 +40,7 @@ class PackageController : public QObject
     Q_PROPERTY(QVariantMap currentPackageDetails READ currentPackageDetails NOTIFY currentPackageDetailsChanged)
     Q_PROPERTY(bool hasPendingChanges READ hasPendingChanges NOTIFY pendingChangesChanged)
     Q_PROPERTY(QVariantList pendingChanges READ pendingChanges NOTIFY pendingChangesChanged)
+    Q_PROPERTY(QVariantList pendingLocaleChanges READ pendingLocaleChanges NOTIFY pendingLocaleChangesChanged)
     Q_PROPERTY(QVariantList diskUsage READ diskUsage NOTIFY diskUsageChanged)
     Q_PROPERTY(QVariantMap commitResult READ commitResult NOTIFY commitResultChanged)
     Q_PROPERTY(int listGeneration READ listGeneration NOTIFY packagesChanged)
@@ -50,6 +53,10 @@ class PackageController : public QObject
     Q_PROPERTY(QVariantList locks READ locks NOTIFY locksChanged)
     Q_PROPERTY(QVariantMap transactionSummary READ transactionSummary NOTIFY transactionSummaryChanged)
     Q_PROPERTY(QString searchError READ searchError NOTIFY searchErrorChanged)
+    Q_PROPERTY(QVariantMap solverSettings READ solverSettings NOTIFY solverSettingsChanged)  // ソルバー設定
+    Q_PROPERTY(int updateCount READ updateCount NOTIFY updateCountChanged)                   // 更新可能数 (-1 = 不明)
+    Q_PROPERTY(QVariantList rpmGroups READ rpmGroups NOTIFY rpmGroupsChanged)                // RPMグループツリー
+    Q_PROPERTY(QVariantList locales READ locales NOTIFY localesChanged)                      // 言語サポート一覧
 
 public:
     explicit PackageController(QObject *parent = nullptr); /* QML用コントローラと関連モデルを初期化する */
@@ -67,17 +74,26 @@ public:
     QVariantList locks() const { return m_locks; }                           // パッケージロック一覧
     QVariantMap transactionSummary() const { return m_transactionSummary; }  // トランザクション概要
     QString searchError() const { return m_searchError; }                    // 検索パラメータエラー
+    /** @brief ソルバー設定のキャッシュを返す */
+    QVariantMap solverSettings() const { return m_solverSettings; }
+    /** @brief 更新可能パッケージ数を返す (-1は不明) */
+    int updateCount() const { return m_updateCount; }
+    /** @brief RPMグループツリーのキャッシュを返す */
+    QVariantList rpmGroups() const { return m_rpmGroups; }
+    /** @brief 言語サポート一覧のキャッシュを返す */
+    QVariantList locales() const { return m_locales; }
     QVariantMap currentPackageDetails() const {                              // 選択中の詳細
         return m_currentDetails;
     }
-    QVariantList pendingChanges() const { return m_pendingChanges; }  // 変更予定一覧 (キャッシュ)
-    QVariantList diskUsage() const { return m_diskUsage; }            // ディスク使用量 (キャッシュ)
-    QVariantMap commitResult() const { return m_commitResult; }       // コミット結果
-    int listGeneration() const { return m_listGeneration; }           // パッケージ一覧の世代 (表示集合の作り直し判定用)
-    bool hasPendingChanges() const { return m_hasPendingChanges; }    // 変更予定の有無 (キャッシュ、I/Oなし)
+    QVariantList pendingChanges() const { return m_pendingChanges; }              // 変更予定一覧 (キャッシュ)
+    QVariantList pendingLocaleChanges() const { return m_pendingLocaleChanges; }  // 言語サポート変更予定一覧 (キャッシュ)
+    QVariantList diskUsage() const { return m_diskUsage; }                        // ディスク使用量 (キャッシュ)
+    QVariantMap commitResult() const { return m_commitResult; }                   // コミット結果
+    int listGeneration() const { return m_listGeneration; }                       // パッケージ一覧の世代 (表示集合の作り直し判定用)
+    bool hasPendingChanges() const { return m_hasPendingChanges; }                // 変更予定の有無 (キャッシュ、I/Oなし)
     QObject *packageModel() const;                                    // パッケージ一覧モデル (QML公開)
     QObject *packageProxy() const;                                    // フィルタ/ソートプロキシ (QML公開)
-    QVariantMap operationState() const { return m_operationState; }   // 現在の操作状態 (Wave1)
+    QVariantMap operationState() const { return m_operationState; }   // 現在の操作状態
     QVariantList pendingPrompts() const { return m_prompts; }         // 未応答プロンプトのキュー
     QVariantMap currentPrompt() const;                                // 先頭の未応答プロンプト
 
@@ -96,7 +112,8 @@ public:
     Q_INVOKABLE void setPatchStatus(const QString &patchId, int status);               // パッチ状態変更
     Q_INVOKABLE void selectAllNeededPatches(bool securityOnly, bool includeOptional);  // 必要パッチ一括選択
     Q_INVOKABLE void searchPackagesEx(const QString &query, int flags,
-                                      const QString &match, bool installedOnly);  // 高度な検索
+                                      const QString &match, bool installedOnly,
+                                      bool caseSensitive = false);  // 高度な検索
     Q_INVOKABLE void loadClassification(const QString &classification);           // 分類別パッケージ読込
     Q_INVOKABLE void loadLocks();                                                 // ロック一覧読込
     Q_INVOKABLE void addLock(const QVariantMap &lock);                            // ロック追加
@@ -144,11 +161,29 @@ public:
     Q_INVOKABLE void saveState();                                           // 選択状態を保存
     Q_INVOKABLE void restoreState();                                        // 選択状態を復元
 
-    // 操作状態 / プロンプト / セッション (Wave1)
+    // 操作状態 / プロンプト / セッション
     Q_INVOKABLE void answerPrompt(uint promptId, const QString &action);    // プロンプトへ応答
     Q_INVOKABLE void openExternalUrl(const QString &url);                   // http(s) URLをポータル経由で開く
     Q_INVOKABLE void releaseSession();                                      // 編集セッションを解放
     Q_INVOKABLE void retryOperation();                                      // ロック等で失敗した操作を再試行
+
+    // 一括選択 / ソルバー設定 / RPMグループ / 言語サポート
+    Q_INVOKABLE void setPackagesAction(const QStringList &names,             // 複数パッケージの一括状態変更
+                                       const QString &action);
+    Q_INVOKABLE void selectSubpackages(const QString &suffix);               // サブパッケージ一括選択
+    Q_INVOKABLE void installAllRecommended();                                // 推奨パッケージ一括選択 (solver結果)
+    Q_INVOKABLE void loadSolverSettings();                                   // ソルバー設定読込
+    Q_INVOKABLE void setSolverOption(const QString &key, bool value);        // ソルバー設定変更
+    Q_INVOKABLE void loadRpmGroups();                                        // RPMグループツリー読込
+    Q_INVOKABLE void loadPackagesByRpmGroup(const QString &path);            // グループ別パッケージ読込
+    Q_INVOKABLE void loadLocales();                                          // 言語サポート一覧読込
+    Q_INVOKABLE void loadPackagesByLocale(const QString &code);              // ロケール別パッケージ読込
+    Q_INVOKABLE void setLocaleRequested(const QString &code, bool requested);// 言語サポート要求状態変更
+    Q_INVOKABLE void refreshUpdateCount();                                   // 更新可能パッケージ数取得
+    Q_INVOKABLE void refreshReposIfNeeded();                                 // 期限切れリポジトリのみリフレッシュ
+    Q_INVOKABLE void runStartupTasks(int installRecommends,                  // 起動時処理 (設定/リフレッシュ/件数)
+                                     bool refreshOnStartup);
+    Q_INVOKABLE QVariantMap detectSearchMode(const QString &text) const;     // 検索モード自動判定 ({mode, query})
 
 signals:
     void connectedChanged();                                // 接続状態変更
@@ -161,6 +196,7 @@ signals:
     void patternsChanged();                                 // パターン一覧変更
     void currentPackageDetailsChanged();                    // パッケージ詳細変更
     void pendingChangesChanged();                           // 変更予定一覧 / 有無変更
+    void pendingLocaleChangesChanged();                     // 言語サポート変更予定一覧変更
     void diskUsageChanged();                                // ディスク使用量変更
 
     void progressChanged(const QString &packageName,        // 操作進捗
@@ -211,8 +247,16 @@ signals:
                               const QString &content, const QString &error);
     void repoFileImported(const QVariantMap &result);              // .repo取込結果 (success/added/skipped)
 
+    void solverSettingsChanged();                                  // ソルバー設定変更
+    void solverOptionApplied(const QString &key, bool value);      // ソルバー設定1項目のバックエンドへの適用成功
+    void updateCountChanged();                                     // 更新可能パッケージ数変更
+    void rpmGroupsChanged();                                       // RPMグループツリー変更
+    void localesChanged();                                         // 言語サポート一覧変更
+    void packagesActionFinished(const QVariantMap &result);        // 一括選択結果 (ok/changed/skipped/failed)
+    void startupTasksFinished();                                   // 起動時処理の完了 (成功/失敗/切断のいずれでも1回)
+
 private:
-    enum class PackageSource { None, Search, Repo, Pattern, Patches, Classification }; /**< パッケージ一覧の取得元 */
+    enum class PackageSource { None, Search, Repo, Pattern, Patches, Classification, RpmGroup, Locale }; /**< パッケージ一覧の取得元 */
 
     void setBusy(bool busy);                                  /* ビジー状態を更新して通知する */
     void setStatusMessage(const QString &msg);                /* ステータスメッセージを更新して通知する */
@@ -243,6 +287,38 @@ private:
      */
     void reconnectBackend(std::function<void(bool)> onDone);
 
+    /**
+     * @brief 更新可能パッケージ数を取得する (ビジーガードなし)
+     *
+     * 分類updatableの件数のみを更新し、一覧モデルには触れない
+     * バックエンドが未対応の場合は何も変更しない
+     */
+    void requestUpdateCount();
+    void applyUpdateCountResult(bool ok, const QString &errorName,
+                                const QVariantList &args);             /* 更新可能数の応答を共通処理する */
+    void setUpdateCount(int count);                                    /* 更新可能数を更新して通知する */
+    bool applySolverResult(const QVariantMap &result);                 /* ソルバー応答を共通処理する */
+    quint64 beginBatchAction();                                        /* 一括操作の世代を開始する */
+    bool isBatchActive(quint64 token) const;                           /* 一括操作の世代が有効か返す */
+    void resolveBatchAction(quint64 token, const QVariantMap &result); /* 一括変更後に依存関係を解決する */
+    void completeBatchAction(quint64 token, QVariantMap result,        /* 一覧と変更予定の再取得後に完了する */
+                             bool solverOk);
+    void failBatchAction(quint64 token, const QVariantMap &result,     /* 一括操作の失敗を通知する */
+                         const QString &errorText);
+    void finishPackagesAction(quint64 token, const QVariantMap &result); /* 一括操作の結果を1回だけ通知する */
+    void abortBatchAction();                                           /* 切断時に一括操作を完了させる */
+    QVariantMap takeAbortedBatchResult();                              /* 切断時に一括操作の結果を収集する */
+    void finishListRequest(quint64 replySerial, bool ok,               /* 応答番号以前の待機者へ一覧完了を通知する */
+                           const QVariantList &list);
+    void abortListRequests();                                          /* 切断時に一覧の待機者を破棄する */
+    void startStartupTasks();                                          /* 起動時処理の先頭段階を開始する */
+    void runStartupSolverStage(quint64 generation);                    /* 起動時処理の設定/解決段階を実行する */
+    void runStartupRefreshStage(quint64 generation);                   /* 起動時処理のリフレッシュ段階を実行する */
+    void finishStartupTasks(quint64 generation, bool refreshOk);       /* 起動時処理を1回だけ完了させる */
+    bool takeStartupFinish(quint64 generation, bool &refreshRan);      /* 完了状態を収集して通知前準備をする */
+    void finishStartupUpdatableStage(quint64 generation, bool refreshOk); /* 更新可能数を取得して終了する */
+    void abortStartupTasks();                                          /* 切断時に起動時処理を中断する */
+
     void setOperationState(const QVariantMap &state);                // 操作状態を更新して通知
     bool removePrompt(uint promptId);                                // キューから除去 (存在した場合はtrue)
     void enqueuePrompt(uint promptId, const QString &type,           // プロンプトをキューへ追加
@@ -272,6 +348,7 @@ private:
     QString m_searchError;                                           // 直近の検索パラメータエラー
     QVariantMap m_currentDetails;                                    // 選択中パッケージ詳細
     QVariantList m_pendingChanges;                                   // 変更予定一覧キャッシュ
+    QVariantList m_pendingLocaleChanges;                             // 言語サポート変更予定一覧キャッシュ
     QVariantList m_diskUsage;                                        // ディスク使用量キャッシュ
     QVariantMap m_commitResult;                                      // コミット結果
     bool m_hasPendingChanges = false;                                // 変更予定有無キャッシュ
@@ -289,6 +366,25 @@ private:
     bool m_pendingRefreshQueued = false;                             // 変更予定取得の再要求が待機中
     std::vector<std::function<void(bool)>> m_pendingRefreshWaiters;  // 変更予定取得完了の待機者
     quint64 m_repoPreviewRequest = 0;                                // .repoプレビュー読み込みの最新要求番号
+    QVariantMap m_solverSettings;                                    // ソルバー設定キャッシュ
+    int m_updateCount = -1;                                          // 更新可能パッケージ数 (-1 = 不明)
+    QVariantList m_rpmGroups;                                        // RPMグループツリーキャッシュ
+    QVariantList m_locales;                                          // 言語サポート一覧キャッシュ
+    bool m_updateCountPending = false;                               // ビジー中の更新可能数取得要求
+    bool m_lastSearchCaseSensitive = false;                          // 最後の検索の大文字小文字区別
+    bool m_startupPending = false;                                   // 起動時処理の開始待ち
+    bool m_startupRunning = false;                                   // 起動時処理の実行中
+    bool m_startupRefreshStageRan = false;                           // 起動時処理でリフレッシュ段階を実行した
+    int m_startupInstallRecommends = -1;                             // 起動時処理のinstallRecommends指定 (-1 = 変更しない)
+    bool m_startupRefreshOnStartup = false;                          // 起動時処理のリフレッシュ指定
+    quint64 m_startupGeneration = 0;                                 // 起動時処理の世代 (遅延応答破棄用)
+    int m_startupPendingInstallRecommends = -1;                      // 次回起動時処理のinstallRecommends指定 (-1 = 変更しない)
+    bool m_startupPendingRefreshOnStartup = false;                   // 次回起動時処理のリフレッシュ指定
+    std::vector<std::pair<quint64, std::function<void(bool, const QVariantList &)>>>
+        m_listWaiters;                                               // 一覧取得の完了待機者 (古い要求も最新結果で通知)
+    quint64 m_batchGeneration = 0;                                   // 一括操作の世代 (遅延応答破棄用)
+    bool m_batchInFlight = false;                                    // 一括操作が実行中
+    QVariantMap m_batchResult;                                       // 一括操作のAPI結果 (切断時の通知用)
 };
 
 } // namespace qZypper

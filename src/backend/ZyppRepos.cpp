@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 #include <zypp/ZConfig.h>
 #include <zypp-core/base/UserRequestException>
@@ -36,6 +37,15 @@ std::vector<RepoInfo> ZyppManager::getRepos() const
         if (!repo.baseUrlsEmpty()) {
             info.url    = QString::fromStdString(repo.url().asString());
             info.rawUrl = QString::fromStdString(repo.rawUrl().asString());
+        }
+
+        // メタデータの最終更新日時 (未取得・検査失敗は0のまま)
+        try {
+            const zypp::RepoStatus status = m_repoManager->metadataStatus(repo);
+            info.lastRefresh = static_cast<qint64>(static_cast<time_t>(status.timestamp()));
+        }
+        catch (const zypp::Exception&) {
+            info.lastRefresh = 0;
         }
 
         result.push_back(std::move(info));
@@ -395,6 +405,38 @@ bool ZyppManager::refreshRepo(const std::string& alias,
  */
 bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> progressCallback)
 {
+    return refreshReposWithPolicy(zypp::RepoManager::RefreshForced, false, std::move(progressCallback));
+}
+
+/**
+ * @brief 自動更新が有効なリポジトリのうち、期限切れのものだけをリフレッシュする
+ *
+ * 無効なリポジトリと自動更新が無効なリポジトリは対象外とする
+ * メタデータが期限切れでないリポジトリは取得を行わない (キャンセル可能)
+ *
+ * @param progressCallback 進捗コールバック (エイリアス, パーセント)
+ * @return リフレッシュ成功時true
+ */
+bool ZyppManager::refreshReposIfNeeded(std::function<void(const std::string&, int)> progressCallback)
+{
+    return refreshReposWithPolicy(zypp::RepoManager::RefreshIfNeeded, true, std::move(progressCallback));
+}
+
+/**
+ * @brief 指定ポリシーでリポジトリをリフレッシュする
+ *
+ * 各リポジトリに対してメタデータリフレッシュ、キャッシュ構築、キャッシュ読込を行う
+ * (キャンセル可能)
+ *
+ * @param policy メタデータリフレッシュポリシー
+ * @param autoRefreshOnly trueの場合は自動更新が有効なリポジトリだけを対象にする
+ * @param progressCallback 進捗コールバック (エイリアス, パーセント)
+ * @return リフレッシュ成功時true
+ */
+bool ZyppManager::refreshReposWithPolicy(zypp::RepoManager::RawMetadataRefreshPolicy policy,
+                                         bool autoRefreshOnly,
+                                         std::function<void(const std::string&, int)> progressCallback)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
 
     // リポジトリ/プールの変更で、PoolItemを保持する既存の解決策は無効になる
@@ -425,7 +467,7 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
                 return false;
             }
 
-            if (!repo.enabled()) {
+            if (!repo.enabled() || (autoRefreshOnly && !repo.autorefresh())) {
                 ++current;
                 continue;
             }
@@ -463,7 +505,7 @@ bool ZyppManager::refreshRepos(std::function<void(const std::string&, int)> prog
             // 1件の失敗 (到達不能・メタデータ不正等) で残りの更新を止めない
             // 取消しによる中断 (AbortRequestException) は外側で処理する
             try {
-                m_repoManager->refreshMetadata(repo, zypp::RepoManager::RefreshForced, cancelCheck);
+                m_repoManager->refreshMetadata(repo, policy, cancelCheck);
                 m_repoManager->buildCache(repo, zypp::RepoManager::BuildIfNeeded, cancelCheck);
                 m_repoManager->loadFromCache(repo, cancelCheck);
             }

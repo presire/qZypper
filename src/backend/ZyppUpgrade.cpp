@@ -28,6 +28,7 @@ ZyppManager::SolverResult ZyppManager::distUpgrade(bool allowVendorChange)
     try {
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
         // DUPは専用フラグ (zypper dup --allow-vendor-changeコマンドと同じ) を使用する
         resolver->dupSetAllowVendorChange(allowVendorChange);

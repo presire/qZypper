@@ -1,6 +1,101 @@
 #include "ZyppManager.h"
 
+#include <zypp/ZConfig.h>
+
 namespace qZypper {
+
+/**
+ * @brief 推奨パッケージをすべて選択して依存を解決する
+ *
+ * 既推奨の再展開を抑制しているフラグを一時的に解除し、
+ * solver.onlyRequiresが有効な場合は依存のみに絞らないよう一時的に無効化する
+ *
+ * @return ソルバー結果 (success, problems)
+ */
+ZyppManager::SolverResult ZyppManager::selectAllRecommended()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SolverResult result;
+
+    if (!m_initialized) {
+        result.success = false;
+        return result;
+    }
+
+    m_problems.clear();
+
+    bool onlyRequiresDisabled = false;
+    bool solverThrew = false;
+    try {
+        auto resolver = m_zypp->resolver();
+        resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
+        resolver->setIgnoreAlreadyRecommended(false);
+
+        onlyRequiresDisabled = !m_solverOverrides.installRecommends.value_or(
+            !zypp::ZConfig::instance().solver_onlyRequires());
+        if (onlyRequiresDisabled)
+            resolver->setOnlyRequires(false);
+
+        result.success = resolver->resolvePool();
+    }
+    catch (const zypp::Exception& e) {
+        m_lastError = "Solver error: " + e.asString();
+        result.success = false;
+        solverThrew = true;
+    }
+    catch (const std::exception& e) {
+        m_lastError = std::string("Solver error: ") + e.what();
+        result.success = false;
+        solverThrew = true;
+    }
+
+    // 例外が発生しても元のソルバー設定へ戻す
+    try {
+        auto resolver = m_zypp->resolver();
+        resolver->setIgnoreAlreadyRecommended(true);
+        if (onlyRequiresDisabled) {
+            resolver->resetOnlyRequires();
+            applySolverOverridesLocked(resolver);
+        }
+    }
+    catch (const std::exception& e) {
+        qWarning() << "Failed to restore solver flags:" << e.what();
+    }
+
+    // 例外時はソルバーが問題リストを生成していないため、復元後すぐに戻す
+    if (solverThrew)
+        return result;
+
+    if (!result.success) {
+        // 衝突あり: 問題リストを取得
+        try {
+            m_problems = m_zypp->resolver()->problems();
+
+            for (const auto& problem : m_problems) {
+                ConflictInfo conflict;
+                conflict.description = QString::fromStdString(problem->description());
+                conflict.details     = QString::fromStdString(problem->details());
+
+                auto solutions = problem->solutions();
+                for (const auto& sol : solutions) {
+                    QVariantMap solMap;
+                    solMap["description"] = QString::fromStdString(sol->description());
+                    solMap["details"]     = QString::fromStdString(sol->details());
+                    conflict.solutions.append(solMap);
+                }
+
+                result.problems.push_back(std::move(conflict));
+            }
+        }
+        catch (const std::exception& e) {
+            qWarning() << "Failed to get solver problems:" << e.what();
+        }
+    }
+
+    result.summary = computeTransactionSummaryLocked();
+    return result;
+}
 
 /**
  * @brief 依存関係を解決する
@@ -27,6 +122,7 @@ ZyppManager::SolverResult ZyppManager::resolveDependencies()
     try {
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();            // zypp.confデフォルト再適用
+        applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);  // 既推奨パッケージの再展開を抑制
 
         if (m_distUpgradeMode) {
@@ -103,6 +199,7 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
     try {
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
         m_distUpgradeMode = false;
 

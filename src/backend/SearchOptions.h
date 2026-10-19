@@ -13,6 +13,7 @@ namespace qZypper {
  */
 enum class SearchMatchMode {
     Substring, // 部分一致 (既定)
+    Prefix,    // 前方一致 (メタ文字はリテラル扱い)
     Exact,     // 完全一致
     Glob,      // グロブ (ワイルドカード) 一致
     Regex      // 正規表現一致
@@ -30,6 +31,7 @@ struct SearchOptions {
     unsigned int offset = 0;                             // 結果の読み飛ばし件数
     unsigned int limit = 0;                              // 最大件数 (0は無制限)
     bool installedOnly = false;                          // インストール済みのみ
+    bool caseSensitive = false;                          // 大文字小文字を区別する
     QString repoAlias;                                   // 対象リポジトリ (空は全リポジトリ)
 };
 

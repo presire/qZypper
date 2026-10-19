@@ -23,6 +23,7 @@ struct RepoInfo {
     QString type;                                       // リポタイプ ("rpm-md", "yast2"等)
     bool keepPackages = false;                          // パッケージキャッシュ保持
     QString service;                                    // 所属サービスエイリアス
+    qint64 lastRefresh = 0;                             // 最終メタデータ更新日時 (エポック秒、0は不明)
 
     /**
      * @brief D-Bus転送用のQVariantMapへ変換する
@@ -39,7 +40,8 @@ struct RepoInfo {
             {"priority",     priority},
             {"type",         type},
             {"keepPackages", keepPackages},
-            {"service",      service}
+            {"service",      service},
+            {"lastRefresh",  lastRefresh}
         };
     }
 
@@ -62,6 +64,7 @@ struct RepoInfo {
         info.type         = map.value("type").toString();
         info.keepPackages = map.value("keepPackages", info.keepPackages).toBool();
         info.service      = map.value("service").toString();
+        info.lastRefresh  = map.value("lastRefresh", info.lastRefresh).toLongLong();
         return info;
     }
 };

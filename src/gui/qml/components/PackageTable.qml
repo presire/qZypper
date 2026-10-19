@@ -34,10 +34,41 @@ Pane {
     readonly property real minColInstalled: 100  // 導入済み列の縮小下限
     readonly property real minColAvailable: 100  // 利用可能列の縮小下限
 
+    // 状態変更キーの文字とPackageController::setPackagesActionの操作名の対応表
+    readonly property var statusKeyActions: ({ "+": "install", "-": "remove", ">": "update", "<": "keep", "!": "taboo", "*": "protect" })
+
+    // 一括操作メニューに並べる操作 (表示名、操作名、対応する状態変更キー)
+    readonly property var bulkActions: [
+        { label: qsTr("Install/Update"), action: "install", key: "+" },
+        { label: qsTr("Delete"), action: "remove", key: "-" },
+        { label: qsTr("Update"), action: "update", key: ">" },
+        { label: qsTr("Update Unconditionally"), action: "updateForce", key: "" },
+        { label: qsTr("Keep / Undo"), action: "keep", key: "<" },
+        { label: qsTr("Taboo"), action: "taboo", key: "!" },
+        { label: qsTr("Protected"), action: "protect", key: "*" }
+    ]
+
+    // 一括操作メニューの1項目
+    // 選択すると、選択行または一覧の表示中全件を対象にsetPackagesActionを呼び出す
+    component BulkActionMenuItem: MenuItem {
+        required property var modelData  // bulkActionsの1要素 (label、action、key)
+        property bool wholeList: false   // trueなら一覧の表示中全件、falseなら表示中の選択行が対象
+
+        // 状態変更キーがある操作は、表示名の末尾にキーのヒントを付ける
+        text: modelData.key.length > 0 ? modelData.label + "  [" + modelData.key + "]" : modelData.label
+
+        // 対象のパッケージ名を集めて一括変更を要求する
+        onTriggered: {
+            var proxy = PackageController.packageProxy
+            var names = wholeList ? proxy.visibleNames() : proxy.selectedVisibleNames()
+            pkgPane.runPackagesAction(names, modelData.action)
+        }
+    }
+
     /**
      * @brief typeahead文字列の接頭辞に一致する最初のパッケージ行を選択する
      * @note 戻り値は無く、空文字列では早期に戻る
-     * @note 一致時はcurrentIndexと表示位置を更新する
+     * @note 一致時はcurrentIndexと表示位置を更新し、モデルの選択とアンカーも一致した行だけにする
      */
     function performPkgSearch() {
         var q = pkgSearchBuffer.toLowerCase()
@@ -51,8 +82,10 @@ Pane {
         var idx = proxy.indexOfNamePrefix(q)
 
         // 一致する行が見つかった場合は、その行を選択して中央に表示する
+        // 状態変更キーは選択行を優先するため、移動前の選択が残らないよう選択も一致した行へ移す
         if (idx >= 0) {
             packageListView.currentIndex = idx
+            pkgPane.selectAfterMove(idx, false)
             packageListView.positionViewAtIndex(idx, ListView.Center)
         }
     }
@@ -83,6 +116,81 @@ Pane {
      */
     function setStatus(packageName, status) {
         PackageController.setPackageStatus(packageName, status)
+    }
+
+    /**
+     * @brief 状態変更キーの文字に対応する操作名を返す
+     * @param text 押されたキーの文字
+     * @return setPackagesActionの操作名、状態変更キーでない文字では空文字列
+     */
+    function statusKeyAction(text) {
+        // 対応表に無い文字 (オブジェクトの組み込みプロパティ名を含む) は状態変更キーとして扱わない
+        if (!Object.prototype.hasOwnProperty.call(pkgPane.statusKeyActions, text)) {
+            return ""
+        }
+
+        return pkgPane.statusKeyActions[text]
+    }
+
+    /**
+     * @brief 状態変更キーで操作する対象のパッケージ名を返す
+     * @return 表示中の選択行があればその名前の一覧、無ければ現在行の名前だけの一覧 (現在行も無ければ空の一覧)
+     */
+    function actionTargetNames() {
+        var proxy = PackageController.packageProxy
+
+        // 表示中の選択行がある場合は、選択行すべてを対象にする
+        if (proxy.selectedVisibleCount > 0) {
+            return proxy.selectedVisibleNames()
+        }
+
+        var name = proxy.nameAt(packageListView.currentIndex)
+
+        // 現在行が無い場合は対象なし
+        if (name.length === 0) {
+            return []
+        }
+
+        return [name]
+    }
+
+    /**
+     * @brief 複数パッケージの状態を一括で変更する
+     * @param names 対象のパッケージ名の一覧
+     * @param action setPackagesActionの操作名
+     * @note PackageController::setPackagesActionを呼び出し、完了はpackagesActionFinishedシグナルで通知される
+     * @note 対象が0件の場合は何も要求しない
+     */
+    function runPackagesAction(names, action) {
+        // 対象が無い場合はバックエンドへ空の要求を送らない
+        if (names.length === 0) {
+            return
+        }
+
+        PackageController.setPackagesAction(names, action)
+    }
+
+    /**
+     * @brief キー操作で移動した行に合わせて選択を更新する
+     * @param row 移動先の行番号
+     * @param extend trueなら起点から移動先までの範囲へ選択を広げ、falseなら移動先の行だけを選択して起点にする
+     * @note 起点はPackageProxy側で保持する
+     */
+    function selectAfterMove(row, extend) {
+        var proxy = PackageController.packageProxy
+
+        // 一覧が空で移動先の行が無い場合は何もしない
+        if (row < 0 || row >= packageListView.count) {
+            return
+        }
+
+        if (extend) {
+            proxy.extendRange(row)
+        }
+        else {
+            proxy.selectOnly(row)
+            proxy.setAnchorRow(row)
+        }
     }
 
     SplitView.fillHeight: true    // SplitViewの残りの高さをすべて使う
@@ -492,6 +600,16 @@ Pane {
             }
         }
 
+        // 表示中の選択行数
+        // 選択が無い場合は非表示にし、レイアウト上の領域も確保しない
+        Label {
+            Layout.fillWidth: true                                                              // 親の幅いっぱいに広げる
+            Layout.leftMargin: 8                                                                // 左側の余白
+            visible: PackageController.packageProxy.selectedVisibleCount > 0                    // 1行以上選択している場合のみ表示する
+            text: qsTr("%n selected", "", PackageController.packageProxy.selectedVisibleCount)  // 選択行数
+            color: palette.placeholderText                                                      // 補足情報として控えめな文字色
+        }
+
         // パッケージリスト (横スクロール対応)
         Flickable {
             id: packageFlickable  // 横スクロール領域の参照名
@@ -556,14 +674,25 @@ Pane {
                     syncDetails()
                 }
 
-                // 上下・先頭・末尾・ページ移動キーと、typeahead検索の文字入力を処理する
+                // 上下・先頭・末尾・ページ移動キー、全選択、状態変更キー、typeahead検索の文字入力を処理する
+                // 移動キーは、[Shift]キー併用なら起点からの範囲選択を広げ、単独なら移動先の行だけを選択する
                 Keys.onPressed: function(event) {
+                    var extend = (event.modifiers & Qt.ShiftModifier) !== 0
+
+                    // [Ctrl]+[A]キー : 表示中の全行を選択する (typeahead検索の文字としては扱わない)
+                    if (event.key === Qt.Key_A && (event.modifiers & Qt.ControlModifier) !== 0) {
+                        PackageController.packageProxy.selectAllVisible()
+                        event.accepted = true
+                        return
+                    }
+
                     switch (event.key) {
                         // [↑]キー : 1行上へ移動する
                         case Qt.Key_Up:
                             if (currentIndex > 0) {
                                 currentIndex--
                             }
+                            pkgPane.selectAfterMove(currentIndex, extend)
                             event.accepted = true
                             break
                         // [↓]キー : 1行下へ移動する
@@ -571,6 +700,7 @@ Pane {
                             if (currentIndex < count - 1) {
                                 currentIndex++
                             }
+                            pkgPane.selectAfterMove(currentIndex, extend)
                             event.accepted = true
                             break
                         // [Home]キー : 先頭行へ移動する
@@ -578,6 +708,7 @@ Pane {
                             if (count > 0) {
                                 currentIndex = 0
                                 positionViewAtIndex(0, ListView.Beginning)
+                                pkgPane.selectAfterMove(currentIndex, extend)
                             }
                             event.accepted = true
                             break
@@ -586,6 +717,7 @@ Pane {
                             if (count > 0) {
                                 currentIndex = count - 1
                                 positionViewAtIndex(count - 1, ListView.End)
+                                pkgPane.selectAfterMove(currentIndex, extend)
                             }
                             event.accepted = true
                             break
@@ -593,12 +725,14 @@ Pane {
                         case Qt.Key_PageUp:
                             currentIndex = Math.max(0, currentIndex - Math.floor(height / 28))
                             positionViewAtIndex(currentIndex, ListView.Contain)
+                            pkgPane.selectAfterMove(currentIndex, extend)
                             event.accepted = true
                             break
                         // [PageDown]キー : 表示行数 (行の高さ28px換算) だけ下へ移動する
                         case Qt.Key_PageDown:
                             currentIndex = Math.min(count - 1, currentIndex + Math.floor(height / 28))
                             positionViewAtIndex(currentIndex, ListView.Contain)
+                            pkgPane.selectAfterMove(currentIndex, extend)
                             event.accepted = true
                             break
                         case Qt.Key_Escape:
@@ -623,9 +757,22 @@ Pane {
                             }
                             event.accepted = true
                             break
-                        // その他のキー : 表示可能な文字であれば検索バッファへ追加して検索する
+                        // その他のキー : 状態変更キーであれば対象パッケージの状態を一括変更する
+                        // 状態変更キーとして扱うのは検索バッファが空の場合だけで、入力途中の[-]などは検索文字列として扱う
+                        // それ以外の表示可能な文字であれば検索バッファへ追加して検索する
                         default:
-                            if (event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
+                            var noCommandModifier = (event.modifiers & (Qt.ControlModifier | Qt.AltModifier)) === 0
+                            var keyAction = ""
+
+                            if (pkgPane.pkgSearchBuffer.length === 0 && noCommandModifier) {
+                                keyAction = pkgPane.statusKeyAction(event.text)
+                            }
+
+                            if (keyAction.length > 0) {
+                                pkgPane.runPackagesAction(pkgPane.actionTargetNames(), keyAction)
+                                event.accepted = true
+                            }
+                            else if (event.text.length > 0 && event.text.charCodeAt(0) >= 0x20) {
                                 pkgSearchBuffer += event.text
                                 performPkgSearch()
                                 pkgSearchClearTimer.restart()
@@ -649,36 +796,86 @@ Pane {
                     required property string repoName          // 提供リポジトリの表示名
                     required property real size                // 導入サイズ
                     required property int status               // C++側PackageStatus値
+                    required property bool selected            // 複数選択に含まれているか
+                    required property bool updatable           // 導入済みより新しい更新候補があるか
 
                     property bool isChecked: PackageStatusInfo.isChecked(pkgDelegate.status)  // チェック表示する状態か
                     // 削除予定の状態か
                     property bool isMarkedForRemoval: PackageStatusInfo.isMarkedForRemoval(pkgDelegate.status)
 
-                    width: packageListView.width         // リストの幅に合わせる
-                    height: 28                           // 行の高さ
-                    highlighted: ListView.isCurrentItem  // 選択行を強調表示する
+                    width: packageListView.width  // リストの幅に合わせる
+                    height: 28                    // 行の高さ
+                    // 選択行を強調表示する
+                    // 表示中の選択行が無い場合は、状態変更キーの対象になる現在行を強調表示する
+                    highlighted: pkgDelegate.selected
+                                 || (pkgDelegate.ListView.isCurrentItem && PackageController.packageProxy.selectedVisibleCount === 0)
 
-                    // 行のクリックでこの行を選択し、キーボード操作を受け付けるようにする
-                    onClicked: {
-                        packageListView.currentIndex = pkgDelegate.index
-                        packageListView.forceActiveFocus()
-                    }
-
-                    // 行の背景 (選択行は選択色)
+                    // 行の背景 (選択行は選択色、選択されていない現在行は選択色の枠線)
                     background: Rectangle {
                         color: pkgDelegate.highlighted ? palette.highlight : "transparent"  // 選択行のみ選択色で塗りつぶす
+                        // 選択されていない現在行は枠線だけで示す
+                        border.width: pkgDelegate.ListView.isCurrentItem && !pkgDelegate.highlighted ? 1 : 0
+                        border.color: palette.highlight                                     // 現在行の枠線の色
+                    }
+
+                    // 左クリックで行を選択する
+                    // 修飾キーなしはこの行だけ、[Ctrl]キー併用は選択の反転、[Shift]キー併用は起点からの範囲を選択する
+                    TapHandler {
+                        id: rowTapHandler  // 左クリック判定の参照名
+
+                        acceptedButtons: Qt.LeftButton  // 左ボタンのみ受け付ける
+
+                        // 修飾キーに応じて選択と起点を更新し、この行を現在行にしてキーボード操作を受け付けるようにする
+                        // 修飾キーはクリック時の状態を保持しているpoint.modifiersから取得する
+                        onTapped: function(eventPoint, button) {
+                            var proxy = PackageController.packageProxy
+                            var modifiers = rowTapHandler.point.modifiers
+
+                            if ((modifiers & Qt.ShiftModifier) !== 0) {
+                                proxy.selectRange(pkgDelegate.index)
+                            }
+                            else if ((modifiers & Qt.ControlModifier) !== 0) {
+                                proxy.toggleSelected(pkgDelegate.index)
+                                proxy.setAnchorRow(pkgDelegate.index)
+                            }
+                            else {
+                                proxy.selectOnly(pkgDelegate.index)
+                                proxy.setAnchorRow(pkgDelegate.index)
+                            }
+
+                            packageListView.currentIndex = pkgDelegate.index
+                            packageListView.forceActiveFocus()
+                        }
                     }
 
                     // 右クリックでこの行を選択し、コンテキストメニューを開く
                     TapHandler {
                         acceptedButtons: Qt.RightButton  // 右ボタンのみ受け付ける
 
-                        // この行を選択し、対象パッケージの情報を渡してメニューを開く
+                        // 未選択の行ならこの行だけを選択し、選択済みの行なら複数選択を維持する
+                        // 表示中の選択行が2行以上なら一括操作メニュー、それ以外は対象パッケージの情報を渡して単一行のメニューを開く
                         onTapped: {
+                            var proxy = PackageController.packageProxy
+
+                            if (!pkgDelegate.selected) {
+                                proxy.selectOnly(pkgDelegate.index)
+                                proxy.setAnchorRow(pkgDelegate.index)
+                            }
+
                             packageListView.currentIndex = pkgDelegate.index
                             packageListView.forceActiveFocus()
-                            pkgContextMenu.targetPkg = ({ name: pkgDelegate.name, installedVersion: pkgDelegate.installedVersion, status: pkgDelegate.status })
-                            pkgContextMenu.popup()
+
+                            if (proxy.selectedVisibleCount > 1) {
+                                pkgBulkMenu.popup()
+                            }
+                            else {
+                                pkgContextMenu.targetPkg = ({ name: pkgDelegate.name,
+                                                              installedVersion: pkgDelegate.installedVersion,
+                                                              status: pkgDelegate.status,
+                                                              updatable: pkgDelegate.updatable,
+                                                              hasCandidate: pkgDelegate.repoAlias !== "" })
+                                pkgContextMenu.popup()
+                            }
                         }
                     }
 
@@ -989,14 +1186,30 @@ Pane {
             // [Update]メニュー
             MenuItem {
                 text: qsTr("Update")  // メニューの文字列
-                // 導入済み (KeepInstalled) で、導入済みと異なる候補バージョンがある場合のみ選択できる
-                enabled: (pkgContextMenu.targetPkg.status === 3)
-                        && (pkgContextMenu.targetPkg.version || "") !== ""
-                        && (pkgContextMenu.targetPkg.version || "") !== (pkgContextMenu.targetPkg.installedVersion || "")
+                // 導入済み (KeepInstalled) で、libzyppが導入済みより新しい更新候補を見つけた場合のみ選択できる
+                enabled: pkgContextMenu.targetPkg.status === 3 && pkgContextMenu.targetPkg.updatable === true
 
                 // 更新 (Update) を要求する
+                // 候補の版が導入済みより古い場合もあるため、状態を直接変えずに一括操作の[update]で更新候補を選んでから更新する
+                // PackageController::setPackagesActionを呼び出し、結果はpackagesActionFinishedシグナルで受け取る
                 onTriggered: {
-                    setStatus(pkgContextMenu.targetPkg.name, 4)
+                    pkgPane.runPackagesAction([pkgContextMenu.targetPkg.name], "update")
+                }
+            }
+
+            // [Update Unconditionally]メニュー
+            // 版の新旧を比較せず、現在の候補の版で入れ直す (同じ版なら再インストール、古い版ならダウングレード)
+            MenuItem {
+                text: qsTr("Update Unconditionally")  // メニューの文字列 (一括操作メニューと同じ訳語を使う)
+                // 導入済み (KeepInstalled) で、リポジトリに候補の版がある場合のみ選択できる
+                // repoAliasは候補の版がある場合だけ設定されるため、空なら導入済みのみ (リポジトリに無い) と判断する
+                // 保護 (Protected) のパッケージは変更させないため、[Update]メニューと同じく対象外にする
+                enabled: pkgContextMenu.targetPkg.status === 3 && pkgContextMenu.targetPkg.hasCandidate === true
+
+                // 無条件の更新を要求する
+                // PackageController::setPackagesActionを呼び出し、結果はpackagesActionFinishedシグナルで受け取る
+                onTriggered: {
+                    pkgPane.runPackagesAction([pkgContextMenu.targetPkg.name], "updateForce")
                 }
             }
 
@@ -1071,6 +1284,102 @@ Pane {
                 onTriggered: {
                     PackageController.removeLock({ name: pkgContextMenu.targetPkg.name,
                                                     kind: "package", match: "exact" })
+                }
+            }
+
+            // 区切り線
+            MenuSeparator {}
+
+            // [All in This List]サブメニュー (一覧に表示中の全パッケージを一括変更する)
+            Menu {
+                id: listActionsMenu  // サブメニューの参照名
+
+                title: qsTr("All in This List")  // サブメニューの文字列
+
+                // 一括操作の各項目を生成し、サブメニューへ順に追加する
+                // Qt 6.5のMenuはRepeaterに対応しないため、Instantiatorで生成した項目をinsertItemで挿入する
+                Instantiator {
+                    model: pkgPane.bulkActions  // 一括操作の一覧
+
+                    // 一覧の表示中全件を対象にする一括操作の項目
+                    delegate: BulkActionMenuItem {
+                        wholeList: true  // 一覧の表示中全件を対象にする
+                    }
+
+                    // 生成した項目をサブメニューの同じ位置へ挿入する
+                    onObjectAdded: function(index, object) {
+                        listActionsMenu.insertItem(index, object)
+                    }
+
+                    // 破棄される項目をサブメニューから外す
+                    onObjectRemoved: function(index, object) {
+                        listActionsMenu.removeItem(object)
+                    }
+                }
+            }
+        }
+
+        // 複数選択時のコンテキストメニュー
+        // 表示中の選択行が2行以上の場合に、単一行のメニューの代わりに開く
+        Menu {
+            id: pkgBulkMenu  // 複数選択時のコンテキストメニューの参照名
+
+            // 選択中のパッケージ数の見出し (選択できない)
+            MenuItem {
+                // 見出しの文字列
+                text: qsTr("%n selected package(s)", "", PackageController.packageProxy.selectedVisibleCount)
+                enabled: false  // 見出しなので選択できない
+            }
+
+            // 区切り線
+            MenuSeparator {}
+
+            // 選択行を対象にする一括操作の項目を生成し、見出しと区切り線の後へ順に追加する
+            // Qt 6.5のMenuはRepeaterに対応しないため、Instantiatorで生成した項目をinsertItemで挿入する
+            Instantiator {
+                model: pkgPane.bulkActions  // 一括操作の一覧
+
+                // 表示中の選択行を対象にする一括操作の項目
+                delegate: BulkActionMenuItem {}
+
+                // 見出しと区切り線 (2項目) の後ろへ挿入する
+                onObjectAdded: function(index, object) {
+                    pkgBulkMenu.insertItem(index + 2, object)
+                }
+
+                // 破棄される項目をメニューから外す
+                onObjectRemoved: function(index, object) {
+                    pkgBulkMenu.removeItem(object)
+                }
+            }
+
+            // 区切り線
+            MenuSeparator {}
+
+            // [All in This List]サブメニュー (一覧に表示中の全パッケージを一括変更する)
+            Menu {
+                id: bulkListActionsMenu  // サブメニューの参照名
+
+                title: qsTr("All in This List")  // サブメニューの文字列
+
+                // 一括操作の各項目を生成し、サブメニューへ順に追加する
+                Instantiator {
+                    model: pkgPane.bulkActions  // 一括操作の一覧
+
+                    // 一覧の表示中全件を対象にする一括操作の項目
+                    delegate: BulkActionMenuItem {
+                        wholeList: true  // 一覧の表示中全件を対象にする
+                    }
+
+                    // 生成した項目をサブメニューの同じ位置へ挿入する
+                    onObjectAdded: function(index, object) {
+                        bulkListActionsMenu.insertItem(index, object)
+                    }
+
+                    // 破棄される項目をサブメニューから外す
+                    onObjectRemoved: function(index, object) {
+                        bulkListActionsMenu.removeItem(object)
+                    }
                 }
             }
         }

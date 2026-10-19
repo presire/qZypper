@@ -8,11 +8,13 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <optional>
 #include <zypp/ZYpp.h>
 #include <zypp/ZYppFactory.h>
 #include <zypp/RepoManager.h>
 #include <zypp/ResPool.h>
 #include <zypp/ResPoolProxy.h>
+#include <zypp/Locale.h>
 #include <zypp/ui/Selectable.h>
 #include <zypp/Package.h>
 #include <zypp/Pattern.h>
@@ -59,6 +61,29 @@ public:
     using LocalRpmInstallResult = qZypper::LocalRpmInstallResult;  // ローカルRPMインストールの解決結果 (ZyppResults.h)
     using CommitResult = qZypper::CommitResult;                    // コミットの結果 (ZyppResults.h)
 
+    /**
+     * @brief 一括操作の結果
+     *
+     * failedは先頭100件だけを保持し、failedCountは失敗した総数を表す
+     */
+    struct BatchResult {
+        int changed = 0;                                // 変更した件数
+        int skipped = 0;                                // 変更不要で飛ばした件数
+        int failedCount = 0;                            // 失敗した総数
+        std::vector<std::string> failed;                // 失敗したパッケージ名 (先頭100件)
+    };
+
+    /**
+     * @brief ソルバー設定の上書き
+     *
+     * 値が設定された項目だけをzypp.confの既定値より優先する
+     */
+    struct SolverOverrides {
+        std::optional<bool> installRecommends;  // 推奨パッケージを導入するか
+        std::optional<bool> cleandepsOnRemove;  // 削除時に不要な依存も削除するか
+        std::optional<bool> allowVendorChange;  // ベンダ変更を許可するか
+    };
+
     static ZyppManager& instance();                                          // シングルトンの取得
 
     // 初期化・終了
@@ -69,6 +94,14 @@ public:
     bool reloadIfChanged();                                                  // 外部でRPMデータベースが変更された場合に再読込
     OperationState &operationState() { return m_operation; }                 // libzypp非依存の共有制御
 
+    // ソルバー設定
+    /** @brief 有効値とzypp.conf既定値を返す (未初期化でも既定値を返す) */
+    QVariantMap getSolverSettings() const;
+    /** @brief 渡された項目だけを上書きする */
+    bool setSolverSettings(const SolverOverrides& patch);
+    /** @brief 上書きを破棄してzypp.conf既定値へ戻す */
+    void resetSolverOverrides();
+
     // リポジトリ管理
     std::vector<RepoInfo> getRepos() const;                                                                               // リポジトリ一覧の取得
     bool addRepo(const std::string& url, const std::string& name);                                                        // リポジトリの追加 (簡易)
@@ -77,6 +110,7 @@ public:
     bool setRepoEnabled(const std::string& alias, bool enabled);                                                          // リポジトリの有効/無効の切り替え
     bool modifyRepo(const std::string& alias, const RepoChanges& changes);                                                // リポジトリの変更 (渡された項目のみ)
     bool refreshRepos(std::function<void(const std::string&, int)> progressCallback = nullptr);                           // 全リポジトリのリフレッシュ
+    bool refreshReposIfNeeded(std::function<void(const std::string&, int)> progressCallback = nullptr);                   // 自動更新対象の期限切れリポジトリのみリフレッシュ
     bool refreshRepo(const std::string& alias, std::function<void(const std::string&, int)> progressCallback = nullptr);  // 個別リポジトリのリフレッシュ
 
     // サービス管理
@@ -92,6 +126,20 @@ public:
     PackageDetails getPackageDetails(const std::string& name) const;                 // パッケージ詳細の取得
     std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;  // リポジトリ別のパッケージ
     std::vector<PackageInfo> getPendingChanges() const;                              // 変更予定一覧の取得 (全プール横断)
+
+    // RPMグループ・言語 (ロケール)
+    /** @brief RPMグループのツリーを件数付きで取得する */
+    QVariantList getRpmGroups() const;
+    /** @brief 指定RPMグループ配下のパッケージ一覧を取得する */
+    std::vector<PackageInfo> getPackagesByRpmGroup(const std::string& path) const;
+    /** @brief 利用可能・要求済みロケールの一覧を取得する */
+    QVariantList getLocales() const;
+    /** @brief 指定ロケールの要求状態を変更する */
+    bool setLocaleRequested(const std::string& code, bool requested);
+    /** @brief 指定ロケールに対応するパッケージ一覧を取得する */
+    std::vector<PackageInfo> getPackagesByLocale(const std::string& code) const;
+    /** @brief 保存済み状態との差分として未反映のロケール変更を取得する */
+    QVariantList getPendingLocaleChanges() const;
 
     // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/retracted/retractedInstalled/ptf/locked)
     std::vector<PackageInfo> getPackagesByClassification(const std::string& cls) const;
@@ -129,6 +177,37 @@ public:
     void saveState();                                            // 選択状態の保存
     void restoreState();                                         // 選択状態の復元
     static bool isValidPackageStatus(int status);                // PackageStatusの範囲内か
+
+    /**
+     * @brief 複数パッケージへ同じ操作を一括適用する
+     *
+     * 名前は重複除去して処理し、適用できなかったパッケージはfailedへ記録する
+     *
+     * @param names 対象パッケージ名
+     * @param action install/remove/update/updateForce/keep/taboo/protect
+     * @return 変更・スキップ・失敗の集計結果
+     */
+    BatchResult setPackagesAction(const std::vector<std::string>& names,
+                                  const std::string& action);
+
+    /**
+     * @brief インストール済みパッケージの対応するサブパッケージを選択する
+     *
+     * 対象接尾辞は-devel/-debuginfo/-debugsourceのみ
+     *
+     * @param suffix サブパッケージの接尾辞
+     * @return 変更・スキップ・失敗の集計結果
+     */
+    BatchResult selectSubpackages(const std::string& suffix);
+
+    /**
+     * @brief 推奨パッケージをすべて選択して依存を解決する
+     *
+     * 既推奨の抑制を一時的に解除し、solver.onlyRequiresが有効なら一時的に無効化する
+     *
+     * @return ソルバー結果 (success, problems)
+     */
+    SolverResult selectAllRecommended();
 
     // 依存関係の解決
     SolverResult resolveDependencies();                          // ソルバーの実行
@@ -220,12 +299,49 @@ private:
     // セッション
     void recordDatabaseStamp();                                  // RPMデータベースの変更検知用スタンプの記録
 
+    /**
+     * @brief 指定ポリシーでリポジトリをリフレッシュする
+     *
+     * 各リポジトリに対してメタデータリフレッシュ、キャッシュ構築、キャッシュ読込を行う
+     * (キャンセル可能)
+     *
+     * @param policy メタデータリフレッシュポリシー
+     * @param autoRefreshOnly trueの場合は自動更新が有効なリポジトリだけを対象にする
+     * @param progressCallback 進捗コールバック (エイリアス, パーセント)
+     * @return リフレッシュ成功時true
+     */
+    bool refreshReposWithPolicy(zypp::RepoManager::RawMetadataRefreshPolicy policy,
+                                bool autoRefreshOnly,
+                                std::function<void(const std::string&, int)> progressCallback);
+
     // パッケージ情報・ステータス変換
     PackageInfo makePackageInfo(const zypp::ui::Selectable::Ptr& sel) const;                // PackageInfoの生成
     static int fromZyppStatus(zypp::ui::Status status);                                     // zypp --> qZypperのステータス変換
     static bool toZyppStatus(int status, zypp::ui::Status &out);                            // qZypper --> zyppのステータス変換 (範囲外はfalse)
     static std::string makePatchId(const std::string& name, const std::string& version,
                                    const std::string& arch, const std::string& repoAlias);  // パッチの安定識別子の生成
+
+    /**
+     * @brief ステータス遷移とフォールバックを適用する
+     * @param sel 対象の選択可能オブジェクト
+     * @param target 遷移先ステータス
+     * @return 遷移に成功した場合はtrue
+     * @note m_mutex保持中に呼ぶこと
+     */
+    bool applyStatusLocked(const zypp::ui::Selectable::Ptr& sel, zypp::ui::Status target);
+
+    /**
+     * @brief ソルバー設定の上書きを適用する
+     * @param resolver 対象のリゾルバ
+     * @note m_mutex保持中に呼ぶこと。設定された項目だけを適用する
+     */
+    void applySolverOverridesLocked(const zypp::Resolver_Ptr& resolver);
+
+    /**
+     * @brief 上書きを破棄して既定値へ戻す
+     * @note m_mutex保持中に呼ぶこと (内部でロックしない)
+     */
+    void resetSolverOverridesLocked();
 
     // リスクサマリ
     QVariantMap computeTransactionSummary() const;               // リスクサマリの生成 (内部でロック)
@@ -275,6 +391,8 @@ private:
     bool m_initialized = false;                                       // 初期化済みフラグ
     std::string m_rpmStamp;                                           // RPMデータベースの変更検知用
     zypp::ResolverProblemList m_problems;                             // ソルバーの問題リスト
+    zypp::LocaleSet m_savedRequestedLocales;                          // saveState時の要求ロケール (差分表示用)
+    SolverOverrides m_solverOverrides;                                // ソルバー設定の上書き (未設定項目はzypp.conf既定値)
 
     // ディストリビューション更新
     bool m_distUpgradeMode = false;                                   // DistUpgradeの選択を保持中 (再解決もdupで行う)

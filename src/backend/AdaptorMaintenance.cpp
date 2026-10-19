@@ -27,7 +27,7 @@ const QSet<QString> &allowedClassifications()
         QStringLiteral("orphaned"), QStringLiteral("unneeded"),
         QStringLiteral("multiversion"), QStringLiteral("retracted"),
         QStringLiteral("retractedinstalled"), QStringLiteral("ptf"),
-        QStringLiteral("locked")
+        QStringLiteral("locked"), QStringLiteral("updatable")
     };
     return values;
 }

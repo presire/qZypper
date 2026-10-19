@@ -30,7 +30,19 @@ ApplicationWindow {
     property bool applyPendingCommit: false         // [Apply Changes]起点のresolveかを追跡 (非同期チェーン用)
     property bool sessionWasConnected: false        // 接続済みだったか (切断時の再開始ダイアログ表示判定用)
     property bool quitting: false                   // 終了時にreleaseSessionの応答を待っているか
-    readonly property int patchesTabIndex: 4        // [Patches]タブのTabBar index (0始まりの4番目)
+    property bool startupRefreshShown: false        // 起動時処理のリフレッシュで進捗モーダルを開いているか
+    property bool updatableLoadPending: false       // 更新可能パッケージの一覧を読込中か (読込の成否判定用)
+    property bool updatableLoadDeferred: false      // 処理中に[Updates]タブを開いたため、一覧の読込を保留しているか
+
+    // --- 表示タブのTabBar index (左ペインのStackLayoutも同じ順序で並べる) ---
+    readonly property int searchTabIndex: 0      // [Search]タブ
+    readonly property int updatesTabIndex: 1     // [Updates]タブ
+    readonly property int summaryTabIndex: 2     // [Installation Summary]タブ
+    readonly property int repositoryTabIndex: 3  // [Repository]タブ
+    readonly property int patternsTabIndex: 4    // [Patterns]タブ
+    readonly property int patchesTabIndex: 5     // [Patches]タブ
+    readonly property int rpmGroupsTabIndex: 6   // [RPM Groups]タブ
+    readonly property int languagesTabIndex: 7   // [Languages]タブ
 
     // --- ヘルパー関数 ---
 
@@ -64,6 +76,96 @@ ApplicationWindow {
      */
     function updateAllPackages() {
         PackageController.updateAllPackages()
+    }
+
+    /**
+     * @brief 更新可能なパッケージを右ペインの一覧へ読み込む
+     * @note 戻り値は無く、未接続のときは早期に戻る
+     * @note 処理中はPackageControllerが読込要求を破棄するため、updatableLoadDeferredを立てて処理の終了後に読み直す
+     * @note PackageController::loadClassificationを呼び出し、読込が長い場合はウェイトポップアップを表示する
+     * @note 一覧を読み直すため、[Updates]タブの未更新件数の表示を終え、読込の成功まではlistReadyをfalseにする
+     */
+    function showUpdatableList() {
+        // 未接続では読み込めず、保留しても再接続後の一覧は別の操作で読み直されるため保留しない
+        if (!PackageController.connected) {
+            root.updatableLoadDeferred = false
+            return
+        }
+
+        // 処理中は要求が破棄されるため、busyの解除後にonBusyChangedから読み直す
+        if (PackageController.busy) {
+            root.updatableLoadDeferred = true
+            return
+        }
+
+        root.updatableLoadDeferred = false
+        updatesView.updateAllDone = false
+        updatesView.listReady = false
+        root.updatableLoadPending = true
+        PackageController.loadClassification("updatable")
+        packageLoadWaitDialog.start()
+    }
+
+    /**
+     * @brief 一括操作の結果を通知する
+     * @param result PackageController::packagesActionFinishedの結果 (changed、skipped、failedCount、failedなど)
+     * @note 変更件数はinfoToastで表示し、失敗したパッケージはerrorDialogで一覧表示する
+     * @note 失敗件数が一覧の件数より多い場合は、残りの件数を併記する
+     * @note busErrorまたはbackendCrashedの場合は、errorOccurredまたは切断時の処理で通知済みのため表示しない
+     * @note 依存解決の失敗 (reasonがresolveFailed) はerrorOccurredで通知済みのため、表示中のエラーダイアログへの追記だけを行う
+     */
+    function showPackagesActionResult(result) {
+        if (!result || result.busError || result.backendCrashed) {
+            return
+        }
+
+        // 推奨パッケージの一括選択はソルバー結果を返すため、件数がある場合だけ表示する
+        if (result.changed !== undefined) {
+            infoToast.show(qsTr("%1 changed, %2 skipped").arg(result.changed).arg(result.skipped || 0))
+        }
+
+        var failed = result.failed || []
+        var failedCount = result.failedCount || 0
+
+        if (failed.length === 0 && failedCount === 0) {
+            return
+        }
+
+        // 最大100件のため、縦に伸びすぎないよう読点区切りで折り返して表示する
+        var message = qsTr("The following packages could not be changed:") + "\n" + failed.join(", ")
+
+        // バックエンドは先頭の一部だけを返すため、残りの件数を示す
+        if (failedCount > failed.length) {
+            message += "\n" + qsTr("and %1 more").arg(failedCount - failed.length)
+        }
+
+        // 依存解決の失敗などでerrorOccurredのダイアログを表示中の場合は、その本文を消さずに追記する
+        if (errorDialog.visible) {
+            errorDialog.message += "\n\n" + message
+            return
+        }
+
+        // 依存解決の失敗はerrorOccurredで通知済みのため、利用者がそのダイアログを閉じた後に再び開かない
+        if (result.reason === "resolveFailed") {
+            return
+        }
+
+        errorDialog.message = message
+        errorDialog.open()
+    }
+
+    /**
+     * @brief 起動時処理のリフレッシュ中に進捗モーダルを閉じる
+     * @note 戻り値は無く、起動時処理で開いていない場合は何もしない
+     * @note refreshOverlayを閉じてstartupRefreshShownを解除する
+     */
+    function closeStartupRefreshOverlay() {
+        if (!root.startupRefreshShown) {
+            return
+        }
+
+        root.startupRefreshShown = false
+        refreshOverlay.close()
     }
 
     /**
@@ -204,6 +306,35 @@ ApplicationWindow {
         category: "statusFilter"  // 設定ファイル内のグループ名
     }
 
+    // 起動時リフレッシュの有無の保存
+    Settings {
+        id: refreshStore  // 起動時リフレッシュ設定の参照名
+
+        property bool onStartup: true  // 起動時に期限切れのリポジトリをリフレッシュするか
+
+        category: "refresh"  // 設定ファイル内のグループ名
+    }
+
+    // 推奨パッケージのインストール設定の保存
+    // PackageController::setSolverOptionも成功時に同じキーへ保存し、この保存値はsolverOptionAppliedシグナルを受けて更新する
+    Settings {
+        id: solverStore  // ソルバー設定の参照名
+
+        property int installRecommends: -1  // 推奨パッケージをインストールするか (-1 : 未設定でzypp.confに従う、0 : しない、1 : する)
+
+        category: "solver"  // 設定ファイル内のグループ名
+    }
+
+    // -devel/-debuginfo/-debugsourceパッケージの非表示設定の保存
+    Settings {
+        id: packageFilterStore  // 一覧の表示設定の参照名
+
+        property bool hideDevel: true  // -develパッケージを一覧から隠すか
+        property bool hideDebug: true  // -debuginfo/-debugsourceパッケージを一覧から隠すか
+
+        category: "packageFilter"  // 設定ファイル内のグループ名
+    }
+
     // -- グローバルショートカット --
     // [Ctrl]+[Q]キーでアプリケーションを終了する
     Shortcut {
@@ -231,7 +362,41 @@ ApplicationWindow {
     NavDrawer {
         id: navDrawer  // ナビゲーションメニューの参照名
 
-        height: root.height  // ウィンドウの高さに合わせる
+        height: root.height                       // ウィンドウの高さに合わせる
+        refreshOnStartup: refreshStore.onStartup  // 起動時リフレッシュの保存値
+
+        // [Install All Matching -devel/-debuginfo/-debugsource Packages]メニュー
+        // PackageController::selectSubpackagesを呼び出し、結果はpackagesActionFinishedで受け取る
+        onSelectSubpackagesRequested: function(suffix) {
+            PackageController.selectSubpackages(suffix)
+        }
+
+        // [Install All Recommended Packages]メニュー
+        // PackageController::installAllRecommendedを呼び出し、結果はpackagesActionFinishedで受け取る
+        onInstallAllRecommendedRequested: {
+            PackageController.installAllRecommended()
+        }
+
+        // ソルバー設定の切り替え : PackageController::setSolverOptionで即時に適用する
+        // 保存値は適用の成功通知 (solverOptionApplied) を受けたときだけ更新する
+        onSolverOptionToggled: function(key, value) {
+            PackageController.setSolverOption(key, value)
+        }
+
+        // [Show -devel Packages]の切り替え : 保存値を更新する (一覧のhideDevelは保存値にバインドしている)
+        onShowDevelToggled: function(show) {
+            packageFilterStore.hideDevel = !show
+        }
+
+        // [Show -debuginfo/-debugsource Packages]の切り替え : 保存値を更新する (一覧のhideDebugは保存値にバインドしている)
+        onShowDebugToggled: function(show) {
+            packageFilterStore.hideDebug = !show
+        }
+
+        // [Refresh Repositories at Startup]の切り替え : 次回起動時に使う保存値を更新する
+        onRefreshOnStartupToggled: function(enabled) {
+            refreshStore.onStartup = enabled
+        }
 
         // [Update All Packages]メニュー : 全パッケージ更新の選択を要求する
         onUpdateAllRequested: {
@@ -455,12 +620,26 @@ ApplicationWindow {
 
                 // タブを切り替えたときに、そのビューで必要なデータを読み込む
                 onCurrentIndexChanged: {
-                    // パターン/パッチはタブ表示時にのみ取得する遅延読み込み (起動時に全量を読むと重くなる)
-                    if (currentIndex === 3) {
+                    // パターン/パッチ/RPMグループ/言語はタブ表示時にのみ取得する遅延読み込み (起動時に全量を読むと重くなる)
+                    if (currentIndex === root.patternsTabIndex) {
                         PackageController.loadPatterns()
                     }
                     else if (currentIndex === root.patchesTabIndex) {
                         patchView.reload()
+                    }
+                    else if (currentIndex === root.updatesTabIndex) {
+                        // PackageController::loadClassificationで更新可能なパッケージを右ペインの一覧へ読み込む
+                        root.showUpdatableList()
+                    }
+                    else if (currentIndex === root.rpmGroupsTabIndex) {
+                        // グループの集計は重いため、未取得の場合だけPackageController::loadRpmGroupsで読み込む
+                        if (PackageController.rpmGroups.length === 0) {
+                            PackageController.loadRpmGroups()
+                        }
+                    }
+                    else if (currentIndex === root.languagesTabIndex) {
+                        // 要求状態はセッション中に変わるため、表示のたびにPackageController::loadLocalesで読み直す
+                        PackageController.loadLocales()
                     }
                 }
 
@@ -468,6 +647,14 @@ ApplicationWindow {
                 TabButton {
                     width: Math.max(70, implicitWidth)  // 最小70pxを確保したタブ幅
                     text: qsTr("Search")                // タブの表示名
+                }
+
+                // [Updates]タブ (更新可能数が分かっている場合は件数を併記する)
+                TabButton {
+                    width: Math.max(80, implicitWidth)  // 最小80pxを確保したタブ幅
+                    // PackageController::updateCount (-1 : 不明、0 : 更新なし) が1以上の場合のみ件数を表示する
+                    text: PackageController.updateCount > 0 ? qsTr("Updates (%1)").arg(PackageController.updateCount)
+                                                            : qsTr("Updates")
                 }
 
                 // [Installation Summary]タブ
@@ -493,6 +680,18 @@ ApplicationWindow {
                     width: Math.max(80, implicitWidth)     // 最小80pxを確保したタブ幅
                     text: qsTr("Patches")                  // タブの表示名
                     Accessible.name: qsTr("Patches view")  // スクリーンリーダー向けの名前
+                }
+
+                // [RPM Groups]タブ
+                TabButton {
+                    width: Math.max(90, implicitWidth)  // 最小90pxを確保したタブ幅
+                    text: qsTr("RPM Groups")            // タブの表示名
+                }
+
+                // [Languages]タブ
+                TabButton {
+                    width: Math.max(90, implicitWidth)  // 最小90pxを確保したタブ幅
+                    text: qsTr("Languages")             // タブの表示名
                 }
             }
 
@@ -563,6 +762,39 @@ ApplicationWindow {
                     // [Search]タブのビュー
                     SearchView {
                         id: searchView  // 検索ビューの参照名
+
+                        // -devel/-debuginfo/-debugsourceが非表示のまま検索した場合に、表示設定の場所を案内する
+                        onHintRequested: function(message) {
+                            infoToast.show(message)
+                        }
+                    }
+
+                    // [Updates]タブのビュー
+                    UpdatesView {
+                        id: updatesView  // 更新ビューの参照名
+
+                        // [Updates]タブの表示中は、右ペインの一覧が更新可能パッケージになっている
+                        active: filterTabBar.currentIndex === root.updatesTabIndex
+
+                        // [Show Updates]ボタン : 更新可能なパッケージを読み直す
+                        onShowUpdatesRequested: {
+                            root.showUpdatableList()
+                        }
+
+                        // [Update All]ボタン : ドロワーの[Update All Packages]と同じ処理を行う
+                        onUpdateAllRequested: {
+                            root.updateAllPackages()
+                        }
+
+                        // [Distribution Upgrade...]ボタン : ディストリビューション更新の確認ダイアログを開く
+                        onDistUpgradeRequested: {
+                            distUpgradeDialog.open()
+                        }
+
+                        // [Refresh Repositories]ボタン : ドロワーの[Refresh Repositories]と同じ処理を行う
+                        onRefreshRequested: {
+                            navDrawer.refreshReposRequested()
+                        }
                     }
 
                     // [Installation Summary]タブのビュー
@@ -658,6 +890,26 @@ ApplicationWindow {
                             Item {
                                 Layout.fillHeight: true  // 残りの高さをすべて使う
                             }
+                        }
+                    }
+
+                    // [RPM Groups]タブのビュー
+                    RpmGroupsView {
+                        id: rpmGroupsView  // RPMグループビューの参照名
+
+                        // グループ選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        onPackageLoadStarted: {
+                            packageLoadWaitDialog.start()
+                        }
+                    }
+
+                    // [Languages]タブのビュー
+                    LanguagesView {
+                        id: languagesView  // 言語ビューの参照名
+
+                        // ロケール選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        onPackageLoadStarted: {
+                            packageLoadWaitDialog.start()
                         }
                     }
                 }
@@ -941,13 +1193,25 @@ ApplicationWindow {
         standardButtons: Dialog.Ok              // [OK]ボタンのみ表示する
         modal: true                             // 表示中は背後の画面を操作できないようにする
 
-        // エラー本文 (バックエンド由来の文字列のためPlainText)
-        Label {
-            anchors.left: parent.left    // ダイアログの左端に合わせる
-            anchors.right: parent.right  // ダイアログの右端に合わせる
-            text: errorDialog.message    // エラー本文
-            textFormat: Text.PlainText   // HTMLとして解釈させない
-            wrapMode: Text.WordWrap      // 長い本文は単語単位で折り返す
+        // エラー本文のスクロール領域
+        // 一括操作の失敗一覧のように長い本文でも[OK]ボタンが画面外へ出ないよう、高さをウィンドウの60%までに制限する
+        ScrollView {
+            id: errorScroll  // スクロール領域の参照名
+
+            anchors.fill: parent                                                   // ダイアログの本文領域全体に広げる
+            implicitHeight: Math.min(errorText.implicitHeight, root.height * 0.6)  // 本文の高さ (上限はウィンドウの60%)
+            contentWidth: availableWidth                                           // 横スクロールさせず、幅は表示領域に合わせる
+            clip: true                                                             // 枠外へはみ出した本文を描画しない
+
+            // エラー本文 (バックエンド由来の文字列のためPlainText)
+            Label {
+                id: errorText  // エラー本文の参照名
+
+                width: errorScroll.availableWidth  // スクロール領域の表示幅に合わせる
+                text: errorDialog.message          // エラー本文
+                textFormat: Text.PlainText         // HTMLとして解釈させない
+                wrapMode: Text.Wrap                // 長い本文は単語単位で折り返し、長い単語も幅内で折り返す
+            }
         }
     }
 
@@ -1092,13 +1356,32 @@ ApplicationWindow {
         }
     }
 
+    // ソルバー設定の適用成功 → 推奨パッケージ設定の保存値を更新
+    Connections {
+        target: PackageController  // シグナルの送信元 (PackageController)
+
+        /**
+         * @brief バックエンドへの適用に成功したソルバー設定を保存値へ反映する
+         * @param key 設定キー (installRecommends/cleandepsOnRemove/allowVendorChange)
+         * @param value 適用した値
+         * @note 次回起動時やセッション再開時にrunStartupTasksへ渡すため、installRecommendsだけを保存する
+         * @note 適用に失敗した場合は通知されないため、保存値は変わらない
+         */
+        function onSolverOptionApplied(key, value) {
+            if (key === "installRecommends") {
+                solverStore.installRecommends = value ? 1 : 0
+            }
+        }
+    }
+
     // 非同期D-Bus呼び出しの結果ハンドリング
     Connections {
         target: PackageController  // シグナルの送信元 (PackageController)
 
         /**
-         * @brief 初期化完了時に起動画面を閉じ、リポジトリ読込と現在状態の保存を開始する
-         * @note startupDialogを閉じ、loadReposとsaveStateを呼び出す
+         * @brief 初期化完了時に起動画面を閉じ、リポジトリ読込と現在状態の保存の後に起動時処理を開始する
+         * @note startupDialogを閉じ、loadRepos、saveState、runStartupTasksを呼び出す
+         * @note 起動時にリフレッシュする設定で接続中の場合は、先にrefreshOverlayを開く
          */
         function onInitializedChanged() {
             if (PackageController.initialized) {
@@ -1106,7 +1389,44 @@ ApplicationWindow {
                 startupDialog.close()
                 PackageController.loadRepos()
                 PackageController.saveState()
+
+                // 未接続の場合はrefreshFinishedが届かないため開かない
+                // 閉じる処理はrefreshFinished (RefreshOverlay側)、startupTasksFinished、切断の3経路で行う
+                if (refreshStore.onStartup && PackageController.connected) {
+                    root.startupRefreshShown = true
+                    refreshOverlay.open()
+                }
+
+                // PackageController::runStartupTasksを呼び出し、ソルバー設定の適用、期限切れリポジトリのリフレッシュ、
+                // 更新可能数の取得を順に行う (完了はstartupTasksFinishedで受け取る)
+                PackageController.runStartupTasks(solverStore.installRecommends, refreshStore.onStartup)
             }
+        }
+
+        /**
+         * @brief 起動時処理の完了で、起動時処理のために開いた進捗モーダルを閉じる
+         * @note リフレッシュ段が実行されずrefreshFinishedが届かない場合も閉じるため
+         */
+        function onStartupTasksFinished() {
+            root.closeStartupRefreshOverlay()
+        }
+
+        /**
+         * @brief リフレッシュの完了で起動時処理の表示状態を解除する
+         * @param success リフレッシュの完了結果 (成功ならtrue)
+         * @note refreshOverlay自体はRefreshOverlay側で閉じる
+         */
+        function onRefreshFinished(success) {
+            root.startupRefreshShown = false
+        }
+
+        /**
+         * @brief 一括操作の結果を表示する
+         * @param result 一括操作の結果 (changed、skipped、failedCount、failedなど)
+         * @note showPackagesActionResultを呼び出す
+         */
+        function onPackagesActionFinished(result) {
+            root.showPackagesActionResult(result)
         }
 
         /**
@@ -1122,6 +1442,9 @@ ApplicationWindow {
                 sessionEndedDialog.close()
                 return
             }
+
+            // 起動時処理の開始前 (busy中の保留) に切断されるとstartupTasksFinishedも届かないため、ここで閉じる
+            root.closeStartupRefreshOverlay()
 
             // 切断時は依存解決の応答が破棄されresolveFinishedが届かないため、保留中の適用フラグを解除する
             root.applyPendingCommit = false
@@ -1162,6 +1485,35 @@ ApplicationWindow {
             // 初期化に失敗した場合 (busy=falseかつ未初期化) はウェイトを解除してエラー表示に戻す
             if (startupDialog.opened && !PackageController.busy && !PackageController.initialized) {
                 startupDialog.close()
+            }
+
+            // 処理の終了時だけ、更新可能パッケージの読込の後始末と保留中の読込を行う
+            if (PackageController.busy) {
+                return
+            }
+
+            // 読込の終了 (成功時はonPackagesChangedでlistReadyを立て済み、失敗時は立てない)
+            root.updatableLoadPending = false
+
+            // 処理中に[Updates]タブを開いた場合は、まだ同じタブを表示しているときだけ一覧を読み込む
+            // busyChangedの通知中に新しい処理を開始しないよう、Qt.callLaterで通知の後に実行する
+            if (root.updatableLoadDeferred) {
+                root.updatableLoadDeferred = false
+
+                if (filterTabBar.currentIndex === root.updatesTabIndex) {
+                    Qt.callLater(root.showUpdatableList)
+                }
+            }
+        }
+
+        /**
+         * @brief 更新可能パッケージの読込中に一覧が更新された場合、読込の成功として記録する
+         * @note 読込中はbusyのため他の一覧読込は開始されず、この通知は更新可能パッケージの一覧によるもの
+         * @note updatesView.listReadyを変更する
+         */
+        function onPackagesChanged() {
+            if (root.updatableLoadPending) {
+                updatesView.listReady = true
             }
         }
 
@@ -1340,6 +1692,9 @@ ApplicationWindow {
         Theme.darkMode = Qt.binding(() => root.darkMode)
         PackageController.applyDarkMode(root.darkMode)
         PackageController.packageProxy.statusMask = statusFilterPanel.statusMask
+        // -devel/-debuginfo/-debugsourceの非表示設定は保存値に追従させる (ドロワーの切り替えは保存値を更新する)
+        PackageController.packageProxy.hideDevel = Qt.binding(() => packageFilterStore.hideDevel)
+        PackageController.packageProxy.hideDebug = Qt.binding(() => packageFilterStore.hideDebug)
         startupDialog.open()
         initTimer.start()
     }

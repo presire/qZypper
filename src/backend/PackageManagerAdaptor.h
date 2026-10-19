@@ -43,6 +43,8 @@ public slots:
     // リポジトリ操作
     /** @brief 有効な全リポジトリのメタデータを更新する */
     bool RefreshRepos();                                           // 全リポリフレッシュ
+    /** @brief 自動更新が有効なリポジトリのうち期限切れのものだけを更新する */
+    bool RefreshReposIfNeeded();                                   // 期限切れリポジトリのリフレッシュ
     /** @brief 指定したリポジトリだけのメタデータを更新する */
     bool RefreshSingleRepo(const QString &alias);                  // 個別リポリフレッシュ
     /** @brief 次回の鍵確認で使う署名鍵指紋を事前承認する */
@@ -100,6 +102,20 @@ public slots:
     /** @brief コミット前の選択変更一覧を返す */
     QVariantList GetPendingChanges();                                    // 変更予定一覧取得
 
+    // RPMグループ・言語
+    /** @brief RPMグループのツリーを件数付きで返す */
+    QVariantList GetRpmGroups();                                         // RPMグループツリー取得
+    /** @brief 指定RPMグループ配下のパッケージ一覧を返す */
+    QVariantList GetPackagesByRpmGroup(const QString &path);             // グループ別パッケージ取得
+    /** @brief 利用可能・要求済みロケールの一覧を返す */
+    QVariantList GetLocales();                                           // ロケール一覧取得
+    /** @brief 指定ロケールに対応するパッケージ一覧を返す */
+    QVariantList GetPackagesByLocale(const QString &code);               // ロケール別パッケージ取得
+    /** @brief 保存済み状態との差分として未反映のロケール変更を返す */
+    QVariantList GetPendingLocaleChanges();                              // 未反映ロケール変更取得
+    /** @brief 指定ロケールの要求状態を変更する */
+    bool SetLocaleRequested(const QString &code, bool requested);        // ロケール要求状態変更
+
     // ローカルRPM導入
     /** @brief UIから渡されたRPM記述子を安全に導入候補へ追加する */
     QVariantMap InstallLocalRpms(const QList<QDBusUnixFileDescriptor> &files,
@@ -116,6 +132,15 @@ public slots:
     /** @brief パターンの要求状態を変更する */
     bool SetPatternStatus(const QString &name, int status);   // パターン状態変更
 
+    // 一括操作
+    /** @brief 複数パッケージへ同じ操作を一括適用する */
+    QVariantMap SetPackagesAction(const QStringList &names,   // 一括状態変更
+                                  const QString &action);
+    /** @brief インストール済みパッケージのサブパッケージを選択する */
+    QVariantMap SelectSubpackages(const QString &suffix);     // サブパッケージ選択
+    /** @brief 推奨パッケージをすべて選択して依存を解決する */
+    QVariantMap SelectAllRecommended();                       // 推奨パッケージ選択
+
     // 全パッケージ更新
     /** @brief 更新可能なパッケージをすべて更新対象として選択する */
     QVariantMap UpdateAllPackages();                          // 全パッケージ更新 (doUpdate)
@@ -125,6 +150,12 @@ public slots:
     QVariantMap ResolveDependencies();                        // ソルバー実行
     /** @brief 指定した競合の解決策を適用する */
     bool ApplySolution(int problemIndex, int solutionIndex);  // 解決策適用
+
+    // ソルバー設定
+    /** @brief 有効なソルバー設定とzypp.conf既定値を返す */
+    QVariantMap GetSolverSettings();                          // ソルバー設定取得
+    /** @brief 指定したソルバー設定だけを上書きする */
+    bool SetSolverSettings(const QVariantMap &settings);      // ソルバー設定上書き
 
     // ディストリビューションアップグレード
     /** @brief 配布版アップグレードの選択変更を作成する */

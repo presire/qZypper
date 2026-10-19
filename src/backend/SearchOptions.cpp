@@ -6,7 +6,7 @@
 
 namespace qZypper {
 namespace {
-    constexpr int kMaxSearchFlags = 127;            // SearchFlagに定義された全ビットの和
+    constexpr int kMaxSearchFlags = 255;            // SearchFlagに定義された全ビットの和
     constexpr int kMaxQueryBytes = 256;             // 検索文字列の最大バイト数
     constexpr quint64 kMaxRegexRepeatTotal = 1000;  // 正規表現の繰り返し上限の合計の最大値
 
@@ -225,7 +225,8 @@ bool parseSearchOptions(const QVariantMap &options, SearchOptions &out, QString 
     static const QStringList kAllowedKeys = {
         QStringLiteral("query"), QStringLiteral("flags"), QStringLiteral("match"),
         QStringLiteral("offset"), QStringLiteral("limit"),
-        QStringLiteral("installedOnly"), QStringLiteral("repoAlias")
+        QStringLiteral("installedOnly"), QStringLiteral("caseSensitive"),
+        QStringLiteral("repoAlias")
     };
 
     for (auto it = options.constBegin(); it != options.constEnd(); ++it) {
@@ -284,6 +285,9 @@ bool parseSearchOptions(const QVariantMap &options, SearchOptions &out, QString 
         if (mode == QStringLiteral("substring")) {
             parsed.match = SearchMatchMode::Substring;
         }
+        else if (mode == QStringLiteral("prefix")) {
+            parsed.match = SearchMatchMode::Prefix;
+        }
         else if (mode == QStringLiteral("exact")) {
             parsed.match = SearchMatchMode::Exact;
         }
@@ -294,7 +298,7 @@ bool parseSearchOptions(const QVariantMap &options, SearchOptions &out, QString 
             parsed.match = SearchMatchMode::Regex;
         }
         else {
-            error = QStringLiteral("Option 'match' must be one of: substring, exact, glob, regex");
+            error = QStringLiteral("Option 'match' must be one of: substring, prefix, exact, glob, regex");
             return false;
         }
     }
@@ -318,6 +322,15 @@ bool parseSearchOptions(const QVariantMap &options, SearchOptions &out, QString 
             return false;
         }
         parsed.installedOnly = installedValue.toBool();
+    }
+
+    if (options.contains(QStringLiteral("caseSensitive"))) {
+        const QVariant caseValue = options.value(QStringLiteral("caseSensitive"));
+        if (caseValue.typeId() != QMetaType::Bool) {
+            error = QStringLiteral("Option 'caseSensitive' must be a boolean");
+            return false;
+        }
+        parsed.caseSensitive = caseValue.toBool();
     }
 
     if (options.contains(QStringLiteral("repoAlias"))) {

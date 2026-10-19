@@ -63,6 +63,8 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | `org.presire.qzypper.install-packages` | Install / remove / update packages | auth_admin_keep |
 | `org.presire.qzypper.trust-key` | Trust a new repository signing key | auth_admin |
 
+The `org.presire.qzypper.initialize` action carries the annotation `org.freedesktop.policykit.imply` = `org.presire.qzypper.refresh-repos`. The session authorization is retained with `auth_admin_keep`, so the automatic repository refresh at startup does not ask for a password a second time. The default values of the other actions are unchanged.
+
 ## Methods
 
 | Category | Method | Description |
@@ -70,6 +72,7 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | Initialization | `Initialize()` | Open the session (owner only) and initialize libzypp |
 | Repository | `GetRepos()` | Get repository list |
 | | `RefreshRepos()` | Refresh all repositories |
+| | `RefreshReposIfNeeded() → b` | Refresh only stale, enabled, auto-refresh repositories (Polkit `org.presire.qzypper.refresh-repos`) |
 | | `RefreshSingleRepo(alias)` | Refresh a single repository |
 | | `TrustKey(fingerprint)` | Approve a repository signing key (one-shot) |
 | | `AnswerPrompt(id, answer)` | Answer an in-flight prompt such as a GPG key trust request (owner only) |
@@ -85,19 +88,31 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | | `ModifyService(alias, properties)` | Modify service properties |
 | | `RefreshService(alias)` | Refresh service |
 | Package | `SearchPackages(query, flags)` | Literal, case-insensitive substring search (see below) |
-| | `SearchPackagesEx(options)` | Extended search: substring, exact, glob, or POSIX ERE regex (see below) |
+| | `SearchPackagesEx(options)` | Extended search: substring, prefix, exact, glob, or POSIX ERE regex (see below) |
 | | `GetPackageDetails(name)` | Get package details |
 | | `GetPackagesByRepo(repoAlias)` | Get packages by repository |
 | | `GetPatterns()` | Get pattern list |
 | | `GetPackagesByPattern(patternName)` | Get packages by pattern |
 | | `GetPatches(category)` | Get patch list |
 | | `GetPendingChanges()` | Get pending changes |
+| | `GetPackagesByClassification(s classification) → aa{sv}` | Get packages in a classification such as `recommended` or `updatable` (read; see below) |
+| | `GetRpmGroups() → aa{sv}` | Get the RPM group tree with package counts (read) |
+| | `GetPackagesByRpmGroup(s path) → aa{sv}` | Get packages whose RPM group is `path` or below it (read) |
+| | `GetLocales() → aa{sv}` | Get available and requested locales (read) |
+| | `GetPackagesByLocale(s code) → aa{sv}` | Get packages for a locale (read) |
+| | `GetPendingLocaleChanges() → aa{sv}` | Get locale changes not yet committed (read) |
 | Status | `SetPackageStatus(name, status)` | Change package status |
 | | `SetPackageVersion(name, version, arch, repoAlias)` | Select specific package version |
 | | `SetPatternStatus(name, status)` | Change pattern status |
+| | `SetPackagesAction(as names, s action) → a{sv}` | Apply one action to many packages (owner only; see below) |
+| | `SelectSubpackages(s suffix) → a{sv}` | Select `-devel`, `-debuginfo`, or `-debugsource` subpackages of installed packages (owner only) |
+| | `SelectAllRecommended() → a{sv}` | Select all recommended packages and resolve (owner only) |
+| | `SetLocaleRequested(s code, b requested) → b` | Mark a locale as requested or not (owner only) |
 | Update | `UpdateAllPackages()` | Update all packages (doUpdate) |
 | Solver | `ResolveDependencies()` | Run dependency resolver |
 | | `ApplySolution(problemIndex, solutionIndex)` | Apply conflict resolution |
+| | `GetSolverSettings() → a{sv}` | Get the effective solver settings and the `zypp.conf` defaults (read; see below) |
+| | `SetSolverSettings(a{sv} settings) → b` | Override solver settings for this backend session (owner only) |
 | Commit | `GetSelectionRevision()` | Get the current selection revision (owner only) |
 | | `Commit(expectedRevision)` | Commit the confirmed selection revision |
 | State | `SaveState()` | Save selection state |
@@ -107,9 +122,69 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 
 Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are owner-gated as well: every query requires that `Initialize()` has authorized the caller as the session owner, including `ParseRepoFile` and `GetSelectionRevision`.
 
+## Package Classifications
+
+`GetPackagesByClassification(classification)` accepts the values below. Matching is case-insensitive and surrounding whitespace is ignored. Any other value is rejected with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+| Classification | Meaning |
+|---|---|
+| `recommended` | Packages recommended by the solver result |
+| `suggested` | Packages suggested by the solver result |
+| `orphaned` | Packages detected as orphaned |
+| `unneeded` | Packages detected as unneeded |
+| `multiversion` | Packages with multiversion install enabled |
+| `retracted` | Retracted packages |
+| `retractedinstalled` | Retracted packages that are installed |
+| `ptf` | Packages belonging to a program temporary fix (PTF) |
+| `locked` | Packages whose status is taboo |
+| `updatable` | Installed packages with an update candidate under libzypp's policy (vendor and architecture), excluding Protected packages |
+
+`recommended`, `suggested`, `orphaned`, and `unneeded` are derived from the solver result, so the pool is resolved before the list is built. `updatable` is the set that Update All would update.
+
+## Batch Package Operations
+
+`SetPackagesAction(names, action)` applies the same action to every name in `names` and returns a result map. The accepted actions are `install`, `remove`, `update`, `updateForce`, `keep`, `taboo`, and `protect`. Duplicate names are processed once. Empty `names` or an unknown action is rejected with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+Protected and taboo packages are skipped (counted in `skipped`) for every action except `keep`.
+
+| Result key | Type | Meaning |
+|---|---|---|
+| `changed` | `i` | Packages whose status or candidate changed |
+| `skipped` | `i` | Packages left unchanged |
+| `failedCount` | `i` | Total number of failed packages |
+| `failed` | `as` | Names of failed packages, first 100 only; `failedCount` is the full total |
+
+`SelectSubpackages(suffix)` selects the matching subpackages of installed packages. `suffix` must be `-devel`, `-debuginfo`, or `-debugsource`; any other value is rejected with `org.freedesktop.DBus.Error.InvalidArgs`. It returns the same result map as `SetPackagesAction`.
+
+`SelectAllRecommended()` selects all recommended packages and returns the solver result map, in the same shape as `ResolveDependencies`: `success` (`b`), `problems` (`aa{sv}`), and `summary` (`a{sv}`). It records the resolved revision, so a `Commit` can follow without a separate resolve.
+
+## Solver Settings
+
+`GetSolverSettings()` returns the effective settings together with the `zypp.conf` defaults:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `installRecommends` | `b` | Install recommended packages |
+| `cleandepsOnRemove` | `b` | Remove unneeded dependencies when removing packages |
+| `allowVendorChange` | `b` | Allow changing the vendor of a package |
+| `defaults` | `a{sv}` | The same three keys with their `zypp.conf` values |
+
+`SetSolverSettings(settings)` accepts only the three keys above with boolean values. An empty map, an unknown key, or a non-boolean value is rejected with `org.freedesktop.DBus.Error.InvalidArgs`. Only the keys present in the map are overridden; the others keep their current value. The overrides are applied to the resolver immediately, on every resolve path, including classifications that run the solver. They advance the selection revision, so a `Commit` based on an earlier resolution is rejected with `org.presire.qzypper.Error.SelectionChanged`. It returns `true` when the overrides were applied. If applying them to the resolver fails, the stored overrides are restored to their previous values, the backend tries (best effort) to restore the resolver to those values, and the call fails with `org.freedesktop.DBus.Error.Failed`; the restore itself can fail, so the operation is not guaranteed to be atomic. The overrides are kept only for the backend editing session and are discarded when the session is released (`ReleaseSession`) or the backend shuts down. Persisting `installRecommends` is the GUI's job (see [Configuration File](CONFIGURATION.md)); the backend does not write `zypp.conf`.
+
+## RPM Groups and Locales
+
+`GetRpmGroups()` returns tree nodes with these keys: `path` (`s`, full group path), `label` (`s`, last path component), `depth` (`i`, number of `/` characters), and `count` (`i`, packages at or below that path). Nodes are sorted by `path`; `Unspecified` (packages without a group) is last and is omitted when no package lacks a group.
+
+`GetPackagesByRpmGroup(path)` returns packages whose group equals `path` or starts with `path/`. The path `Unspecified` returns packages without a group. An empty path or one longer than 256 UTF-8 bytes is rejected with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+`GetLocales()` returns entries with `code` (`s`), `name` (`s`), `requested` (`b`), and `available` (`b`), sorted by code. `GetPackagesByLocale(code)` returns the packages for one locale and rejects an empty code or one longer than 256 UTF-8 bytes with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+`GetPendingLocaleChanges()` returns entries with `code` (`s`), `name` (`s`), and `action` (`s`, either `add` or `remove`), sorted by code. `SetLocaleRequested(code, requested)` marks a locale as requested or not; the change stays pending until it is committed. It rejects an empty code or one longer than 256 UTF-8 bytes with `org.freedesktop.DBus.Error.InvalidArgs`.
+
 ## Repository and Package Operations
 
 - `RefreshRepos()` continues refreshing the remaining repositories when one fails, and at the end returns a failure carrying the list of failed repositories. `RefreshSingleRepo(alias)` reports the failure of that repository.
+- `RefreshReposIfNeeded()` refreshes only enabled repositories with auto-refresh that are older than libzypp's refresh delay (the `RefreshIfNeeded` policy). It requires the Polkit action `org.presire.qzypper.refresh-repos` and emits the same `RepoRefreshProgress` signal as `RefreshRepos`.
 - `ModifyRepo(alias, properties)` validates URL changes and checks the modified repository configuration against the repository policy before saving: the alias and name must not contain control characters, every base URL and GPG key URL must pass the URL validation below, a mirrorlist must use `https`, `file`, or `dir`, and service-originated repositories cannot inject mirrorlists or, while GPG checking is enabled in `zypp.conf`, weaken `gpgcheck`. A policy violation fails without changing the `.repo` file. Mirror endpoints are checked right before refresh or commit, not in `ModifyRepo`.
 - `InstallLocalRpms(files, fileNames)` copies local RPMs on the backend and is cancellable during the copy as well; a cancelled call returns `org.presire.qzypper.Error.Cancelled`.
 - Importing a `.repo` file accepts only regular files of 64 KiB or less: the GUI rejects anything that is not a regular file, and `ParseRepoFile` rejects content larger than 64 KiB.
@@ -129,8 +204,46 @@ The `flags` bitmask (`SearchFlag`) selects which fields are searched; all flags 
 | `Requires` | 16 | Requires dependencies |
 | `Provides` | 32 | Provides dependencies |
 | `FileList` | 64 | File list (only files available in the loaded metadata / installed packages) |
+| `Recommends` | 128 | RPM Recommends |
 
-`SearchPackagesEx(options)` is an extended variant driven by an option map. Its `match` field selects the mode: `substring` (the default, ASCII-case-insensitive), `exact`, `glob`, or `regex`. `regex` is POSIX ERE, validated at the D-Bus boundary with the same flags used by libzypp (`StrMatcher`) and libsolv (`datamatcher`): `REG_EXTENDED | REG_NOSUB | REG_NEWLINE | REG_ICASE`. To bound compilation cost, patterns using back-references, nested or consecutive repetition, or a total of `{m,n}` upper bounds above 1,000 are rejected with `org.freedesktop.DBus.Error.InvalidArgs`. Both search methods reject a query longer than 256 bytes.
+The `flags` value must be between 0 and 255 for `SearchPackages`; 255 enables every flag, including `Recommends`. Negative values or bits above 255 are rejected with `org.freedesktop.DBus.Error.InvalidArgs`.
+
+`SearchPackagesEx(options)` is an extended variant driven by an option map. Its `match` field selects the mode: `substring` (the default, ASCII-case-insensitive), `prefix` (starts-with), `exact`, `glob`, or `regex`. `prefix` is implemented as an anchored POSIX ERE with the query escaped, so the query is matched literally from the start of the field. The `caseSensitive` option (`bool`, default `false`) makes matching case-sensitive. The `flags` option accepts 1 through 255. `regex` is POSIX ERE, validated at the D-Bus boundary with the same flags used by libzypp (`StrMatcher`) and libsolv (`datamatcher`): `REG_EXTENDED | REG_NOSUB | REG_NEWLINE | REG_ICASE`. To bound compilation cost, patterns using back-references, nested or consecutive repetition, or a total of `{m,n}` upper bounds above 1,000 are rejected with `org.freedesktop.DBus.Error.InvalidArgs`. Both search methods reject a query longer than 256 bytes.
+
+## Package and Repository Info Maps
+
+Methods that return package information (`SearchPackages`, `SearchPackagesEx`, `GetPackagesByRepo`, `GetPackagesByPattern`, `GetPackagesByClassification`, `GetPackagesByRpmGroup`, `GetPackagesByLocale`, and `GetPendingChanges`) return `aa{sv}` entries with these keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | `s` | Package name |
+| `summary` | `s` | Summary |
+| `version` | `s` | Candidate version |
+| `installedVersion` | `s` | Installed version |
+| `arch` | `s` | Architecture |
+| `repoAlias` | `s` | Repository alias |
+| `repoName` | `s` | Repository name |
+| `size` | `t` | Install size in bytes |
+| `status` | `i` | Package status (`PackageStatus`) |
+| `updatable` | `b` | Installed package with a newer update candidate |
+
+`updatable` was added without changing any method signature or the D-Bus XML. A client talking to an older backend does not receive the key; treat a missing key as `false`.
+
+`GetRepos()` returns `aa{sv}` entries with these keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `alias` | `s` | Repository alias |
+| `name` | `s` | Display name |
+| `url` | `s` | Base URL with variables expanded |
+| `rawUrl` | `s` | Raw base URL, including variables such as `${releasever}` |
+| `enabled` | `b` | Enabled |
+| `autoRefresh` | `b` | Auto-refresh enabled |
+| `priority` | `i` | Priority (1 to 99, lower is higher) |
+| `type` | `s` | Repository type such as `rpm-md` or `yast2` |
+| `keepPackages` | `b` | Keep the package cache |
+| `service` | `s` | Alias of the owning service |
+| `lastRefresh` | `x` | Last metadata refresh in epoch seconds; 0 means unknown |
 
 ## Repository URL Validation
 

@@ -25,6 +25,10 @@ namespace {
  */
 bool matchesClassification(const zypp::ui::Selectable::Ptr &selectable, const std::string &cls)
 {
+    if (cls == "updatable") {
+        return selectable->hasInstalledObj() && selectable->updateCandidateObj()
+            && selectable->status() != zypp::ui::S_Protected;
+    }
     if (cls == "multiversion") {
         return selectable->multiversionInstall();
     }

@@ -334,6 +334,45 @@ Dialog {
             }
         }
 
+        ColumnLayout {
+            visible: PackageController.pendingLocaleChanges.length > 0
+            Layout.fillWidth: true
+            spacing: 4
+
+            Label {
+                text: qsTr("Language Support")
+                color: palette.text
+                font.bold: true
+            }
+
+            ListView {
+                id: localeChangesList
+
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(contentHeight, 96)
+                clip: true
+                model: PackageController.pendingLocaleChanges
+                boundsBehavior: Flickable.StopAtBounds
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                }
+
+                delegate: Label {
+                    required property var modelData
+
+                    width: localeChangesList.width - (localeChangesList.ScrollBar.vertical.visible
+                                                      ? localeChangesList.ScrollBar.vertical.width + 4 : 0)
+                    text: modelData.action === "add"
+                          ? qsTr("Add language support: %1 (%2)").arg(modelData.name || modelData.code || "").arg(modelData.code || "")
+                          : qsTr("Remove language support: %1 (%2)").arg(modelData.name || modelData.code || "").arg(modelData.code || "")
+                    textFormat: Text.PlainText
+                    color: palette.text
+                    elide: Text.ElideRight
+                }
+            }
+        }
+
         // --- 区切り線 ---
         Rectangle {
             Layout.fillWidth: true  // 親の幅いっぱいに広げる
@@ -504,7 +543,8 @@ Dialog {
             Button {
                 // サマリー取得中は適用を無効化する
                 // 危険な変更がある場合は、承認チェックが入るまで押せないようにする
-                enabled: !confirmDialog.summaryPending
+                enabled: PackageController.hasPendingChanges
+                         && !confirmDialog.summaryPending
                          && (!confirmDialog.hasRiskyChanges || riskAckCheck.checked)
                 activeFocusOnTab: true  // [Tab]キーでフォーカスを移せるようにする
                 text: qsTr("Apply")     // ボタンの文字列

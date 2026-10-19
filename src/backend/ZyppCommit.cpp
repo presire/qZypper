@@ -350,6 +350,11 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
                 result.errorMessage = "Transaction did not complete all requested actions";
         }
 
+        // コミット成功時はlibzyppが要求ロケールを永続化するため、
+        // 差分表示の基準も同じ内容へ追従させる (ドライランでは永続化しない)
+        if (result.success && !policy.dryRun())
+            m_savedRequestedLocales = zypp::sat::Pool::instance().getRequestedLocales();
+
         return finalizeResult();
     }
     catch (const zypp::Exception& e) {

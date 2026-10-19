@@ -3,12 +3,15 @@ add_library(qzypper-zypp STATIC
     InputValidation.cpp
     ZyppManager.cpp
     ZyppManager.h
+    ZyppSolverSettings.cpp
+    SolverSettingsParse.cpp SolverSettingsParse.h
     ZyppResults.h
     ZyppLogging.h
     RepoPolicy.cpp RepoPolicy.h
     ZyppRepos.cpp
     ZyppServices.cpp
     ZyppQueries.cpp
+    ZyppBrowse.cpp
     ZyppSelection.cpp
     ZyppResolver.cpp
     ZyppCommit.cpp
@@ -56,7 +59,9 @@ set(BACKEND_SOURCES
     AdaptorExecution.cpp
     AdaptorSession.cpp
     AdaptorQueries.cpp
+    AdaptorBrowse.cpp
     AdaptorSelection.cpp
+    AdaptorSolver.cpp
     AdaptorRepositories.cpp
     AdaptorCommit.cpp
     AdaptorMaintenance.cpp

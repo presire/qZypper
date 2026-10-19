@@ -38,6 +38,25 @@ private slots:
         // 確認 : 可否が期待値と一致することを確認する
         QCOMPARE(accepted, valid);
     }
+    /** @brief QStringListの要素数と要素長の上限を検証する */
+    void validatesStringListLimits()
+    {
+        // 準備 : 上限内・要素数超過・要素長超過の一覧
+        QString error;
+        const QStringList valid{QStringLiteral("qz-app"), QStringLiteral("qz-lib")};
+        QStringList tooMany;
+        tooMany.reserve(100001);
+        for (int index = 0; index < 100001; ++index) tooMany.append(QStringLiteral("pkg"));
+        const QStringList tooLong{QString(257, QLatin1Char('a'))};
+        // 実行 : 引数として検証する
+        const bool acceptedValid = validateArguments(QVariantList{valid}, error);
+        const bool acceptedTooMany = validateArguments(QVariantList{tooMany}, error);
+        const bool acceptedTooLong = validateArguments(QVariantList{tooLong}, error);
+        // 確認 : 上限内のみ受理される
+        QVERIFY(acceptedValid);
+        QVERIFY(!acceptedTooMany);
+        QVERIFY(!acceptedTooLong);
+    }
     /** @brief .repo本文専用の検証が改行や制御文字を扱うことを検証する */
     void validatesRepoFileContent()
     {

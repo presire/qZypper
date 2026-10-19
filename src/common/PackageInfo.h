@@ -21,6 +21,7 @@ struct PackageInfo {
     QString repoName;                                      // リポジトリ名
     quint64 size = 0;                                      // インストールサイズ (bytes)
     int status = static_cast<int>(PackageStatus::NoInst);  // パッケージ状態
+    bool updatable = false;                                // 導入済みより新しい更新候補があるか
 
     /**
      * @brief D-Bus転送用のQVariantMapへ変換する
@@ -36,7 +37,8 @@ struct PackageInfo {
             {"repoAlias",        repoAlias},
             {"repoName",         repoName},
             {"size",             QVariant::fromValue(size)},
-            {"status",           status}
+            {"status",           status},
+            {"updatable",        updatable}
         };
     }
 
@@ -56,6 +58,7 @@ struct PackageInfo {
         info.repoName         = map.value("repoName").toString();
         info.size             = map.value("size").toULongLong();
         info.status           = map.value("status").toInt();
+        info.updatable        = map.value("updatable").toBool();
         return info;
     }
 };

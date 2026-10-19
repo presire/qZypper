@@ -113,6 +113,7 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
     try {
         auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
         m_distUpgradeMode = false;
 

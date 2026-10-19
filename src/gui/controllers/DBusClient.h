@@ -91,6 +91,22 @@ public:
     void setPatternStatus(const QString &name, int status,                   // パターン状態変更
                           ReplyCallback callback);
 
+    // 一括選択・ソルバー設定・RPMグループ・ロケール
+    void setPackagesAction(const QStringList &names, const QString &action,  // 一括状態変更
+                           ReplyCallback callback);
+    void selectSubpackages(const QString &suffix, ReplyCallback callback);   // サブパッケージ選択
+    void selectAllRecommended(ReplyCallback callback);                       // 推奨パッケージ選択
+    void getSolverSettings(ReplyCallback callback);                          // ソルバー設定取得
+    void setSolverSettings(const QVariantMap &settings,                      // ソルバー設定更新
+                           ReplyCallback callback);
+    void getRpmGroups(ReplyCallback callback);                               // RPMグループツリー取得
+    void getPackagesByRpmGroup(const QString &path, ReplyCallback callback); // グループ別パッケージ一覧
+    void getLocales(ReplyCallback callback);                                 // ロケール一覧取得
+    void getPackagesByLocale(const QString &code, ReplyCallback callback);   // ロケール別パッケージ一覧
+    void setLocaleRequested(const QString &code, bool requested,             // ロケール要求状態変更
+                            ReplyCallback callback);
+    void refreshReposIfNeeded(ReplyCallback callback);                       // 期限切れリポジトリのリフレッシュ
+
     // 依存関係解決
     void updateAllPackages(ReplyCallback callback);                      // 全パッケージ更新
     void distUpgrade(const QVariantMap &options,                         // ディストリビューション更新
@@ -125,6 +141,7 @@ public:
     void getServices(ReplyCallback callback);                            // サービス一覧
     void getDiskUsage(ReplyCallback callback);                           // ディスク使用量
     void getPendingChanges(ReplyCallback callback);                      // 変更予定一覧
+    void getPendingLocaleChanges(ReplyCallback callback);                // 言語サポート変更予定一覧
     void getTransactionSummary(ReplyCallback callback);                  // トランザクション概要 (リスク情報込み)
     void getLocks(ReplyCallback callback);                               // パッケージロック一覧
     void addLock(const QVariantMap &lock, ReplyCallback callback);       // パッケージロック追加

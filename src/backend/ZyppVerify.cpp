@@ -30,6 +30,7 @@ ZyppManager::SolverResult ZyppManager::verifySystem()
     try {
         const auto resolver = m_zypp->resolver();
         resolver->setDefaultSolverFlags();
+        applySolverOverridesLocked(resolver);
         result.success = resolver->verifySystem();
     }
     catch (const zypp::Exception &e) {

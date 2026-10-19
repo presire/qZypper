@@ -37,7 +37,8 @@ enum class SearchFlag {
     Description = 1 << 3,  // 説明文を対象にする
     Requires    = 1 << 4,  // 必要ケーパビリティを対象にする
     Provides    = 1 << 5,  // 提供ケーパビリティを対象にする
-    FileList    = 1 << 6   // インストールファイルを対象にする
+    FileList    = 1 << 6,  // インストールファイルを対象にする
+    Recommends  = 1 << 7   // 推奨ケーパビリティを対象にする
 };
 Q_ENUM_NS(SearchFlag)
 Q_DECLARE_FLAGS(SearchFlags, SearchFlag)

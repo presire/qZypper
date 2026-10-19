@@ -184,6 +184,45 @@ void PackageController::refreshReposAsync()
 }
 
 /**
+ * @brief 期限切れの場合のみリポジトリをリフレッシュする (非同期)
+ *
+ * 完了時にrefreshFinishedシグナルを発行する
+ * 成功時はリポジトリ一覧を再読込し、最後に更新可能数を再取得する
+ */
+void PackageController::refreshReposIfNeeded()
+{
+    if (!m_connected) {
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+
+    m_retryAction = [this]() { refreshReposIfNeeded(); };
+    setBusy(true);
+    setStatusMessage(tr("Refreshing repositories..."));
+
+    m_dbus->refreshReposIfNeeded([this](bool ok, const QString &errorName, const QString &, const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        const bool cancelled = !ok && errorName == QLatin1String("org.presire.qzypper.Error.Cancelled");
+
+        if (success) {
+            setStatusMessage(tr("Repository refresh completed"));
+            loadRepos();
+        } else if (cancelled) {
+            setStatusMessage(tr("Refresh cancelled"));
+        } else {
+            setStatusMessage(tr("Refresh failed"));
+            emit errorOccurred(m_dbus->lastError());
+        }
+        // 解放時に保留分を1回だけ処理させるため、明示的な再取得は行わない
+        m_updateCountPending = true;
+        setBusy(false);
+        emit refreshFinished(success);
+    });
+}
+
+/**
  * @brief リフレッシュ操作をキャンセルする
  */
 void PackageController::cancelRefresh()

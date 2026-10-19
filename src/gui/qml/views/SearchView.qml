@@ -5,9 +5,11 @@
  * Main.qmlのStackLayout内で直接生成されるPaneで、検索条件の入力欄と分類選択を提供する
  * 表示の切替はMain.qmlのfilterTabBarの選択インデックスで行う
  *
+ * 検索条件 (マッチ方法、大文字小文字の区別、各検索対象) はQSettingsの[search]グループへ保存する
+ *
  * 入力 : なし
- * 出力 : なし
- * 依存 : PackageController (searchPackages(), searchPackagesEx(), loadClassification(), searchError, busy)
+ * 出力 : hintRequested() シグナル (-devel / -debug パッケージが非表示であることの案内)
+ * 依存 : PackageController (searchPackagesEx(), detectSearchMode(), loadClassification(), searchError, busy, packageProxy)
  */
 import QtQuick
 import QtQuick.Controls
@@ -17,10 +19,59 @@ import org.presire.qzypper.gui
 
 // [Search]タブで表示するビュー本体
 Pane {
+    id: searchView  // ビュー自身の参照名
+
+    // マッチ方法の選択欄の並びに対応する検索モード名 (先頭のautoは入力内容から自動判定する)
+    readonly property var matchModes: ["auto", "substring", "prefix", "exact", "glob", "regex"]
+    // [Auto]選択時の自動判定結果 ([mode]と[query]を持つマップ)、[Auto]以外では空のマップ
+    // PackageController::detectSearchModeを入力のたびに呼び出し、判定結果の表示に使う
+    readonly property var detectedSearch: matchModeCombo.currentIndex === 0
+                                          ? PackageController.detectSearchMode(searchField.text)
+                                          : ({})
+
+    signal hintRequested(string message)  // 非表示のパッケージに関する案内の表示要求
+
+    /**
+     * @brief 検索モード名を画面表示用の名前へ変換する
+     * @param mode 検索モード名 (none / substring / prefix / exact / glob / regex)
+     * @return マッチ方法の選択欄と同じ表示名、未知のモード名ではそのままの文字列
+     */
+    function matchModeLabel(mode) {
+        switch (mode) {
+        case "none": return qsTr("None")
+        case "substring": return qsTr("Contains")
+        case "prefix": return qsTr("Starts With")
+        case "exact": return qsTr("Exact Match")
+        case "glob": return qsTr("Wildcards")
+        case "regex": return qsTr("Regular Expression")
+        default: return mode
+        }
+    }
+
+    /**
+     * @brief 検索文字列が非表示設定のパッケージを対象にしている場合に案内を要求する
+     * @param text 検索欄に入力された文字列
+     * @note -develパッケージやデバッグ用パッケージは既定で一覧から隠しているため、検索しても見つからない理由を利用者へ伝える
+     *       hintRequestedシグナルを発行し、表示はMain.qml側のInfoToastが担う
+     */
+    function requestHiddenPackageHints(text) {
+        var lower = text.toLowerCase()
+
+        if (lower.indexOf("-devel") >= 0 && PackageController.packageProxy.hideDevel) {
+            searchView.hintRequested(qsTr("-devel packages are hidden. Enable \"Show -devel Packages\" in the menu to see them."))
+        }
+
+        if ((lower.indexOf("-debuginfo") >= 0 || lower.indexOf("-debugsource") >= 0)
+                && PackageController.packageProxy.hideDebug) {
+            searchView.hintRequested(qsTr("-debuginfo/-debugsource packages are hidden. Enable \"Show -debuginfo/-debugsource Packages\" in the menu to see them."))
+        }
+    }
+
     /**
      * @brief 入力された条件でパッケージを検索する
-     * @note 検索対象のチェック状態をビットマスクへ変換し、マッチ方法かインストール済み限定が既定と異なる場合だけ拡張検索を使用する
-     *       PackageController::searchPackages / searchPackagesExを呼び出す
+     * @note 検索対象のチェック状態をビットマスクへ変換し、常にPackageController::searchPackagesExで検索する
+     *       [Auto]では入力内容から検索モードを判定し、判定できない場合 (空入力や"="だけの入力) は検索しない
+     *       検索後、非表示設定のパッケージを対象にしている場合はhintRequestedシグナルを発行する
      */
     function performSearch() {
         // 検索対象のチェック状態をビットマスクへ変換する
@@ -56,18 +107,40 @@ Pane {
             flags |= 0x20
         }
 
+        // ファイル一覧
+        if (cbFileList.checked) {
+            flags |= 0x40
+        }
+
+        // RPMのRecommends
+        if (cbRecommends.checked) {
+            flags |= 0x80
+        }
+
+        var mode = searchView.matchModes[matchModeCombo.currentIndex]
+        var query = searchField.text
+
+        // [Auto]では判定結果のモードと、判定用の接頭辞を除いた問い合わせ文字列で検索する
+        // 判定不能 (none) や"="だけの入力 (exactで問い合わせが空) は、全件一致の検索になるのを避けるため実行しない
+        if (mode === "auto") {
+            var detected = PackageController.detectSearchMode(query)
+
+            if (detected.mode === "none" || (detected.mode === "exact" && detected.query.length === 0)) {
+                return
+            }
+
+            mode = detected.mode
+            query = detected.query
+        }
+
         // 検索結果はパッケージ名昇順で表示
         PackageController.packageProxy.sortColumn = 1
         PackageController.packageProxy.sortAscending = true
 
-        // マッチモード / installed-onlyが既定と違う場合は拡張検索を使用する
-        var match = ["substring", "exact", "glob", "regex"][matchModeCombo.currentIndex]
-        if (match !== "substring" || installedOnlyCheck.checked) {
-            PackageController.searchPackagesEx(searchField.text, flags, match, installedOnlyCheck.checked)
-        }
-        else {
-            PackageController.searchPackages(searchField.text, flags)
-        }
+        // PackageController::searchPackagesExを呼び出し、結果はpackagesChangedで一覧へ反映される
+        // 不正な正規表現などの検索条件のエラーはsearchErrorへ設定される
+        PackageController.searchPackagesEx(query, flags, mode, installedOnlyCheck.checked, caseSensitiveCheck.checked)
+        searchView.requestHiddenPackageHints(searchField.text)
     }
 
     padding: 12  // ビューの外周の余白
@@ -100,7 +173,7 @@ Pane {
 
                     // [Enter]キーで検索を実行する
                     onAccepted: {
-                        performSearch()
+                        searchView.performSearch()
                     }
                 }
 
@@ -110,12 +183,13 @@ Pane {
 
                     // 検索を実行する
                     onClicked: {
-                        performSearch()
+                        searchView.performSearch()
                     }
                 }
             }
 
-            // マッチ方法とインストール済み限定の指定
+            // マッチ方法の指定
+            // 左ペインは狭いため、マッチ方法・判定結果・チェックボックスを別の行に分ける
             RowLayout {
                 Layout.fillWidth: true  // 横幅いっぱいに広げる
 
@@ -124,14 +198,45 @@ Pane {
                     text: qsTr("Match:")  // 見出しの文字
                 }
 
-                // マッチ方法の選択 (performSearch()内の文字列配列と同じ並び)
+                // マッチ方法の選択 (searchView.matchModesと同じ並び)
                 ComboBox {
                     id: matchModeCombo  // マッチ方法の選択欄の参照名
 
-                    model: [qsTr("Substring"), qsTr("Exact"), qsTr("Glob"), qsTr("Regex")]  // 部分一致・完全一致・グロブ・正規表現
-                    Accessible.name: qsTr("Search match mode")                              // スクリーンリーダー向けの名前
+                    Layout.fillWidth: true  // 残りの幅をすべて使う
+                    // 自動判定・部分一致・前方一致・完全一致・ワイルドカード・正規表現
+                    model: [qsTr("Auto"), qsTr("Contains"), qsTr("Starts With"),
+                            qsTr("Exact Match"), qsTr("Wildcards"), qsTr("Regular Expression")]
+                    Accessible.name: qsTr("Search match mode")  // スクリーンリーダー向けの名前
                     // スクリーンリーダー向けの説明
                     Accessible.description: qsTr("How the query text is matched against package data")
+                }
+            }
+
+            // [Auto]での自動判定結果
+            // [Auto]を選択していて、検索欄に入力がある場合のみ表示する
+            Label {
+                Layout.fillWidth: true  // 横幅いっぱいに広げる
+                // [Auto]選択中かつ入力がある場合のみ表示する
+                visible: matchModeCombo.currentIndex === 0 && searchField.text.trim().length > 0
+                opacity: 0.7  // 補足情報のため控えめに表示する
+                // 判定したマッチ方法の表示名
+                text: qsTr("Detected: %1").arg(searchView.matchModeLabel(searchView.detectedSearch.mode))
+                textFormat: Text.PlainText  // HTMLとして解釈させない
+                elide: Text.ElideRight      // 幅を超える場合は末尾を省略する
+            }
+
+            // 大文字小文字の区別とインストール済み限定の指定
+            // 幅が足りない場合は折り返して全項目を操作できるようにする
+            Flow {
+                Layout.fillWidth: true  // 横幅いっぱいに広げる
+                spacing: 8              // チェックボックス同士の間隔
+
+                // 大文字と小文字を区別して検索する
+                CheckBox {
+                    id: caseSensitiveCheck  // 大文字小文字の区別の指定の参照名
+
+                    text: qsTr("Case sensitive")                    // チェックボックスの表示名
+                    Accessible.name: qsTr("Case sensitive search")  // スクリーンリーダー向けの名前
                 }
 
                 // インストール済みパッケージだけに絞る
@@ -140,11 +245,6 @@ Pane {
 
                     text: qsTr("Installed only")                      // チェックボックスの表示名
                     Accessible.name: qsTr("Installed packages only")  // スクリーンリーダー向けの名前
-                }
-
-                // 残りの幅を埋めて各部品を左寄せにするスペーサー
-                Item {
-                    Layout.fillWidth: true  // 残りの幅をすべて使う
                 }
             }
 
@@ -215,6 +315,20 @@ Pane {
 
                         text: qsTr("RPM \"Requires\" (&Q)")  // チェックボックスの表示名
                     }
+
+                    // RPMの[Recommends]を検索対象にするチェックボックス
+                    ElidedCheckBox {
+                        id: cbRecommends  // [Recommends]のチェックボックスの参照名
+
+                        text: qsTr("RPM \"Recommends\" (&O)")  // チェックボックスの表示名
+                    }
+
+                    // [ファイル一覧]を検索対象にするチェックボックス
+                    ElidedCheckBox {
+                        id: cbFileList  // [ファイル一覧]のチェックボックスの参照名
+
+                        text: qsTr("File List (&L)")  // チェックボックスの表示名
+                    }
                 }
             }
 
@@ -281,5 +395,21 @@ Pane {
                 }
             }
         }
+    }
+
+    // 検索条件の永続化 (次回起動時も同じ条件で検索できるようにする)
+    Settings {
+        property alias matchModeIndex: matchModeCombo.currentIndex  // 保存するマッチ方法の選択位置
+        property alias caseSensitive: caseSensitiveCheck.checked    // 保存する大文字小文字の区別
+        property alias searchName: cbName.checked                   // 保存する[名前]の検索対象指定
+        property alias searchKeywords: cbKeyword.checked            // 保存する[キーワード]の検索対象指定
+        property alias searchSummary: cbSummary.checked             // 保存する[概要]の検索対象指定
+        property alias searchDescription: cbDesc.checked            // 保存する[説明]の検索対象指定
+        property alias searchProvides: cbProvides.checked           // 保存する[Provides]の検索対象指定
+        property alias searchRequires: cbRequires.checked           // 保存する[Requires]の検索対象指定
+        property alias searchRecommends: cbRecommends.checked       // 保存する[Recommends]の検索対象指定
+        property alias searchFileList: cbFileList.checked           // 保存する[ファイル一覧]の検索対象指定
+
+        category: "search"  // 設定ファイル内のグループ名
     }
 }

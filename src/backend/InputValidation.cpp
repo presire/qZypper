@@ -3,6 +3,10 @@
 
 namespace qZypper {
 namespace {
+/** @brief 一括操作で受け付けるパッケージ名の上限 */
+constexpr std::size_t kMaxPackageBatchSize = 100000;
+/** @brief 一括操作用パッケージ名のUTF-8バイト数上限 */
+constexpr int kMaxPackageNameBytes = 256;
 /**
  * @brief 文字列がサイズ上限内で制御文字を含まないか検証する
  * @param value 検証する文字列
@@ -24,6 +28,14 @@ bool validString(const QString &value)
 bool validValue(const QVariant &value)
 {
     if (value.typeId() == QMetaType::QString) return validString(value.toString());
+    if (value.typeId() == QMetaType::QStringList) {
+        const auto names = value.toStringList();
+        if (static_cast<std::size_t>(names.size()) > kMaxPackageBatchSize) return false;
+        for (const auto &name : names) {
+            if (!validString(name) || name.toUtf8().size() > kMaxPackageNameBytes) return false;
+        }
+        return true;
+    }
     return true;
 }
 }

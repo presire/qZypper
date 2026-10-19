@@ -25,6 +25,8 @@ OperationStage initialStage(const QDBusMessage &msg)
     if (member == "ResolveDependencies" || member == "UpdateAllPackages"
         || member == "ApplySolution" || member.startsWith("SetPackage") || member == "SetPatternStatus"
         || member == "SetPatchStatus" || member == "DistUpgrade" || member == "SelectAllNeededPatches"
+        || member == "SelectSubpackages" || member == "SelectAllRecommended"
+        || member == "SetLocaleRequested"
         || member == "VerifySystem")
         return OperationStage::Resolving;
     if (member == "GetPackagesByClassification" && classificationNeedsSolver(msg))
@@ -152,7 +154,8 @@ void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const Asyn
     if (changesSelection(msg.member()) || outcome.poolReloaded) bumpRevision();
 
     if ((msg.member() == "ResolveDependencies" || msg.member() == "UpdateAllPackages"
-         || msg.member() == "DistUpgrade" || msg.member() == "SelectAllNeededPatches")
+         || msg.member() == "DistUpgrade" || msg.member() == "SelectAllNeededPatches"
+         || msg.member() == "SelectAllRecommended")
         && outcome.errorName.isEmpty() && outcome.value.toMap().value("success").toBool())
         m_resolvedRevision = m_revision;
 

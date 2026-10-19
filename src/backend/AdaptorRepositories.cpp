@@ -17,6 +17,19 @@ bool PackageManagerAdaptor::RefreshRepos()
     });
 }
 
+/** @brief 自動更新が有効なリポジトリの期限切れメタデータ更新を認可後に開始する */
+bool PackageManagerAdaptor::RefreshReposIfNeeded()
+{
+    return runPrivilegedBool(QStringLiteral("org.presire.qzypper.refresh-repos"), [this] {
+        return ZyppManager::instance().refreshReposIfNeeded([this](const std::string &alias, int pct) {
+            m_executor.control().heartbeat();
+            QMetaObject::invokeMethod(this, [this, alias, pct] {
+                emitToOwner(QStringLiteral("RepoRefreshProgress"), {QString::fromStdString(alias), pct});
+            }, Qt::QueuedConnection);
+        });
+    });
+}
+
 /** @brief 指定リポジトリ更新を認可後に開始する */
 bool PackageManagerAdaptor::RefreshSingleRepo(const QString &alias)
 {

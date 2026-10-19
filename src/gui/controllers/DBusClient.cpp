@@ -811,6 +811,221 @@ void DBusClient::selectAllNeededPatches(const QVariantMap &options, ReplyCallbac
     });
 }
 
+// -- 一括選択・ソルバー設定・RPMグループ・ロケール --
+
+/**
+ * @brief 複数パッケージの状態を一括変更する
+ *
+ * バックエンドは変更を選択状態へ反映し、ソルバーを実行して結果を返す
+ * 戻り値は changed / skipped / failedCount / failed を含むマップとなる
+ *
+ * @param names 対象パッケージ名の一覧 (空の場合はバックエンドがInvalidArgsを返す)
+ * @param action 操作名 (install / remove / update / updateForce / keep / taboo / protect)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
+ */
+void DBusClient::setPackagesAction(const QStringList &names, const QString &action,
+                                   ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPackagesAction");
+    msg << names << action;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+        }
+    });
+}
+
+/**
+ * @brief 指定サフィックスのサブパッケージを一括選択する
+ *
+ * @param suffix サブパッケージのサフィックス (-devel / -debuginfo / -debugsource)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
+ */
+void DBusClient::selectSubpackages(const QString &suffix, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SelectSubpackages");
+    msg << suffix;
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief 推奨パッケージを全て選択する
+ *
+ * 戻り値は依存関係解決と同じソルバー結果マップで、success / problems 等を含む
+ *
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
+ */
+void DBusClient::selectAllRecommended(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SelectAllRecommended");
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief 現在のソルバー設定を取得する
+ *
+ * 戻り値は installRecommends / cleandepsOnRemove / allowVendorChange と、
+ * 既定値を格納した入れ子の defaults マップを含む
+ *
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap)
+ */
+void DBusClient::getSolverSettings(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetSolverSettings");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief ソルバー設定を上書きする
+ *
+ * @param settings 設定マップ (installRecommends / cleandepsOnRemove / allowVendorChange)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
+ */
+void DBusClient::setSolverSettings(const QVariantMap &settings, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetSolverSettings");
+    msg << settings;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief RPMグループツリーを取得する
+ *
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getRpmGroups(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetRpmGroups");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief 指定RPMグループに属するパッケージ一覧を取得する
+ *
+ * @param path グループパス
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getPackagesByRpmGroup(const QString &path, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackagesByRpmGroup");
+    msg << path;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief ロケール一覧を取得する
+ *
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getLocales(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetLocales");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief 指定ロケールに関連するパッケージ一覧を取得する
+ *
+ * @param code ロケールコード
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getPackagesByLocale(const QString &code, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPackagesByLocale");
+    msg << code;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief ロケールの要求状態を変更する
+ *
+ * @param code ロケールコード
+ * @param requested trueで言語サポートを要求する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
+ */
+void DBusClient::setLocaleRequested(const QString &code, bool requested, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetLocaleRequested");
+    msg << code << requested;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList());
+        }
+    });
+}
+
+/**
+ * @brief 期限切れのリポジトリのみを非同期でリフレッシュする
+ *
+ * リフレッシュが必要ない場合もバックエンドは即座に応答する
+ * 処理時間が読めないためタイムアウトは無制限とする
+ *
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
+ */
+void DBusClient::refreshReposIfNeeded(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RefreshReposIfNeeded");
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                          const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList());
+        }
+    });
+}
+
 // -- 依存関係解決 --
 
 /**
@@ -1235,6 +1450,21 @@ void DBusClient::getDiskUsage(ReplyCallback callback)
 void DBusClient::getPendingChanges(ReplyCallback callback)
 {
     QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPendingChanges");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 変更予定の言語サポート一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getPendingLocaleChanges(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetPendingLocaleChanges");
     callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
                                                const QString &message, const QVariantList &args) {
         if (callback)

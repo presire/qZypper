@@ -63,6 +63,7 @@ PackageController::PackageController(QObject *parent)
             this, [this]() {
         refreshPackageStatuses(true);
         refreshPendingChanges();
+        refreshUpdateCount();
         loadPatterns();
         emit poolReloaded();
     });
@@ -89,23 +90,44 @@ PackageController::PackageController(QObject *parent)
     });
     connect(m_dbus, &DBusClient::backendDisconnected,
             this, [this]() {
+        // 切断後の遅延処理が死んだバックエンドへ要求しないよう、先に接続状態と保留を無効化する
+        const bool wasConnected = m_connected;
+        m_connected = false;
+        m_initialized = false;
+        m_startupPending = false;
+        m_updateCountPending = false;
+        if (wasConnected) {
+            emit connectedChanged();
+            emit initializedChanged();
+        }
+        // 旧セッションの一覧要求と一括操作の完了通知を二重に発行しないよう先に無効化する
+        ++m_batchGeneration;
+        abortListRequests();
         // 切断したバックエンドのプロンプトへの回答が別プロセスの同一IDへ届かないよう全破棄
         clearPrompts();
-        // バックエンド消滅後は実行中操作の応答が来ないため、ビジー状態と改訂番号を解除する
-        setBusy(false);
         m_commitRevision = 0;
         // 旧セッションで開始した.repoプレビューの結果を、再接続後に表示しない
         ++m_repoPreviewRequest;
-        if (m_connected) {
-            m_connected = false;
-            m_initialized = false;
-            emit connectedChanged();
-            emit initializedChanged();
-            setStatusMessage(tr("Backend disconnected"));
-        }
+        // 実行中の一括操作と起動時処理は結果だけを収集し、通知はbusy解除後に行う
+        const QVariantMap batchResult = takeAbortedBatchResult();
+        bool startupRefreshRan = false;
+        const bool startupFinished = takeStartupFinish(m_startupGeneration, startupRefreshRan);
+        setStatusMessage(tr("Backend disconnected"));
         // 破棄されたGetPendingChangesの応答では取得中フラグが解除されないため、
         // 未接続として取得状態とキャッシュを初期化し、待機者へ失敗を通知する
         refreshPendingChanges();
+        // バックエンド消滅後は実行中操作の応答が来ないためビジー状態を1回だけ解除する
+        setBusy(false);
+        // 通知先が新しい操作を開始してもbusyを解放しないよう、完了通知は最後に発行する
+        if (startupFinished && startupRefreshRan) {
+            emit refreshFinished(false);
+        }
+        if (!batchResult.isEmpty()) {
+            emit packagesActionFinished(batchResult);
+        }
+        if (startupFinished) {
+            emit startupTasksFinished();
+        }
     });
 }
 
@@ -130,9 +152,30 @@ PackageController::~PackageController()
  */
 void PackageController::setBusy(bool busy)
 {
-    if (m_busy != busy) {
-        m_busy = busy;
-        emit busyChanged();
+    if (m_busy == busy) {
+        return;
+    }
+
+    m_busy = busy;
+    emit busyChanged();
+
+    if (busy) {
+        return;
+    }
+    // 通知先が新たな操作を開始した場合は、その操作の完了時に改めて保留分を処理する
+    if (m_busy || !m_connected) {
+        return;
+    }
+    // 起動時処理の開始待ちがあればbusy解除直後に開始する
+    if (m_startupPending && !m_startupRunning) {
+        m_startupPending = false;
+        startStartupTasks();
+        return;
+    }
+    // ビジー中に要求された更新可能数の取得をここで一度だけ実行する
+    if (m_updateCountPending) {
+        qDebug() << "[PackageController] running deferred refreshUpdateCount";
+        requestUpdateCount();
     }
 }
 
@@ -547,6 +590,267 @@ void PackageController::openExternalUrl(const QString &url)
             QDesktopServices::openUrl(target);
         }
     });
+}
+
+// -- 起動時処理 --
+
+/**
+ * @brief 起動時処理を開始する
+ * @param installRecommends installRecommendsの指定 (-1は変更しない、0/1は設定値)
+ * @param refreshOnStartup trueでリポジトリのリフレッシュを行う
+ *
+ * ビジー中の場合は開始を保留しbusy解除後に一度だけ実行する
+ * 未接続の場合は処理を行わずstartupTasksFinishedのみ発行する
+ */
+void PackageController::runStartupTasks(int installRecommends, bool refreshOnStartup)
+{
+    // 実行中の世代が参照する引数を壊さないよう、開始待ちの引数として保持する
+    m_startupPendingInstallRecommends = installRecommends;
+    m_startupPendingRefreshOnStartup = refreshOnStartup;
+
+    if (!m_connected) {
+        emit startupTasksFinished();
+        return;
+    }
+    if (m_busy || m_startupRunning) {
+        m_startupPending = true;
+        qDebug() << "[PackageController] runStartupTasks deferred (busy)";
+        return;
+    }
+
+    startStartupTasks();
+}
+
+/**
+ * @brief 起動時処理の先頭段階を開始してbusyを保持する
+ *
+ * 以降の段階はコールバックで直列に実行し途中でbusyを解除しない
+ * 各段階の失敗はerrorOccurredで通知し処理は継続する
+ */
+void PackageController::startStartupTasks()
+{
+    // この世代の引数を開始時点で確定し、実行中の再要求は次の世代へ回す
+    m_startupInstallRecommends = m_startupPendingInstallRecommends;
+    m_startupRefreshOnStartup = m_startupPendingRefreshOnStartup;
+    m_startupPendingInstallRecommends = -1;
+    m_startupPendingRefreshOnStartup = false;
+    m_startupRunning = true;
+    ++m_startupGeneration;
+    m_startupRefreshStageRan = false;
+    setBusy(true);
+    setStatusMessage(tr("Loading package manager settings..."));
+
+    runStartupSolverStage(m_startupGeneration);
+}
+
+/**
+ * @brief 起動時処理のソルバー設定段階を実行する
+ * @param generation 起動時処理の世代
+ *
+ * GetSolverSettingsで現行設定を取得しsolverSettingsへ反映する
+ * installRecommendsの指定がある場合は設定変更と依存解決を行い設定を再取得する
+ */
+void PackageController::runStartupSolverStage(quint64 generation)
+{
+    m_dbus->getSolverSettings([this, generation](bool ok, const QString &,
+                                                  const QString &errorText, const QVariantList &args) {
+        if (!m_startupRunning || generation != m_startupGeneration) {
+            return;
+        }
+        if (!ok) {
+            emit errorOccurred(errorText.isEmpty() ? tr("Failed to load solver settings") : errorText);
+        } else {
+            m_solverSettings = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+            emit solverSettingsChanged();
+        }
+        if (!m_connected) {
+            finishStartupTasks(generation, false);
+            return;
+        }
+        if (m_startupInstallRecommends < 0) {
+            runStartupRefreshStage(generation);
+            return;
+        }
+
+        QVariantMap settings;
+        settings[QStringLiteral("installRecommends")] = (m_startupInstallRecommends == 1);
+        // 指定されたinstallRecommendsを適用し失敗しても起動処理は継続する
+        m_dbus->setSolverSettings(settings, [this, generation](bool setOk, const QString &,
+                                                                const QString &setError, const QVariantList &) {
+            if (!m_startupRunning || generation != m_startupGeneration) {
+                return;
+            }
+            if (!setOk) {
+                emit errorOccurred(setError.isEmpty() ? tr("Failed to update solver settings") : setError);
+            }
+            if (!m_connected) {
+                finishStartupTasks(generation, false);
+                return;
+            }
+            m_dbus->resolveDependencies([this, generation](bool rok, const QString &,
+                                                            const QString &resolveError,
+                                                            const QVariantList &resolveArgs) {
+                if (!m_startupRunning || generation != m_startupGeneration) {
+                    return;
+                }
+                if (!rok) {
+                    emit errorOccurred(resolveError.isEmpty()
+                                           ? tr("Dependency resolution failed") : resolveError);
+                } else {
+                    const QVariantMap result = resolveArgs.isEmpty()
+                                                   ? QVariantMap() : resolveArgs.at(0).toMap();
+                    if (!applySolverResult(result)) {
+                        emit errorOccurred(tr("Dependency resolution failed"));
+                    }
+                }
+                if (!m_connected) {
+                    finishStartupTasks(generation, false);
+                    return;
+                }
+                // 適用後の設定を再取得してから次の段階へ進む
+                m_dbus->getSolverSettings([this, generation](bool getOk, const QString &,
+                                                              const QString &getError, const QVariantList &getArgs) {
+                    if (!m_startupRunning || generation != m_startupGeneration) {
+                        return;
+                    }
+                    if (getOk) {
+                        m_solverSettings = getArgs.isEmpty() ? QVariantMap() : getArgs.at(0).toMap();
+                        emit solverSettingsChanged();
+                    } else {
+                        emit errorOccurred(getError.isEmpty() ? tr("Failed to load solver settings") : getError);
+                    }
+                    runStartupRefreshStage(generation);
+                });
+            });
+        });
+    });
+}
+
+/**
+ * @brief 起動時処理のリフレッシュ段階を実行する
+ * @param generation 起動時処理の世代
+ *
+ * リフレッシュ指定がある場合のみRefreshReposIfNeededを呼び出し成功時にloadReposする
+ * リフレッシュの成否は保持して完了時にrefreshFinishedへ渡す
+ */
+void PackageController::runStartupRefreshStage(quint64 generation)
+{
+    if (!m_startupRunning || generation != m_startupGeneration) {
+        return;
+    }
+    if (!m_startupRefreshOnStartup) {
+        finishStartupUpdatableStage(generation, true);
+        return;
+    }
+
+    m_startupRefreshStageRan = true;
+    m_dbus->refreshReposIfNeeded([this, generation](bool ok, const QString &, const QString &errorText,
+                                                     const QVariantList &args) {
+        if (!m_startupRunning || generation != m_startupGeneration) {
+            return;
+        }
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (!success) {
+            emit errorOccurred(errorText.isEmpty() ? tr("Repository refresh failed") : errorText);
+        } else {
+            setStatusMessage(tr("Repository refresh completed"));
+            loadRepos();
+        }
+        if (!m_connected) {
+            finishStartupTasks(generation, false);
+            return;
+        }
+        finishStartupUpdatableStage(generation, success);
+    });
+}
+
+/**
+ * @brief 起動時処理の更新可能数取得段階を実行する
+ * @param generation 起動時処理の世代
+ * @param refreshOk リフレッシュ段階の成否
+ *
+ * 更新可能数のみを取得してupdateCountへ反映し一覧モデルには触れない
+ * 取得後にfinishStartupTasksを一度だけ呼ぶ
+ */
+void PackageController::finishStartupUpdatableStage(quint64 generation, bool refreshOk)
+{
+    if (!m_startupRunning || generation != m_startupGeneration) {
+        return;
+    }
+    if (!m_connected) {
+        finishStartupTasks(generation, false);
+        return;
+    }
+
+    // この取得が起動中に要求された更新可能数の取得を兼ねるため、保留をここで消費する
+    m_updateCountPending = false;
+    m_dbus->getPackagesByClassification(QStringLiteral("updatable"),
+                                        [this, generation, refreshOk](bool ok, const QString &errorName,
+                                                                       const QString &, const QVariantList &args) {
+        if (!m_startupRunning || generation != m_startupGeneration) {
+            return;
+        }
+        applyUpdateCountResult(ok, errorName, args);
+        finishStartupTasks(generation, refreshOk);
+    });
+}
+
+/**
+ * @brief 起動時処理の完了状態を収集して世代を進める
+ * @param generation 起動時処理の世代
+ * @param refreshRan リフレッシュ段階を実行した場合はtrueを受け取る
+ * @return 完了処理を実行した場合はtrue
+ *
+ * busy解除とシグナル発行は行わず、世代を進めて遅延応答だけを無効化する
+ */
+bool PackageController::takeStartupFinish(quint64 generation, bool &refreshRan)
+{
+    if (!m_startupRunning || generation != m_startupGeneration) {
+        return false;
+    }
+
+    m_startupRunning = false;
+    ++m_startupGeneration;
+    refreshRan = m_startupRefreshStageRan;
+    m_startupRefreshStageRan = false;
+    return true;
+}
+
+/**
+ * @brief 起動時処理を1回だけ完了させる
+ * @param generation 起動時処理の世代
+ * @param refreshOk リフレッシュ段階の成否
+ *
+ * リフレッシュ段階を実行した場合のみrefreshFinishedを発行する
+ * 完了時はbusyを解除しstartupTasksFinishedを発行する
+ * 世代を進めることで遅延して届く応答を無視する
+ */
+void PackageController::finishStartupTasks(quint64 generation, bool refreshOk)
+{
+    bool refreshRan = false;
+    if (!takeStartupFinish(generation, refreshRan)) {
+        return;
+    }
+    if (refreshRan) {
+        emit refreshFinished(refreshOk);
+    }
+    setBusy(false);
+    emit startupTasksFinished();
+}
+
+/**
+ * @brief 起動時処理を中断する
+ *
+ * 実行中の場合のみ完了処理を一度だけ実行する
+ * 世代を進めるため中断後に届いた応答は無視される
+ */
+void PackageController::abortStartupTasks()
+{
+    if (!m_startupRunning) {
+        return;
+    }
+
+    finishStartupTasks(m_startupGeneration, false);
 }
 
 } // namespace qZypper

@@ -41,6 +41,7 @@ private slots:
         QTest::addColumn<int>("expected");
 
         QTest::newRow("substring") << QStringLiteral("substring") << static_cast<int>(SearchMatchMode::Substring);
+        QTest::newRow("prefix") << QStringLiteral("prefix") << static_cast<int>(SearchMatchMode::Prefix);
         QTest::newRow("exact") << QStringLiteral("exact") << static_cast<int>(SearchMatchMode::Exact);
         QTest::newRow("glob") << QStringLiteral("glob") << static_cast<int>(SearchMatchMode::Glob);
         QTest::newRow("regex") << QStringLiteral("regex") << static_cast<int>(SearchMatchMode::Regex);
@@ -75,6 +76,7 @@ private slots:
                                   {QStringLiteral("offset"), 5},
                                   {QStringLiteral("limit"), 25},
                                   {QStringLiteral("installedOnly"), true},
+                                  {QStringLiteral("caseSensitive"), true},
                                   {QStringLiteral("repoAlias"), QStringLiteral("repo-oss")}};
         SearchOptions out;
         QString error;
@@ -90,7 +92,95 @@ private slots:
         QCOMPARE(out.offset, 5u);
         QCOMPARE(out.limit, 25u);
         QVERIFY(out.installedOnly);
+        QVERIFY(out.caseSensitive);
         QCOMPARE(out.repoAlias, QStringLiteral("repo-oss"));
+    }
+
+    /** @brief caseSensitiveの真偽がそのまま反映されることを検証する */
+    void parsesCaseSensitive()
+    {
+        // 準備 : 真偽それぞれを指定する
+        SearchOptions out;
+        QString error;
+
+        // 実行 : 大文字小文字を区別しない指定を解析する
+        const bool insensitive = parseSearchOptions(
+            {{QStringLiteral("query"), QStringLiteral("Qz")},
+             {QStringLiteral("caseSensitive"), false}}, out, error);
+
+        // 確認 : 既定と同じく区別しない設定になることを確認する
+        QVERIFY2(insensitive, qPrintable(error));
+        QVERIFY(!out.caseSensitive);
+
+        // 実行 : 大文字小文字を区別する指定を解析する
+        const bool sensitive = parseSearchOptions(
+            {{QStringLiteral("query"), QStringLiteral("Qz")},
+             {QStringLiteral("caseSensitive"), true}}, out, error);
+
+        // 確認 : 区別する設定になることを確認する
+        QVERIFY2(sensitive, qPrintable(error));
+        QVERIFY(out.caseSensitive);
+    }
+
+    /** @brief 一度に指定できる検索フラグの上限を検証する */
+    void validatesFlagsBoundary()
+    {
+        // 準備 : 全ビットの和と、その1つ上を指定する
+        SearchOptions out;
+        QString error;
+
+        // 実行 : 上限値255を解析する
+        const bool accepted = parseSearchOptions(
+            {{QStringLiteral("query"), QStringLiteral("a")},
+             {QStringLiteral("flags"), 255}}, out, error);
+
+        // 確認 : 受理されフラグが保持されることを確認する
+        QVERIFY2(accepted, qPrintable(error));
+        QCOMPARE(out.flags, 255);
+
+        // 実行 : 上限を超える256を解析する
+        const bool rejected = parseSearchOptions(
+            {{QStringLiteral("query"), QStringLiteral("a")},
+             {QStringLiteral("flags"), 256}}, out, error);
+
+        // 確認 : 拒否されることを確認する
+        QVERIFY(!rejected);
+        QVERIFY(!error.isEmpty());
+    }
+
+    /** @brief bool以外のcaseSensitiveは固有のエラーで拒否されることを検証する */
+    void rejectsNonBooleanCaseSensitive()
+    {
+        // 準備 : 整数のcaseSensitiveを指定する
+        const QVariantMap options{{QStringLiteral("query"), QStringLiteral("a")},
+                                  {QStringLiteral("caseSensitive"), 1}};
+        SearchOptions out;
+        QString error;
+
+        // 実行 : オプションを解析する
+        const bool accepted = parseSearchOptions(options, out, error);
+
+        // 確認 : メッセージがbool要求であることを確認する
+        QVERIFY(!accepted);
+        QCOMPARE(error, QStringLiteral("Option 'caseSensitive' must be a boolean"));
+    }
+
+    /** @brief 未知の前方一致別名は候補一覧を示すエラーで拒否されることを検証する */
+    void rejectsStartswithMatchAlias()
+    {
+        // 準備 : prefixではなくstartswithを指定する
+        const QVariantMap options{{QStringLiteral("query"), QStringLiteral("qz-a")},
+                                  {QStringLiteral("match"), QStringLiteral("startswith")}};
+        SearchOptions out;
+        QString error;
+
+        // 実行 : オプションを解析する
+        const bool accepted = parseSearchOptions(options, out, error);
+
+        // 確認 : 拒否され、エラーにprefixが含まれることを確認する
+        QVERIFY(!accepted);
+        QVERIFY2(error.contains(QStringLiteral("prefix")), qPrintable(error));
+        qInfo() << "startswith rejection message:" << error;
     }
 
     /** @brief 妥当なPOSIX拡張正規表現を受理することを検証する */
@@ -156,7 +246,7 @@ private slots:
         QTest::newRow("flags-zero")
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")}, {QStringLiteral("flags"), 0}};
         QTest::newRow("flags-too-large")
-            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")}, {QStringLiteral("flags"), 128}};
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")}, {QStringLiteral("flags"), 256}};
         QTest::newRow("flags-wrong-type")
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")},
                            {QStringLiteral("flags"), QStringLiteral("1")}};
@@ -172,6 +262,9 @@ private slots:
         QTest::newRow("installed-only-wrong-type")
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")},
                            {QStringLiteral("installedOnly"), 1}};
+        QTest::newRow("case-sensitive-wrong-type")
+            << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")},
+                           {QStringLiteral("caseSensitive"), 0}};
         QTest::newRow("repo-alias-wrong-type")
             << QVariantMap{{QStringLiteral("query"), QStringLiteral("a")},
                            {QStringLiteral("repoAlias"), 3}};

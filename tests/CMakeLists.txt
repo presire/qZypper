@@ -52,3 +52,31 @@ foreach(test IN ITEMS RepoFileParser LocalRpm KeyTrustPrompt)
     add_test(NAME ${test} COMMAND test-${test})
     set_tests_properties(${test} PROPERTIES TIMEOUT 30)
 endforeach()
+
+# 一括操作とサブパッケージ選択 (一時ルート、root / ネットワーク不要)
+add_executable(test-SelectionParity tst_SelectionParity.cpp)
+target_link_libraries(test-SelectionParity PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME SelectionParity COMMAND test-SelectionParity)
+set_tests_properties(SelectionParity PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# ソルバー設定のシャットダウン時リセット (一時ルート、root / ネットワーク不要)
+add_executable(test-SolverSettingsReset tst_SolverSettingsReset.cpp)
+target_link_libraries(test-SolverSettingsReset PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME SolverSettingsReset COMMAND test-SolverSettingsReset)
+set_tests_properties(SolverSettingsReset PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 自動更新対象の必要時リフレッシュ (一時ルート、root / ネットワーク不要)
+add_executable(test-RefreshIfNeeded tst_RefreshIfNeeded.cpp)
+target_link_libraries(test-RefreshIfNeeded PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME RefreshIfNeeded COMMAND test-RefreshIfNeeded)
+set_tests_properties(RefreshIfNeeded PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 検索モードの自動判定 (純関数、root不要)
+add_executable(test-SearchModeDetect tst_SearchModeDetect.cpp ../src/gui/controllers/SearchModeDetect.cpp)
+target_include_directories(test-SearchModeDetect PRIVATE ../src/gui/controllers)
+target_link_libraries(test-SearchModeDetect PRIVATE Qt6::Test)
+add_test(NAME SearchModeDetect COMMAND test-SearchModeDetect)
+set_tests_properties(SearchModeDetect PROPERTIES TIMEOUT 30)

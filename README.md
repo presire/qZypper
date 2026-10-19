@@ -30,12 +30,43 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 
 ### Package Management
 
-- Search packages by name, keywords, summary, description, provides, requires, and file list
+- Search packages by name, keywords, summary, description, provides, requires, recommends, and file list
+- Search modes: Auto, Contains, Starts With, Exact Match, Wildcards, Regular Expression, with case-sensitive matching and selectable search targets
 - View detailed package information (description, dependencies, changelog, file list)
 - Install, update, and remove packages with dependency resolution
 - Browse packages by repository or software pattern
 - Select specific package versions from multiple repositories
 - Set package status: install, update, delete, taboo, protected
+- Select multiple rows with Click, Ctrl+Click, and Shift+Click, extend with Shift+Up/Down/Home/End/PageUp/PageDown, or select all with Ctrl+A
+- Apply bulk actions to selected rows or to every row in the current list (Install/Update, Delete, Update, Update Unconditionally, Keep/Undo, Taboo, Protected) with a single dependency resolution
+- Set status from the keyboard: `+` install, `-` delete, `>` update, `<` keep/undo, `!` taboo, `*` protected
+- Install all matching `-devel`, `-debuginfo`, or `-debugsource` packages, or all recommended packages, in one action
+- Show or hide `-devel` and `-debuginfo`/`-debugsource` packages in the list
+
+### Package Updates
+
+- Updates tab shows the update count, the oldest last-refresh time among enabled repositories, and buttons for Show Updates, Update All, Distribution Upgrade, and Refresh Repositories
+- After Update All, the tab reports how many packages could not be updated automatically
+- Optional refresh at startup checks only enabled repositories with auto-refresh whose metadata is stale
+- The initialize Polkit action implies refresh-repos, so session start and the startup refresh need a single authentication
+
+### RPM Groups and Languages
+
+- RPM Groups tab shows the RPM group hierarchy with a package count for each group
+- Languages tab toggles requested languages and shows the packages for the selected language
+- Requested language changes are listed in the commit confirmation
+
+### Solver Options
+
+- Install Recommended Packages is saved between sessions and shows the current `zypp.conf` default
+- Clean Up Dependencies When Deleting and Allow Vendor Change apply to the current session only
+- Allow Vendor Change does not affect Distribution Upgrade, which sets its own option in the upgrade dialog
+
+### Package Context Menu
+
+- Update is enabled only for an installed package with a newer update candidate and selects the policy candidate
+- Update Unconditionally is enabled for an installed package with any candidate version: the same version reinstalls, an older candidate downgrades. It is not offered for Protected packages
+- The menu also provides Install, Delete, Taboo, Protected, Undo Changes, persistent Lock/Unlock, and bulk actions for All in This List
 
 ### Repository Management
 
@@ -78,22 +109,27 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 
 ### Main Window Tabs
 
-The header toolbar provides four view tabs.  
+The header toolbar provides eight view tabs.  
 
 | Tab | Description |
 |---|---|
 | **Search** | Search packages by keyword with configurable search filters |
+| **Updates** | Updatable packages, update count, last refresh time, Update All, Distribution Upgrade, and repository refresh |
 | **Installation Summary** | Review all pending changes (install / update / delete) before committing |
 | **Repository** | Browse packages grouped by repository |
 | **Patterns** | Browse and install software patterns grouped by category |
+| **Patches** | View and apply patches by category: security, recommended, optional, feature |
+| **RPM Groups** | Browse the RPM group hierarchy with package counts |
+| **Languages** | Toggle requested languages and view the packages for each language |
 
 ### Navigation Drawer
 
 The hamburger menu (☰) opens a left-side drawer with the following sections.  
 
-- **Packages** — Update All Packages, Apply Changes
-- **Settings** — Manage Repositories, Refresh Repositories
-- **Help** — About qZypper, About Qt
+- **Packages**: Update All Packages, Distribution Upgrade, Install All Matching -devel/-debuginfo/-debugsource Packages, Install All Recommended Packages, Apply Changes
+- **Options**: Install Recommended Packages, Clean Up Dependencies When Deleting (this session), Allow Vendor Change (this session), Show -devel Packages, Show -debuginfo/-debugsource Packages, Refresh Repositories at Startup
+- **Settings**: Manage Repositories, Refresh Repositories, Install Local RPM Files, Package Locks, Installation History, Verify System
+- **Help**: About qZypper, About Qt
 - **Quit**
 
 ### Repository Manager Drawer
@@ -182,6 +218,11 @@ Press `Escape` or click the cancel button to cancel the operation; the refresh s
 |---|---|
 | `[Ctrl] + [Q]` | Quit application |
 | `[Ctrl] + [Enter]` | Apply pending changes |
+| `[Ctrl] + [A]` | Select all visible packages |
+| `[Shift] + [Up]` / `[Shift] + [Down]` | Extend the selection |
+| `[Shift] + [Home]` / `[Shift] + [End]` | Extend the selection to the first or last row |
+| `[Shift] + [PgUp]` / `[Shift] + [PgDn]` | Extend the selection by one page |
+| `+` `-` `>` `<` `!` `*` | Install / delete / update / keep / taboo / protect the selected rows |
 | `[Esc]` | Close current drawer / dialog |
 
 ## License

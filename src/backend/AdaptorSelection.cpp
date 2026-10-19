@@ -1,4 +1,6 @@
 #include <QDBusError>
+#include <QSet>
+#include <QStringList>
 #include "PackageManagerAdaptor.h"
 #include "ZyppManager.h"
 
@@ -14,6 +16,33 @@ QVariant solverMap(const ZyppManager::SolverResult &solver)
     QVariantList problems;
     for (const auto &problem : solver.problems) problems.append(problem.toVariantMap());
     return QVariantMap{{"success", solver.success}, {"problems", problems}, {"summary", solver.summary}};
+}
+
+/**
+ * @brief 一括操作の結果をD-Bus返信用マップへ変換する
+ * @param batch 変換する一括操作結果
+ * @return changed/skipped/failedCount/failedを持つマップ
+ */
+QVariantMap batchMap(const ZyppManager::BatchResult &batch)
+{
+    QStringList failed;
+    for (const auto &name : batch.failed) failed.append(QString::fromStdString(name));
+    return QVariantMap{{"changed", batch.changed}, {"skipped", batch.skipped},
+                       {"failedCount", batch.failedCount}, {"failed", failed}};
+}
+
+/**
+ * @brief 一括操作名として有効かを返す
+ * @param action 検査する操作名
+ * @return 7種類の操作のいずれかの場合はtrue
+ */
+bool validBatchAction(const QString &action)
+{
+    static const QSet<QString> actions{
+        QStringLiteral("install"), QStringLiteral("remove"), QStringLiteral("update"),
+        QStringLiteral("updateForce"), QStringLiteral("keep"), QStringLiteral("taboo"),
+        QStringLiteral("protect")};
+    return actions.contains(action);
 }
 }
 /** @brief 選択の保存は引数なしの遅延返信を返す */
@@ -50,6 +79,37 @@ bool PackageManagerAdaptor::SetPatternStatus(const QString &name, int status)
         return false;
     }
     return runOwnerSync([name, status] { return QVariant(ZyppManager::instance().setPatternStatus(name.toStdString(), status)); }).toBool();
+}
+/** @brief 引数を検証して複数パッケージへ同じ操作を一括適用する */
+QVariantMap PackageManagerAdaptor::SetPackagesAction(const QStringList &names, const QString &action)
+{
+    if (names.isEmpty() || !validBatchAction(action)) {
+        if (checkNotBusy() && checkOwner()) sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid package batch arguments"));
+        return {};
+    }
+    return runOwnerSync([names, action] {
+        std::vector<std::string> targets;
+        targets.reserve(static_cast<std::size_t>(names.size()));
+        for (const auto &name : names) targets.push_back(name.toStdString());
+        return QVariant(batchMap(ZyppManager::instance().setPackagesAction(targets, action.toStdString())));
+    }, true, false).toMap();
+}
+/** @brief 接尾辞を検証して対応するサブパッケージを選択する */
+QVariantMap PackageManagerAdaptor::SelectSubpackages(const QString &suffix)
+{
+    if (suffix != QStringLiteral("-devel") && suffix != QStringLiteral("-debuginfo")
+        && suffix != QStringLiteral("-debugsource")) {
+        if (checkNotBusy() && checkOwner()) sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid subpackage suffix"));
+        return {};
+    }
+    return runOwnerSync([suffix] {
+        return QVariant(batchMap(ZyppManager::instance().selectSubpackages(suffix.toStdString())));
+    }, true, false).toMap();
+}
+/** @brief 推奨パッケージをすべて選択し、結果を既存のマップ形式で返す */
+QVariantMap PackageManagerAdaptor::SelectAllRecommended()
+{
+    return runOwnerSync([] { return solverMap(ZyppManager::instance().selectAllRecommended()); }, true, true).toMap();
 }
 /** @brief 全更新を選択し、結果を既存のマップ形式で返す */
 QVariantMap PackageManagerAdaptor::UpdateAllPackages()

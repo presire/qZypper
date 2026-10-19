@@ -1,5 +1,6 @@
 #include <QDebug>
 #include <QFile>
+#include <QSettings>
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstring>
@@ -466,6 +467,465 @@ void PackageController::verifySystem()
     });
 }
 
+// -- 一括選択・ソルバー設定・ロケール --
+
+/**
+ * @brief 複数パッケージの状態を一括変更する (非同期)
+ * @param names 対象パッケージ名の一覧
+ * @param action 操作名 (install/remove/update/updateForce/keep/taboo/protect)
+ *
+ * 対象が空の場合は何もしない
+ * D-BusのSetPackagesActionの成功後に依存関係を1回だけ解決し
+ * 一覧と変更予定の更新完了後にpackagesActionFinishedを発行する
+ */
+void PackageController::setPackagesAction(const QStringList &names, const QString &action)
+{
+    if (!m_connected) {
+        const QString message = tr("Package manager is not initialized");
+        emit errorOccurred(message);
+        QVariantMap result;
+        result[QStringLiteral("ok")] = false;
+        result[QStringLiteral("success")] = false;
+        result[QStringLiteral("busError")] = true;
+        result[QStringLiteral("errorMessage")] = message;
+        emit packagesActionFinished(result);
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+    if (names.isEmpty()) {
+        return;
+    }
+
+    setBusy(true);
+    setStatusMessage(tr("Applying package changes..."));
+    const quint64 token = beginBatchAction();
+
+    m_dbus->setPackagesAction(names, action, [this, token](bool ok, const QString &,
+                                                            const QString &errorText, const QVariantList &args) {
+        if (!isBatchActive(token)) {
+            return;
+        }
+        const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!ok) {
+            failBatchAction(token, result, errorText);
+            return;
+        }
+        m_batchResult = result;
+        resolveBatchAction(token, result);
+    });
+}
+
+/**
+ * @brief 指定サフィックスのサブパッケージを選択する (非同期)
+ * @param suffix サフィックス (-devel/-debuginfo/-debugsource)
+ *
+ * D-BusのSelectSubpackagesの成功後に依存関係を1回だけ解決し
+ * 一覧と変更予定の更新完了後にpackagesActionFinishedを発行する
+ */
+void PackageController::selectSubpackages(const QString &suffix)
+{
+    if (!m_connected) {
+        const QString message = tr("Package manager is not initialized");
+        emit errorOccurred(message);
+        QVariantMap result;
+        result[QStringLiteral("ok")] = false;
+        result[QStringLiteral("success")] = false;
+        result[QStringLiteral("busError")] = true;
+        result[QStringLiteral("errorMessage")] = message;
+        emit packagesActionFinished(result);
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+    if (suffix.isEmpty()) {
+        return;
+    }
+
+    setBusy(true);
+    setStatusMessage(tr("Selecting subpackages..."));
+    const quint64 token = beginBatchAction();
+
+    m_dbus->selectSubpackages(suffix, [this, token](bool ok, const QString &,
+                                                     const QString &errorText, const QVariantList &args) {
+        if (!isBatchActive(token)) {
+            return;
+        }
+        const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!ok) {
+            failBatchAction(token, result, errorText);
+            return;
+        }
+        m_batchResult = result;
+        resolveBatchAction(token, result);
+    });
+}
+
+/**
+ * @brief 推奨パッケージをすべて選択する (非同期)
+ *
+ * D-BusのSelectAllRecommendedを呼び出しソルバー結果を受け取る
+ * 問題がある場合はconflictsDetectedを発行して競合ダイアログへ通知する
+ * 一覧と変更予定の更新完了後にpackagesActionFinishedを発行する
+ */
+void PackageController::installAllRecommended()
+{
+    if (!m_connected) {
+        const QString message = tr("Package manager is not initialized");
+        emit errorOccurred(message);
+        QVariantMap result;
+        result[QStringLiteral("ok")] = false;
+        result[QStringLiteral("success")] = false;
+        result[QStringLiteral("busError")] = true;
+        result[QStringLiteral("errorMessage")] = message;
+        emit packagesActionFinished(result);
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+
+    setBusy(true);
+    setStatusMessage(tr("Selecting recommended packages..."));
+    const quint64 token = beginBatchAction();
+
+    m_dbus->selectAllRecommended([this, token](bool ok, const QString &,
+                                                const QString &errorText, const QVariantList &args) {
+        if (!isBatchActive(token)) {
+            return;
+        }
+        const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        if (!ok) {
+            failBatchAction(token, result, errorText);
+            return;
+        }
+        m_batchResult = result;
+        const bool solverOk = applySolverResult(result);
+        if (solverOk) {
+            setStatusMessage(tr("Recommended packages selected"));
+        }
+        completeBatchAction(token, result, solverOk);
+    });
+}
+
+/**
+ * @brief ソルバー設定を1項目変更する (非同期)
+ * @param key 設定キー (installRecommends/cleandepsOnRemove/allowVendorChange)
+ * @param value 新しい値
+ *
+ * SetSolverSettingsの成功後に依存関係を解決し、一覧と変更予定を更新して
+ * 最後にloadSolverSettingsで設定を再読込する
+ * installRecommendsはQSettingsのsolver/installRecommendsへ保存する
+ * SetSolverSettingsの成功時にsolverOptionAppliedシグナルを発行し、失敗時はerrorOccurredシグナルだけを発行する
+ */
+void PackageController::setSolverOption(const QString &key, bool value)
+{
+    if (!m_connected) {
+        emit errorOccurred(tr("Package manager is not initialized"));
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+
+    setBusy(true);
+    setStatusMessage(tr("Updating solver settings..."));
+
+    QVariantMap settings;
+    settings[key] = value;
+
+    m_dbus->setSolverSettings(settings, [this, key, value](bool ok, const QString &,
+                                                            const QString &errorText, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(errorText.isEmpty() ? tr("Failed to update solver settings") : errorText);
+            setBusy(false);
+            return;
+        }
+
+        // installRecommendsのみ次回起動用に永続化する
+        if (key == QStringLiteral("installRecommends")) {
+            QSettings store;
+            store.setValue(QStringLiteral("solver/installRecommends"), value ? 1 : 0);
+        }
+
+        // 適用に成功した場合だけ通知する
+        // QML側の保存値は、この通知を受けたときだけ更新する (失敗時は保存値を変えないため)
+        emit solverOptionApplied(key, value);
+
+        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &resolveError,
+                                           const QVariantList &args) {
+            if (!rok) {
+                emit errorOccurred(resolveError.isEmpty()
+                                       ? tr("Dependency resolution failed") : resolveError);
+            } else {
+                const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+                applySolverResult(result);
+            }
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            loadSolverSettings();
+            setBusy(false);
+        });
+    });
+}
+
+/**
+ * @brief 言語サポートの要求状態を変更する (非同期)
+ * @param code ロケールコード
+ * @param requested 要求する場合はtrue
+ *
+ * SetLocaleRequestedの成功後に依存関係を解決し、一覧と変更予定を更新して
+ * 最後にloadLocalesで一覧を再読込する
+ */
+void PackageController::setLocaleRequested(const QString &code, bool requested)
+{
+    if (!m_connected) {
+        emit errorOccurred(tr("Package manager is not initialized"));
+        return;
+    }
+    if (m_busy) {
+        return;
+    }
+    if (code.isEmpty()) {
+        return;
+    }
+
+    setBusy(true);
+    setStatusMessage(tr("Updating locale selection..."));
+
+    m_dbus->setLocaleRequested(code, requested, [this](bool ok, const QString &,
+                                                        const QString &errorText, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(errorText.isEmpty() ? tr("Failed to update locale selection") : errorText);
+            setBusy(false);
+            return;
+        }
+
+        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &resolveError,
+                                           const QVariantList &args) {
+            if (!rok) {
+                emit errorOccurred(resolveError.isEmpty()
+                                       ? tr("Dependency resolution failed") : resolveError);
+            } else {
+                const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+                applySolverResult(result);
+            }
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            loadLocales();
+            setBusy(false);
+        });
+    });
+}
+
+/**
+ * @brief ソルバー応答を共通処理する
+ * @param result ソルバー応答のマップ
+ * @return ソルバーが成功した場合はtrue
+ *
+ * success=falseの場合はステータスを更新し、problemsをconflictsDetectedへ流す
+ */
+bool PackageController::applySolverResult(const QVariantMap &result)
+{
+    if (result.value(QStringLiteral("success")).toBool()) {
+        return true;
+    }
+    setStatusMessage(tr("Dependency problems found"));
+    const QVariantList problems = result.value(QStringLiteral("problems")).toList();
+    if (!problems.isEmpty()) {
+        emit conflictsDetected(problems);
+    }
+    return false;
+}
+
+/**
+ * @brief 一括操作の世代を開始する
+ * @return 新しい世代番号
+ *
+ * 古い応答は世代が一致しないため無視される
+ */
+quint64 PackageController::beginBatchAction()
+{
+    ++m_batchGeneration;
+    m_batchInFlight = true;
+    m_batchResult.clear();
+    return m_batchGeneration;
+}
+
+/**
+ * @brief 一括操作の世代が有効か返す
+ * @param token 一括操作の世代番号
+ * @return 実行中かつ最新の世代の場合はtrue
+ */
+bool PackageController::isBatchActive(quint64 token) const
+{
+    return m_batchInFlight && token == m_batchGeneration;
+}
+
+/**
+ * @brief 一括変更の成功後に依存関係を1回だけ解決する
+ * @param token 一括操作の世代番号
+ * @param result D-Busが返した一括変更の結果
+ *
+ * 解決結果のsuccess=falseは共通の競合通知経路へ流し、その後一覧の再取得へ進む
+ */
+void PackageController::resolveBatchAction(quint64 token, const QVariantMap &result)
+{
+    m_dbus->resolveDependencies([this, token, result](bool ok, const QString &,
+                                                       const QString &errorText, const QVariantList &args) {
+        if (!isBatchActive(token)) {
+            return;
+        }
+        if (!ok) {
+            // 変更自体は成功しているため、一覧と変更予定を再取得してから失敗として完了する
+            const QString message = errorText.isEmpty() ? tr("Dependency resolution failed") : errorText;
+            emit errorOccurred(message);
+            QVariantMap out = result;
+            out[QStringLiteral("success")] = false;
+            out[QStringLiteral("errorMessage")] = message;
+            out[QStringLiteral("reason")] = QStringLiteral("resolveFailed");
+            setStatusMessage(message);
+            completeBatchAction(token, out, false);
+            return;
+        }
+        const QVariantMap solver = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
+        const bool solverOk = applySolverResult(solver);
+        if (solverOk) {
+            setStatusMessage(tr("Package changes applied"));
+        }
+        completeBatchAction(token, result, solverOk);
+    });
+}
+
+/**
+ * @brief 一覧と変更予定の再取得後に一括操作を完了する
+ * @param token 一括操作の世代番号
+ * @param result 一括変更の結果 (changed/skipped/failedを保持する)
+ * @param solverOk ソルバーが成功した場合はtrue
+ *
+ * 一覧と変更予定の再取得成否をokへ反映し、失敗理由をreasonへ設定する
+ * 新しい一覧要求に置き換えられた場合は最新の取得完了を待つ
+ */
+void PackageController::completeBatchAction(quint64 token, QVariantMap result, bool solverOk)
+{
+    result[QStringLiteral("success")] = solverOk;
+    requestPackageList(true, [this, token, result, solverOk](bool listOk, const QVariantList &) {
+        if (!isBatchActive(token)) {
+            return;
+        }
+        refreshPendingChangesThen([this, token, result, solverOk, listOk](bool pendingOk) {
+            if (!isBatchActive(token)) {
+                return;
+            }
+            QVariantMap out = result;
+            out[QStringLiteral("ok")] = solverOk && listOk && pendingOk;
+            // 解決段階の失敗理由がある場合は再取得の失敗で上書きしない
+            if (!listOk) {
+                out[QStringLiteral("refreshFailed")] = true;
+                if (out.value(QStringLiteral("reason")).toString().isEmpty()) {
+                    out[QStringLiteral("reason")] = QStringLiteral("listRefreshFailed");
+                    setStatusMessage(tr("Failed to refresh package list"));
+                }
+            } else if (!pendingOk) {
+                out[QStringLiteral("refreshFailed")] = true;
+                if (out.value(QStringLiteral("reason")).toString().isEmpty()) {
+                    out[QStringLiteral("reason")] = QStringLiteral("pendingChangesRefreshFailed");
+                    setStatusMessage(tr("Failed to refresh pending changes"));
+                }
+            }
+            if (!m_connected) {
+                out[QStringLiteral("ok")] = false;
+                out[QStringLiteral("success")] = false;
+                out[QStringLiteral("backendCrashed")] = true;
+            }
+            finishPackagesAction(token, out);
+        });
+    });
+}
+
+/**
+ * @brief 一括操作の失敗を通知する
+ * @param token 一括操作の世代番号
+ * @param result 失敗時点までの結果
+ * @param errorText 失敗時のエラーメッセージ
+ *
+ * 一覧を変更していないため再取得は行わず、busy解除後に1回だけ通知する
+ */
+void PackageController::failBatchAction(quint64 token, const QVariantMap &result,
+                                        const QString &errorText)
+{
+    if (!isBatchActive(token)) {
+        return;
+    }
+    const QString message = errorText.isEmpty() ? tr("Package action failed") : errorText;
+    emit errorOccurred(message);
+    QVariantMap out = result;
+    out[QStringLiteral("ok")] = false;
+    out[QStringLiteral("success")] = false;
+    out[QStringLiteral("busError")] = true;
+    out[QStringLiteral("errorMessage")] = message;
+    setStatusMessage(message);
+    finishPackagesAction(token, out);
+}
+
+/**
+ * @brief 一括操作の結果を1回だけ通知する
+ * @param token 一括操作の世代番号
+ * @param result 通知する結果
+ *
+ * 世代を進めて遅延応答を無効化し、busy解除後に通知する
+ */
+void PackageController::finishPackagesAction(quint64 token, const QVariantMap &result)
+{
+    if (!isBatchActive(token)) {
+        return;
+    }
+    m_batchInFlight = false;
+    m_batchResult.clear();
+    ++m_batchGeneration;
+    setBusy(false);
+    emit packagesActionFinished(result);
+}
+
+/**
+ * @brief 切断時に一括操作の結果を収集して世代を無効化する
+ * @return 通知用の結果 (実行中でない場合は空)
+ *
+ * busy解除とシグナル発行は行わず、呼び出し側が最後に一度だけ行う
+ * 世代を進めるため、収集後に届いた応答は無視される
+ */
+QVariantMap PackageController::takeAbortedBatchResult()
+{
+    if (!m_batchInFlight) {
+        return QVariantMap();
+    }
+    m_batchInFlight = false;
+    QVariantMap out = m_batchResult;
+    m_batchResult.clear();
+    ++m_batchGeneration;
+    out[QStringLiteral("ok")] = false;
+    out[QStringLiteral("success")] = false;
+    out[QStringLiteral("backendCrashed")] = true;
+    return out;
+}
+
+/**
+ * @brief 切断時に実行中の一括操作を失敗として完了させる
+ *
+ * 実行中の場合のみ結果を収集し、busy解除後に1回だけ通知する
+ */
+void PackageController::abortBatchAction()
+{
+    const QVariantMap out = takeAbortedBatchResult();
+    if (out.isEmpty()) {
+        return;
+    }
+    setBusy(false);
+    emit packagesActionFinished(out);
+}
+
 // -- 依存関係の解決 --
 
 /**
@@ -715,6 +1175,8 @@ void PackageController::commitAsync()
         refreshPackageStatuses(true);
         loadPatterns();
         refreshPendingChanges();
+        // コミット完了後の更新可能数を解放時に1回だけ取得する
+        m_updateCountPending = true;
         setBusy(false);
     });
 }

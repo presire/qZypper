@@ -6,6 +6,7 @@ set(GUI_SOURCES
     controllers/PackageControllerRepos.cpp
     controllers/DBusClient.cpp
     controllers/RepoFilePreview.cpp
+    controllers/SearchModeDetect.cpp
     models/PackageListModel.cpp
     models/PackageFilterProxyModel.cpp
 )
@@ -14,6 +15,7 @@ set(GUI_HEADERS
     controllers/PackageController.h
     controllers/DBusClient.h
     controllers/RepoFilePreview.h
+    controllers/SearchModeDetect.h
     models/PackageListModel.h
     models/PackageFilterProxyModel.h
 )
@@ -72,6 +74,9 @@ qt_add_qml_module(qzypper
         qml/views/RepositoryView.qml
         qml/views/PatternView.qml
         qml/views/PatchView.qml
+        qml/views/UpdatesView.qml
+        qml/views/RpmGroupsView.qml
+        qml/views/LanguagesView.qml
         qml/dialogs/InstallationResultDialog.qml
         qml/dialogs/ConflictDialog.qml
         qml/dialogs/UpdateInfoDialog.qml

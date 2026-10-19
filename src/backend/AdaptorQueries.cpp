@@ -32,7 +32,7 @@ QVariantList PackageManagerAdaptor::GetServices()
 /** @brief リテラル検索をワーカー上で行う */
 QVariantList PackageManagerAdaptor::SearchPackages(const QString &query, int flags)
 {
-    if (query.toUtf8().size() > 256 || flags < 0 || (flags & ~127)) {
+    if (query.toUtf8().size() > 256 || flags < 0 || (flags & ~255)) {
         if (checkRead()) sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid search query or flags"));
         return {};
     }
