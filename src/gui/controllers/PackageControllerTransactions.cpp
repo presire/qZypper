@@ -1,3 +1,15 @@
+/**
+ * @file PackageControllerTransactions.cpp
+ * @brief パッケージ状態の変更、依存関係の解決、コミット、状態保存の実装
+ *
+ * 状態変更、ロック、一括操作、ソルバー設定、コミット前のライセンス確認、
+ * ローカルRPMの取り込みを非同期で実行する
+ * 変更後は一覧と変更予定を再取得し、結果をシグナルで通知する
+ *
+ * 入力 : QMLからの変更要求、DBusClientの完了コールバック
+ * 出力 : キャッシュの更新、進捗と完了のシグナル
+ * 依存 : Qt Core、DBusClient、LicenseConfirmationResult、LicensePreparation
+ */
 #include <QDebug>
 #include <QFile>
 #include <QSettings>
@@ -9,6 +21,8 @@
 #include <QUrl>
 #include "PackageController.h"
 #include "DBusClient.h"
+#include "LicenseConfirmationResult.h"
+#include "LicensePreparation.h"
 
 namespace qZypper {
 
@@ -72,7 +86,7 @@ void PackageController::setPackageStatus(const QString &name, int status)
  * @param name パッケージ名
  * @param version バージョン
  * @param arch アーキテクチャ
- * @param repoAlias リポジトリアリアス
+ * @param repoAlias リポジトリエイリアス
  */
 void PackageController::setPackageVersion(const QString &name,
                                           const QString &version,
@@ -84,17 +98,70 @@ void PackageController::setPackageVersion(const QString &name,
 
     setBusy(true);
     m_dbus->setPackageVersion(name, version, arch, repoAlias,
-                              [this](bool ok, const QString &, const QString &, const QVariantList &) {
+                              [this, name](bool ok, const QString &, const QString &, const QVariantList &) {
         if (!ok) {
             emit errorOccurred(m_dbus->lastError());
             setBusy(false);
             return;
         }
-        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &, const QVariantList &) {
+        m_dbus->resolveDependencies([this, name](bool rok, const QString &, const QString &, const QVariantList &) {
             if (!rok)
                 emit errorOccurred(m_dbus->lastError());
             refreshPackageStatuses();
             refreshPendingChanges();
+            loadPackageDetails(name);
+            setBusy(false);
+        });
+    });
+}
+
+/**
+ * @brief 複数版対応パッケージの特定版の選択状態を変更する (非同期)
+ *
+ * 変更後はソルバーを実行し、成功時に一覧・変更予定・詳細を再取得する
+ *
+ * @param name パッケージ名
+ * @param version バージョン
+ * @param arch アーキテクチャ
+ * @param repoAlias リポジトリエイリアス
+ * @param status 新しいステータス (PackageStatus)
+ * @note 完了時は状態一覧・保留中変更・パッケージ詳細の順に再読込する
+ */
+void PackageController::setPackageVersionStatus(const QString &name,
+                                                const QString &version,
+                                                const QString &arch,
+                                                const QString &repoAlias,
+                                                int status)
+{
+    // 未接続または処理中は要求を受け付けない
+    if (!m_connected) {
+        return;
+    }
+
+    if (m_busy) {
+        return;
+    }
+
+    setBusy(true);
+
+    // DBusClient経由でバックエンドへ版単位の選択状態の変更を要求する
+    m_dbus->setPackageVersionStatus(name, version, arch, repoAlias, status,
+                                    [this, name](bool ok, const QString &, const QString &, const QVariantList &) {
+        if (!ok) {
+            emit errorOccurred(m_dbus->lastError());
+            setBusy(false);
+            return;
+        }
+
+        // 選択変更後にソルバーを実行し、依存関係の解決結果を待つ
+        m_dbus->resolveDependencies([this, name](bool rok, const QString &, const QString &, const QVariantList &) {
+            if (!rok) {
+                emit errorOccurred(m_dbus->lastError());
+            }
+
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            loadPackageDetails(name);
             setBusy(false);
         });
     });
@@ -171,7 +238,7 @@ void PackageController::togglePatternStatus(const QString &patternName)
         }
         emit patternsChanged();
 
-        // ソルバー実行 (fork保護済み - 依存パッケージの自動選択/衝突検出)
+        // ソルバーを実行する (fork保護下で依存パッケージの自動選択と衝突検出を行う)
         m_dbus->resolveDependencies(
             [this, sourceChanged](bool rok, const QString &, const QString &, const QVariantList &rargs) {
             QVariantMap result = (rok && !rargs.isEmpty()) ? rargs.at(0).toMap() : QVariantMap();
@@ -188,10 +255,10 @@ void PackageController::togglePatternStatus(const QString &patternName)
             }
 
             if (result.value(QStringLiteral("success")).toBool()) {
-                // 成功 - 自動依存パッケージのステータスを含むリストを再取得
+                // 成功時は自動選択された依存パッケージの状態を含めて一覧を再取得する
                 refreshPackageStatuses(sourceChanged);
             } else {
-                // 衝突あり - リストを再取得してからコンフリクトダイアログを表示
+                // 衝突時は一覧を再取得してからコンフリクトダイアログを表示する
                 refreshPackageStatuses(sourceChanged);
                 auto problems = result.value(QStringLiteral("problems")).toList();
                 if (!problems.isEmpty())
@@ -229,7 +296,7 @@ void PackageController::setPatchStatus(const QString &patchId, int status)
 /**
  * @brief 必要なパッチを一括選択する (非同期)
  *
- * 対話型パッチはskipInteractiveで自動スキップし、選択不可とする
+ * 対話型パッチはskipInteractiveで自動的にスキップし、選択対象から除外する
  * 結果はselectPatchesFinishedで通知され、QML側で概要確認フローへ渡す
  *
  * @param securityOnly セキュリティパッチのみ選択する場合true
@@ -1062,12 +1129,71 @@ void PackageController::saveSolverTestcase()
  */
 void PackageController::prepareCommit()
 {
-    if (!m_connected) {
+    // 未接続または処理中には確認対象の選択が安定しないため、コミット準備を開始しない
+    if (!m_connected || m_busy) {
         m_commitRevision = 0;
         emit commitPrepared(false);
         return;
     }
-    fetchCommitRevision(3);
+    m_commitRevision = 0;
+    // LicensePreparation::reintroducedLicensePackagesで拒否候補の再選択を検出し、意図しない再承認を防ぐ
+    const auto returned = reintroducedLicensePackages(m_rejectedLicensePackages, m_pendingChanges);
+    if (!returned.isEmpty()) {
+        emit errorOccurred(tr("Packages whose licenses were declined were selected again after resolving dependencies: %1. Return to editing and change the selection or conflict solutions.")
+                               .arg(returned.join(QStringLiteral(", "))));
+        resetCommitPreparation();
+        emit commitPrepared(false);
+        return;
+    }
+    // 非同期D-Bus応答が編集再開後に到着しても結果を反映しないよう世代を固定する
+    const auto generation = m_commitPreparationGeneration;
+    setBusy(true);
+    setStatusMessage(tr("Confirming package licenses..."));
+    // DBusClient::confirmLicensesで所有者の対話結果を待ち、完了後に確認済み選択を準備する
+    m_dbus->confirmLicenses([this, generation](bool ok, const QString &, const QString &errorText,
+                                               const QVariantList &args) {
+        setBusy(false);
+        // 編集へ戻った後の回答は新しい選択状態を壊すため、破棄する
+        if (generation != m_commitPreparationGeneration) {
+            emit commitPrepared(false);
+            return;
+        }
+        // LicenseConfirmationResult::fromVariantMapでD-Bus応答を型付き結果へ復元する
+        const auto result = LicenseConfirmationResult::fromVariantMap(
+            ok && !args.isEmpty() ? args.first().toMap() : QVariantMap{});
+        m_rejectedLicensePackages.append(result.rejectedPackages);
+        m_rejectedLicensePackages.removeDuplicates();
+        emit rejectedLicensePackagesChanged();
+        if (!ok || !result.success) {
+            emit errorOccurred(!errorText.isEmpty() ? errorText
+                : !result.errorMessage.isEmpty() ? result.errorMessage : tr("License confirmation failed"));
+            refreshPackageStatuses();
+            refreshPendingChanges();
+            emit commitPrepared(false);
+            return;
+        }
+        // 拒否により選択が変わった場合は、古い解決結果を使わず通常の依存関係解決を要求する
+        if (result.changed) {
+            refreshPackageStatuses();
+            emit licenseResolveRequired();
+            return;
+        }
+        // PackageController::fetchCommitRevisionで表示用の変更予定とコミット改訂を同じ選択へ揃える
+        fetchCommitRevision(3);
+    });
+}
+
+/**
+ * @brief 選択の再読込や編集再開時に、古いコミット確認と除外履歴を破棄する
+ * @note m_commitPreparationGenerationを更新して保留中のD-Bus応答を無効にする
+ * @note m_commitRevisionとm_rejectedLicensePackagesを変更し、除外一覧変更を通知する
+ */
+void PackageController::resetCommitPreparation()
+{
+    ++m_commitPreparationGeneration;
+    m_commitRevision = 0;
+    m_rejectedLicensePackages.clear();
+    emit rejectedLicensePackagesChanged();
 }
 
 /**
@@ -1080,13 +1206,17 @@ void PackageController::prepareCommit()
  */
 void PackageController::fetchCommitRevision(int attemptsLeft)
 {
+    // 非同期の改訂照合中に編集へ戻った場合の応答を破棄するため、開始世代を保持する
+    const auto generation = m_commitPreparationGeneration;
     auto parseRevision = [](bool ok, const QVariantList &args, quint64 &rev) {
-        if (!ok || args.isEmpty())
+        if (!ok || args.isEmpty()) {
             return false;
+        }
         bool conv = false;
         rev = args.at(0).toULongLong(&conv);
         return conv;
     };
+    // 一貫した選択状態を取得できない場合は、コミット可能な改訂を残さずQMLへ失敗を通知する
     auto fail = [this]() {
         m_commitRevision = 0;
         emit errorOccurred(m_dbus->lastError().isEmpty()
@@ -1095,31 +1225,51 @@ void PackageController::fetchCommitRevision(int attemptsLeft)
         emit commitPrepared(false);
     };
 
-    m_dbus->getSelectionRevision([this, attemptsLeft, parseRevision, fail](
-                                     bool ok, const QString &, const QString &, const QVariantList &args) {
+    // DBusClient::getSelectionRevisionで照合前の選択改訂を取得する
+    m_dbus->getSelectionRevision([this, attemptsLeft, parseRevision, fail, generation](
+                                      bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (generation != m_commitPreparationGeneration) {
+            return;
+        }
         quint64 before = 0;
         if (!parseRevision(ok, args, before)) {
             fail();
             return;
         }
-        refreshPendingChangesThen([this, attemptsLeft, before, parseRevision, fail](bool refreshed) {
+        // PackageController::refreshPendingChangesThenで確認画面の一覧を更新してから再照合する
+        refreshPendingChangesThen([this, attemptsLeft, before, parseRevision, fail, generation](bool refreshed) {
+            if (generation != m_commitPreparationGeneration) {
+                return;
+            }
             // 変更予定を取得できなければ確認画面の一覧が古いままなので確認を中止する
             if (!refreshed || !m_connected) {
                 fail();
                 return;
             }
-            m_dbus->getSelectionRevision([this, attemptsLeft, before, parseRevision, fail](
-                                             bool ok2, const QString &, const QString &, const QVariantList &args2) {
+            // DBusClient::getSelectionRevisionで一覧更新後の選択改訂を取得する
+            m_dbus->getSelectionRevision([this, attemptsLeft, before, parseRevision, fail, generation](
+                                              bool ok2, const QString &, const QString &, const QVariantList &args2) {
+                if (generation != m_commitPreparationGeneration) {
+                    return;
+                }
                 quint64 after = 0;
                 if (!parseRevision(ok2, args2, after)) {
                     fail();
                     return;
                 }
                 if (after != before) {
-                    if (attemptsLeft > 1)
+                    if (attemptsLeft > 1) {
                         fetchCommitRevision(attemptsLeft - 1);
-                    else
+                    }
+                    else {
                         fail();
+                    }
+                    return;
+                }
+                if (m_pendingChanges.isEmpty() && m_pendingLocaleChanges.isEmpty()) {
+                    m_commitRevision = 0;
+                    emit noChangesLeftToApply();
+                    emit commitPrepared(false);
                     return;
                 }
                 m_commitRevision = after;
@@ -1139,8 +1289,15 @@ void PackageController::fetchCommitRevision(int attemptsLeft)
  */
 void PackageController::commitAsync()
 {
-    if (!m_connected) return;
-    if (m_busy) return;
+    // 未接続ではD-Busコミットを開始できないため、確認状態を消費しない
+    if (!m_connected) {
+        return;
+    }
+
+    // 進行中の操作と同時にコミットすると選択改訂が無効になるため、待機する
+    if (m_busy) {
+        return;
+    }
     m_retryAction = [this]() { prepareCommit(); };
 
     if (m_commitRevision == 0) {
@@ -1160,16 +1317,23 @@ void PackageController::commitAsync()
     const quint64 rev = m_commitRevision;
     m_commitRevision = 0;
 
-    m_dbus->commitAsync(rev, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
+    // 結果表示には今回のライセンス拒否を保持するため、確認状態を破棄する前に複製する
+    const auto excluded = m_rejectedLicensePackages;
+    // DBusClient::commitAsyncで確認済み改訂をバックエンドへ渡し、完了結果をQMLプロパティへ反映する
+    m_dbus->commitAsync(rev, [this, excluded](bool ok, const QString &, const QString &, const QVariantList &args) {
         m_commitResult = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
-        if (!m_commitResult.contains(QStringLiteral("success")))
+        m_commitResult[QStringLiteral("rejectedLicensePackages")] = excluded;
+        if (!m_commitResult.contains(QStringLiteral("success"))) {
             m_commitResult[QStringLiteral("success")] = false;
+        }
         emit commitResultChanged();
 
-        if (m_commitResult[QStringLiteral("success")].toBool())
+        if (m_commitResult[QStringLiteral("success")].toBool()) {
             setStatusMessage(tr("Changes applied successfully"));
-        else
+        }
+        else {
             setStatusMessage(tr("Some operations encountered errors"));
+        }
 
         // コミット後は一覧の内容が大きく変わるため、新しい世代として通知する
         refreshPackageStatuses(true);

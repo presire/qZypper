@@ -21,7 +21,7 @@ struct PackageInfo {
     QString repoName;                                      // リポジトリ名
     quint64 size = 0;                                      // インストールサイズ (bytes)
     int status = static_cast<int>(PackageStatus::NoInst);  // パッケージ状態
-    bool updatable = false;                                // 導入済みより新しい更新候補があるか
+    bool updatable = false;                                // より新しい更新候補があるか
 
     /**
      * @brief D-Bus転送用のQVariantMapへ変換する
@@ -73,11 +73,16 @@ struct PackageDetails {
     QString group;                                      // パッケージグループ
     QString vendor;                                     // ベンダー
     QString buildHost;                                  // ビルドホスト
-    QString buildTime;                                  // ビルド日時
+    QString buildTime;                                  // ビルド日時 (ISO-8601、未設定は空)
     QString sourceRpm;                                  // ソースRPM名
     QString url;                                        // アップストリームURL
+    qint64 installSize = 0;                             // インストールサイズ (bytes)
+    qint64 downloadSize = 0;                            // ダウンロードサイズ (bytes)
+    QString installTime;                                // インストール日時 (ISO-8601、未インストールは空)
+    bool multiversion = false;                          // 複数版同時インストール可能か
+    bool mixedMultiversion = false;                     // 一部の版のみ複数版インストールに対応するか
     QStringList provides;                               // 提供ケーパビリティ
-    QStringList requires;                               // 依存ケーパビリティ
+    QStringList requirements;                           // 依存ケーパビリティ (D-Busキーはrequires)
     QStringList conflicts;                              // 衝突ケーパビリティ
     QStringList obsoletes;                              // 廃止ケーパビリティ
     QStringList recommends;                             // 推奨ケーパビリティ
@@ -100,8 +105,13 @@ struct PackageDetails {
         map["buildTime"]         = buildTime;
         map["sourceRpm"]         = sourceRpm;
         map["url"]               = url;
+        map["installSize"]       = QVariant::fromValue(installSize);
+        map["downloadSize"]      = QVariant::fromValue(downloadSize);
+        map["installTime"]       = installTime;
+        map["multiversion"]      = multiversion;
+        map["mixedMultiversion"] = mixedMultiversion;
         map["provides"]          = provides;
-        map["requires"]          = requires;
+        map["requires"]          = requirements;
         map["conflicts"]         = conflicts;
         map["obsoletes"]         = obsoletes;
         map["recommends"]        = recommends;
@@ -113,6 +123,42 @@ struct PackageDetails {
             versions.append(v);
         map["availableVersions"] = versions;
         return map;
+    }
+
+    /**
+     * @brief D-Busで受信したQVariantMapから生成する
+     * @param map 基本情報と詳細属性を持つマップ
+     * @return 復元したパッケージ詳細情報
+     */
+    static PackageDetails fromVariantMap(const QVariantMap &map) {
+        PackageDetails details;
+        details.basic           = PackageInfo::fromVariantMap(map);
+        details.description     = map.value("description").toString();
+        details.license         = map.value("license").toString();
+        details.group           = map.value("group").toString();
+        details.vendor          = map.value("vendor").toString();
+        details.buildHost       = map.value("buildHost").toString();
+        details.buildTime       = map.value("buildTime").toString();
+        details.sourceRpm       = map.value("sourceRpm").toString();
+        details.url             = map.value("url").toString();
+        details.installSize     = map.value("installSize").toLongLong();
+        details.downloadSize    = map.value("downloadSize").toLongLong();
+        details.installTime     = map.value("installTime").toString();
+        details.multiversion    = map.value("multiversion").toBool();
+        details.mixedMultiversion = map.value("mixedMultiversion").toBool();
+        details.provides        = map.value("provides").toStringList();
+        details.requirements    = map.value("requires").toStringList();
+        details.conflicts       = map.value("conflicts").toStringList();
+        details.obsoletes       = map.value("obsoletes").toStringList();
+        details.recommends      = map.value("recommends").toStringList();
+        details.suggests        = map.value("suggests").toStringList();
+        details.fileList        = map.value("fileList").toStringList();
+        details.changeLog       = map.value("changeLog").toStringList();
+        const QVariantList versions = map.value("availableVersions").toList();
+        for (const auto &version : versions) {
+            details.availableVersions.append(version.toMap());
+        }
+        return details;
     }
 };
 

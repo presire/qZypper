@@ -34,8 +34,8 @@ Pane {
     }
     padding: 0                              // ペイン内側の余白は設けない
 
-    // 起動時のレイアウト確定前やウィンドウリサイズ時の高さを保存しないよう、
-    // ユーザがハンドルをドラッグした時のみ保存する
+    // 起動時のレイアウト確定前やウィンドウのリサイズ時に高さを保存しないよう、
+    // 利用者がハンドルをドラッグしたときのみ保存する
     onHeightChanged: {
         const view = detailPane.SplitView.view
         if (view && view.resizing) {
@@ -165,7 +165,7 @@ Pane {
             Pane {
                 id: versionPane  // バージョンタブの参照名
 
-                // カラム幅のプロパティ (ドラッグでリサイズ可能)
+                // 列幅のプロパティ、ドラッグで変更できる
                 readonly property real minColRadio: 40     // ラジオ列の縮小下限
                 readonly property real minColVersion: 220  // Version列の縮小下限
                 readonly property real minColArch: 120     // Architecture列の縮小下限
@@ -185,7 +185,7 @@ Pane {
                 Settings {
                     id: splitSettings  // 保存設定の参照名
 
-                    property real detailPaneHeight: 300  // 保存する詳細ペイン高
+                    property real detailPaneHeight: 300  // 保存する詳細ペインの高さ
 
                     category: "splitView"  // 設定ファイル内のグループ名
                 }
@@ -195,7 +195,7 @@ Pane {
                     anchors.fill: parent  // バージョンタブ全体を使う
                     spacing: 0            // ヘッダとリストの間隔は設けない
 
-                    // カラムヘッダ (横スクロール同期)
+                    // 列ヘッダ、横スクロールに同期する
                     Rectangle {
                         Layout.fillWidth: true  // 親の幅いっぱいに広げる
                         height: 28              // ヘッダの高さ
@@ -231,7 +231,7 @@ Pane {
                                     color: palette.mid     // 区切り線の色
                                 }
 
-                                // バージョン列ヘッダ+リサイズハンドル
+                                // バージョン列のヘッダとリサイズハンドル
                                 Item {
                                     width: versionPane.colVersion - 1  // Version列の幅 (区切り線の1pxを除く)
                                     height: parent.height              // ヘッダの高さに合わせる
@@ -248,7 +248,7 @@ Pane {
                                         anchors.right: parent.right  // 列ヘッダの右端に配置する
                                         width: 4                     // ハンドルの幅
                                         height: parent.height        // ヘッダの高さに合わせる
-                                        // 操作中のみ見える色
+                                        // ホバー中またはドラッグ中のみ見える色
                                         color: vhResize1.hovered || vhResize1.pressed ? palette.highlight : "transparent"
 
                                         // ドラッグでVersion列の幅を変更する
@@ -298,7 +298,7 @@ Pane {
                                     color: palette.mid     // 区切り線の色
                                 }
 
-                                // アーキテクチャ列ヘッダ + リサイズハンドル
+                                // アーキテクチャ列のヘッダとリサイズハンドル
                                 Item {
                                     width: versionPane.colArch - 1  // Architecture列の幅 (区切り線の1pxを除く)
                                     height: parent.height           // ヘッダの高さに合わせる
@@ -319,7 +319,7 @@ Pane {
                                         anchors.right: parent.right  // 列ヘッダの右端に配置する
                                         width: 4                     // ハンドルの幅
                                         height: parent.height        // ヘッダの高さに合わせる
-                                        // 操作中のみ見える色
+                                        // ホバー中またはドラッグ中のみ見える色
                                         color: vhResize2.hovered || vhResize2.pressed ? palette.highlight : "transparent"
 
                                         // ドラッグでArchitecture列の幅を変更する
@@ -426,6 +426,39 @@ Pane {
                             // 表示中パッケージの詳細 (変更時に選択を同期する)
                             property var details: PackageController.currentPackageDetails  // 表示中パッケージの詳細
                             property int selectedIndex: -1                                 // 現在選択した候補バージョンの行番号
+                            // 複数版同時インストール可能なパッケージか (チェックボックス表示に切り替える)
+                            property bool multiversionMode: !!(details && details.multiversion)
+
+                            /**
+                             * @brief Myrlynと同じ規則で版ごとの選択状態を切り替える
+                             * @param versionData 対象行のバージョン情報 (version, arch, repoAlias, statusを持つ)
+                             * @note 戻り値は無く、PackageController::setPackageVersionStatusを呼ぶ
+                             * @note 状態の対応はMyrlynのcycleStatusと同じで、NoInst/TabooはInstallへ戻す
+                             */
+                            function cycleStatus(versionData) {
+                                var s = versionData.status
+                                var target = PackageStatusInfo.Install
+                                if (s === PackageStatusInfo.Install || s === PackageStatusInfo.AutoInstall
+                                        || s === PackageStatusInfo.Protected) {
+                                    target = PackageStatusInfo.NoInst
+                                }
+                                else if (s === PackageStatusInfo.KeepInstalled || s === PackageStatusInfo.Update
+                                         || s === PackageStatusInfo.AutoUpdate) {
+                                    target = PackageStatusInfo.Del
+                                }
+                                else if (s === PackageStatusInfo.Del || s === PackageStatusInfo.AutoDel) {
+                                    target = PackageStatusInfo.KeepInstalled
+                                }
+                                if (details && details.name) {
+                                    PackageController.setPackageVersionStatus(
+                                        details.name,
+                                        versionData.version,
+                                        versionData.arch,
+                                        versionData.repoAlias,
+                                        target
+                                    )
+                                }
+                            }
 
                             /**
                              * @brief 選択バージョンをC++側へ設定し、非同期更新後に選択位置を同期する
@@ -435,6 +468,12 @@ Pane {
                              * @note PackageController::setPackageVersionを呼び、選択位置を後で同期する
                              */
                             function selectVersion(idx, versionData) {
+                                // 複数版対応ではラジオではなくチェックボックスで版ごとに切り替える
+                                if (multiversionMode) {
+                                    cycleStatus(versionData)
+                                    return
+                                }
+
                                 // 同じ行の再選択では何もしない
                                 if (selectedIndex === idx) {
                                     return
@@ -443,7 +482,7 @@ Pane {
                                 selectedIndex = idx
                                 var d = details
 
-                                // パッケージを表示中の場合は、PackageController::setPackageVersion()で選択した版を設定する
+                                // 表示中のパッケージがある場合は、PackageController::setPackageVersion()で選択した版を設定する
                                 if (d && d.name) {
                                     PackageController.setPackageVersion(
                                         d.name,
@@ -462,6 +501,12 @@ Pane {
                              * @note インストール/更新対象なら候補バージョン、それ以外はインストール済みバージョンを選択する
                              */
                             function syncSelection() {
+                                // 複数版対応ではチェックボックスの状態がモデルのstatusを直接反映するため同期しない
+                                if (multiversionMode) {
+                                    selectedIndex = -1
+                                    return
+                                }
+
                                 var d = details
                                 var versions = (d && d.availableVersions) || []
                                 var idx = -1
@@ -481,7 +526,8 @@ Pane {
                                         }
                                     }
                                     else if (d.installedVersion) {
-                                        // installed: いずれかのインストール済みとバージョン・アーキテクチャが一致する (バックエンドで判定)
+                                        // インストール済みの場合は、いずれかのインストール済み版と
+                                        // バージョンとアーキテクチャが一致する行を選ぶ (判定はバックエンド)
                                         // 複数版インストール時は代表版 (installedVersion) を選ぶ
                                         // 優先順:
                                         //   0. 候補と一致するインストール済みの行 (インストール済みの版を選んで「変更なし」にした場合)
@@ -536,7 +582,7 @@ Pane {
                                     }
                                 }
                                 selectedIndex = idx
-                                // 選択行が見えている場合はスクロール位置を動かさない
+                                // 選択行が見つかった場合は、その行が見える位置までスクロールする
                                 if (idx >= 0) {
                                     positionViewAtIndex(idx, ListView.Contain)
                                 }
@@ -560,13 +606,23 @@ Pane {
 
                                 property bool isInstalled: modelData.installed === true            // この候補がインストール済みか
                                 property bool isSelected: versionListView.selectedIndex === index  // 現在選択している候補か
+                                property bool rowMultiversion: modelData.multiversion === true      // この版が複数版同時インストール可能か
+                                property bool isChecked: PackageStatusInfo.isChecked(modelData.status)  // チェックボックス表示状態
 
                                 width: versionListView.width  // リストの幅に合わせる
                                 height: 32                    // 行の高さ
+                                // 複数版対応時はmultiversion非対応行を操作不可にする
+                                enabled: !versionListView.multiversionMode || rowMultiversion
+                                ToolTip.visible: hovered && versionListView.multiversionMode && !rowMultiversion
+                                ToolTip.text: qsTr("This version cannot be installed independently")
 
-                                // 行のクリックでこの候補バージョンを選択する
+                                // 複数版対応ではチェックボックス、通常はラジオボタンで状態を切り替える
                                 onClicked: {
-                                    versionListView.selectVersion(index, modelData)
+                                    if (versionListView.multiversionMode) {
+                                        versionListView.cycleStatus(modelData)
+                                    } else {
+                                        versionListView.selectVersion(index, modelData)
+                                    }
                                 }
 
                                 // 各列のセルを横に並べる
@@ -582,6 +638,7 @@ Pane {
                                         // ラジオボタンの外枠 (選択中は選択色)
                                         Rectangle {
                                             anchors.centerIn: parent  // セルの中央に配置する
+                                            visible: !versionListView.multiversionMode  // 複数版対応時はチェックボックスを使う
                                             width: 16                 // 外枠の幅
                                             height: 16                // 外枠の高さ
                                             color: "transparent"      // 内側は塗りつぶさない
@@ -604,11 +661,24 @@ Pane {
                                         // ラジオボタンのクリックでこの候補バージョンを選択する
                                         MouseArea {
                                             anchors.fill: parent                // ラジオ列全体で受け付ける
+                                            visible: !versionListView.multiversionMode  // 複数版対応時はチェックボックスを使う
                                             cursorShape: Qt.PointingHandCursor  // クリックできることを示す指差しカーソル
 
-                                            // この候補バージョンを選択する
                                             onClicked: {
                                                 versionListView.selectVersion(index, modelData)
+                                            }
+                                        }
+
+                                        // 複数版対応時のチェックボックス (行のクリックと同じ切り替えを行う)
+                                        CheckBox {
+                                            anchors.centerIn: parent  // セルの中央に配置する
+                                            visible: versionListView.multiversionMode  // 複数版対応時のみ表示する
+                                            checked: isChecked        // 現在の版の選択状態
+                                            padding: 0                // 余白を詰めて列に収める
+
+                                            // 行のクリックと同じ規則で版単位の状態を切り替える
+                                            onClicked: {
+                                                versionListView.cycleStatus(modelData)
                                             }
                                         }
                                     }
@@ -705,13 +775,26 @@ Pane {
                                         width: versionPane.colStatus - 1  // Status列の幅 (区切り線の1pxを除く)
                                         height: parent.height             // 行の高さに合わせる
 
-                                        // インストール済みの候補のみ[Installed]と表示する
+                                        // 複数版対応時は版ごとの選択状態、通常はインストール済み表示
                                         Label {
                                             anchors.verticalCenter: parent.verticalCenter  // 上下中央に配置する
                                             anchors.left: parent.left                      // セルの左端を基準にする
                                             anchors.leftMargin: 4                          // 左側の余白
-                                            text: isInstalled ? qsTr("Installed") : ""     // インストール済みの場合のみ表示する文字列
-                                            color: "#4caf50"                               // インストール済みを示す緑色
+                                            text: versionListView.multiversionMode
+                                                  ? PackageStatusInfo.label(modelData.status)
+                                                  : (isInstalled ? qsTr("Installed") : "")
+                                            color: {
+                                                // 複数版対応時は削除予定を赤、選択済みを緑、未選択を控えめな色で示す
+                                                if (versionListView.multiversionMode) {
+                                                    if (PackageStatusInfo.isMarkedForRemoval(modelData.status)) {
+                                                        return "#e57373"
+                                                    }
+
+                                                    return isChecked ? "#4caf50" : palette.placeholderText
+                                                }
+
+                                                return "#4caf50"
+                                            }
                                             font.pixelSize: 12                             // 文字サイズ
                                         }
                                     }

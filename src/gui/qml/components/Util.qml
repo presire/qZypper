@@ -6,8 +6,8 @@ pragma Singleton
  * Main.qmlの各ビューからUtil.xxxの形で参照される
  * バイト数の整形、インストール概要モデルの生成、パッケージ詳細HTMLの組み立てを担当する
  *
- * 入力 : なし (各関数の引数で受け取る)
- * 出力 : なし (整形結果の文字列や配列を返すのみ)
+ * 入力 : なし (各関数が引数で受け取る)
+ * 出力 : 整形した文字列や配列を返す (シグナルは発行しない)
  * 依存 : PackageController (packages, pendingChanges, openExternalUrl)
  */
 import QtQuick
@@ -20,7 +20,7 @@ QtObject {
     /**
      * @brief バイト数を人間可読な単位へ整形する
      * @param bytes バイト数
-     * @return 1024進、小数1桁の文字列 (1024未満は整数)
+     * @return 1024で換算した値に単位を付けた文字列 (1024未満は小数なし)
      */
     function formatBytes(bytes) {
         // 0バイトは単位換算せずにそのまま返す
@@ -43,7 +43,7 @@ QtObject {
     /**
      * @brief サイズ列用にバイト数を整形する
      * @param bytes バイト数
-     * @return B/KiB/MiB/GiBのいずれかを付けた文字列
+     * @return B、KiB、MiB、GiBのいずれかの単位を付けた文字列
      */
     function formatSize(bytes) {
         // 1KiB未満はバイト単位で表示する
@@ -67,10 +67,10 @@ QtObject {
     /**
      * @brief 変更予定パッケージからインストール概要モデルを生成する
      * @return category/name/versionを持つオブジェクトの配列
-     * @note 戻り値はSummaryViewのmodelに直接バインドされるため、PackageControllerの変更通知で再評価される必要がある
+     * @note 戻り値はSummaryViewのmodelへ直接バインドされるため、PackageControllerの変更通知のたびに再評価される
      */
     function buildSummaryModel() {
-        // PackageController.packagesを参照してバインディング再評価をトリガー
+        // PackageController.packagesを参照し、変更時のバインディング再評価を促す
         var _trigger = PackageController.packages
         var installs = [], updates = [], deletes = []
 
@@ -94,7 +94,7 @@ QtObject {
             }
         }
 
-        // カテゴリ順 : インストール -->更新 -->削除
+        // 並び順 : インストール --> 更新 --> 削除
         return installs.concat(updates, deletes)
     }
 
@@ -113,6 +113,23 @@ QtObject {
         html += "<tr><td><b>" + qsTr("Vendor") + ":</b></td><td>" + escapeHtml(d.vendor) + "</td></tr>"
         html += "<tr><td><b>" + qsTr("Build Host") + ":</b></td><td>" + escapeHtml(d.buildHost) + "</td></tr>"
         html += "<tr><td><b>" + qsTr("Source RPM") + ":</b></td><td>" + escapeHtml(d.sourceRpm) + "</td></tr>"
+
+        // 技術情報 (未設定や0の項目は行ごと省略する)
+        if (d.installSize > 0) {
+            html += "<tr><td><b>" + qsTr("Size") + ":</b></td><td>" + escapeHtml(formatSize(d.installSize)) + "</td></tr>"
+        }
+
+        if (d.downloadSize > 0) {
+            html += "<tr><td><b>" + qsTr("Download Size") + ":</b></td><td>" + escapeHtml(formatSize(d.downloadSize)) + "</td></tr>"
+        }
+
+        if (d.buildTime) {
+            html += "<tr><td><b>" + qsTr("Build Time") + ":</b></td><td>" + escapeHtml(d.buildTime) + "</td></tr>"
+        }
+
+        if (d.installTime) {
+            html += "<tr><td><b>" + qsTr("Install Time") + ":</b></td><td>" + escapeHtml(d.installTime) + "</td></tr>"
+        }
 
         var urlVal = d.url || ""
 
@@ -194,10 +211,10 @@ QtObject {
      * @brief URLがhttpまたはhttpsスキームかを判定する
      * @param u 判定するURL
      * @return http/httpsならtrue (大文字小文字は区別しない)
-     * @note file: やjavascript: などローカル資源やスクリプトを指すスキームを除外する
+     * @note fileスキームやjavascriptスキームなど、ローカル資源やスクリプトを指すスキームを除外する
      */
     function isSafeUrl(u) {
-        // nullとundefinedは安全なURLではない
+        // nullとundefinedは安全なURLとみなさない
         if (u === null || u === undefined) {
             return false
         }
@@ -209,7 +226,7 @@ QtObject {
      * @brief 安全と判定したURLだけを外部ブラウザで開く
      * @param link 開くURL
      * @note PackageController::openExternalUrlを呼び出す
-     *       それ以外のスキームは無視する
+     *       安全なURLと判定しなかったものは開かない
      */
     function openSafeUrl(link) {
         // http/httpsのURLのみ外部ブラウザで開く

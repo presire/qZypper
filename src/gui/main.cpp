@@ -19,7 +19,7 @@ namespace {
  *
  * UNIXシグナルハンドラからはasync-signal-safeな操作しか
  * 実行できないため、パイプに1バイト書き込むだけで復帰する
- * 読み出し側をQSocketNotifierで監視し、Qtイベントループ内でQCoreApplication::quit()を呼ぶ
+ * 読み出し側をQSocketNotifierで監視し、Qtイベントループ内でQCoreApplication::exit()を呼ぶ
  */
 int g_signalPipe[2] = {-1, -1};
 
@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     // SIGINT ([Ctrl] + [C]) / SIGTERMハンドラを登録
-    // self-pipeにバイトを書き込み、QSocketNotifierがQtイベントループにおいて、これを読み取りquit()を呼ぶ
+    // self-pipeへバイトを書き込み、QSocketNotifierがQtイベントループ内でこれを受信して読み取り、exit()を呼ぶ
     if (::pipe(g_signalPipe) == 0) {
         struct sigaction sa;
         sa.sa_handler = unixSignalHandler;
@@ -66,7 +66,9 @@ int main(int argc, char *argv[])
             ssize_t n = ::read(int(qintptr(fd)), &c, sizeof(c));
             (void)n;
             notifier->setEnabled(false);
-            QCoreApplication::quit();
+            // quit()はウィンドウのcloseを経由し、未適用の変更の確認ダイアログで停止するため、exit()で確認を迂回して終了する
+            // (バックエンドはセッション所有者の切断を検出して選択状態を破棄する)
+            QCoreApplication::exit(0);
         });
     }
 
@@ -90,7 +92,7 @@ int main(int argc, char *argv[])
         app.installTranslator(&translator);
     }
 
-    // Fusionスタイルをデフォルトへ (SUSEテーマとの親和性)
+    // Fusionスタイルを既定とする (SUSEテーマとの親和性のため)
     QQuickStyle::setStyle("Fusion");
 
     QQmlApplicationEngine engine;
@@ -105,7 +107,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("qtVersion", QString(qVersion()));
 
     // システムのカラースキームを検出してQMLに渡す
-    // Qt.styleHints.colorSchemeが正しく検出できない環境向けのフォールバック
+    // styleHints()のcolorScheme()が正しく検出できない環境向けのフォールバック
     bool systemDarkMode = app.styleHints()->colorScheme() == Qt::ColorScheme::Dark;
     if (!systemDarkMode) {
         // gsettingsからGNOME/GTKのテーマ設定を確認

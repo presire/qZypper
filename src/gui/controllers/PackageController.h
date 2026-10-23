@@ -1,3 +1,15 @@
+/**
+ * @file PackageController.h
+ * @brief QMLから利用するパッケージ管理コントローラの宣言
+ *
+ * DBusClientを介してバックエンドと通信し、パッケージ、リポジトリ、サービス、
+ * パターン、パッチ、ロック、言語サポートの状態をQMLプロパティとして公開する
+ * 破壊的な操作はすべて非同期で実行し、結果はシグナルで通知する
+ *
+ * 入力 : QMLからのメソッド呼び出し、D-Busシグナル
+ * 出力 : Q_PROPERTYの変更通知と各操作の完了シグナル
+ * 依存 : Qt Core / Qt Qml、DBusClient、PackageListModel、PackageFilterProxyModel
+ */
 #ifndef QZYPPER_GUI_CONTROLLERS_PACKAGECONTROLLER_H
 #define QZYPPER_GUI_CONTROLLERS_PACKAGECONTROLLER_H
 
@@ -37,12 +49,15 @@ class PackageController : public QObject
     Q_PROPERTY(QVariantList repos READ repos NOTIFY reposChanged)
     Q_PROPERTY(QVariantList services READ services NOTIFY servicesChanged)
     Q_PROPERTY(QVariantList patterns READ patterns NOTIFY patternsChanged)
+    // 製品一覧 (読み取り専用、loadProducts()で遅延取得する)
+    Q_PROPERTY(QVariantList products READ products NOTIFY productsChanged)
     Q_PROPERTY(QVariantMap currentPackageDetails READ currentPackageDetails NOTIFY currentPackageDetailsChanged)
     Q_PROPERTY(bool hasPendingChanges READ hasPendingChanges NOTIFY pendingChangesChanged)
     Q_PROPERTY(QVariantList pendingChanges READ pendingChanges NOTIFY pendingChangesChanged)
     Q_PROPERTY(QVariantList pendingLocaleChanges READ pendingLocaleChanges NOTIFY pendingLocaleChangesChanged)
     Q_PROPERTY(QVariantList diskUsage READ diskUsage NOTIFY diskUsageChanged)
     Q_PROPERTY(QVariantMap commitResult READ commitResult NOTIFY commitResultChanged)
+    Q_PROPERTY(QStringList rejectedLicensePackages READ rejectedLicensePackages NOTIFY rejectedLicensePackagesChanged)  // 拒否済みライセンス候補
     Q_PROPERTY(int listGeneration READ listGeneration NOTIFY packagesChanged)
     Q_PROPERTY(QObject *packageModel READ packageModel CONSTANT)
     Q_PROPERTY(QObject *packageProxy READ packageProxy CONSTANT)
@@ -70,6 +85,12 @@ public:
     QVariantList repos() const { return m_repos; }                           // リポジトリ一覧
     QVariantList services() const { return m_services; }                     // サービス一覧
     QVariantList patterns() const { return m_patterns; }                     // パターン一覧
+
+    /**
+     * @brief 製品一覧のキャッシュを返す
+     * @return 製品一覧
+     */
+    QVariantList products() const { return m_products; }
     QVariantList patches() const { return m_patches; }                       // パッチ一覧
     QVariantList locks() const { return m_locks; }                           // パッケージロック一覧
     QVariantMap transactionSummary() const { return m_transactionSummary; }  // トランザクション概要
@@ -89,6 +110,8 @@ public:
     QVariantList pendingLocaleChanges() const { return m_pendingLocaleChanges; }  // 言語サポート変更予定一覧 (キャッシュ)
     QVariantList diskUsage() const { return m_diskUsage; }                        // ディスク使用量 (キャッシュ)
     QVariantMap commitResult() const { return m_commitResult; }                   // コミット結果
+    /** @brief ライセンス拒否により除外したパッケージ名を返す */
+    QStringList rejectedLicensePackages() const { return m_rejectedLicensePackages; }  // ライセンス拒否による除外
     int listGeneration() const { return m_listGeneration; }                       // パッケージ一覧の世代 (表示集合の作り直し判定用)
     bool hasPendingChanges() const { return m_hasPendingChanges; }                // 変更予定の有無 (キャッシュ、I/Oなし)
     QObject *packageModel() const;                                    // パッケージ一覧モデル (QML公開)
@@ -97,7 +120,7 @@ public:
     QVariantList pendingPrompts() const { return m_prompts; }         // 未応答プロンプトのキュー
     QVariantMap currentPrompt() const;                                // 先頭の未応答プロンプト
 
-    // QMLから呼び出し可能なメソッド (全て非同期、結果はNOTIFYプロパティ/シグナルで通知)
+    // QMLから呼び出し可能なメソッド (全て非同期で、結果はNOTIFYプロパティ/シグナルで通知)
     Q_INVOKABLE void initialize();                                                     // パッケージマネージャ初期化
     Q_INVOKABLE void searchPackages(const QString &query, int flags = 0x07);           // パッケージ検索
     Q_INVOKABLE void loadRepos();                                                      // リポジトリ一覧読込
@@ -105,6 +128,8 @@ public:
     Q_INVOKABLE void loadPackageDetails(const QString &name);                          // パッケージ詳細読込
     Q_INVOKABLE void clearPackageDetails();                                            // パッケージ詳細クリア
     Q_INVOKABLE void loadPatterns();                                                   // パターン一覧読込
+    /** @brief 製品一覧をバックエンドから遅延取得する (読み取り専用) */
+    Q_INVOKABLE void loadProducts();                                                   // 製品一覧読込 (遅延)
     Q_INVOKABLE void loadPackagesByPattern(const QString &patternName);                // パターン別パッケージ読込
     Q_INVOKABLE void loadPatches(int category = -1);                                   // パッチ一覧読込
     Q_INVOKABLE void distUpgrade(bool allowVendorChange);                              // ディストリビューション更新
@@ -119,6 +144,15 @@ public:
     Q_INVOKABLE void addLock(const QVariantMap &lock);                            // ロック追加
     Q_INVOKABLE void removeLock(const QVariantMap &lock);                         // ロック削除
     Q_INVOKABLE void loadHistory(const QVariantMap &filter);                      // 履歴読込
+
+    // 履歴グループ、URL展開プレビュー、コミュニティリポジトリのプリセット
+    // コマンド単位の履歴グループ読込 (historyGroupsReady発行)
+    Q_INVOKABLE void loadHistoryGroups(const QVariantMap &options, int requestId);
+    // URL変数展開プレビュー要求 (要求番号を返し、expandedRepoUrlReady発行)
+    Q_INVOKABLE int requestExpandedRepoUrl(const QString &rawUrl);
+    // コミュニティリポジトリのプリセット読込 (repoPresetsReady発行)
+    Q_INVOKABLE void loadRepoPresets();
+
     Q_INVOKABLE void requestTransactionSummary();                                 // トランザクション概要取得
     Q_INVOKABLE void saveSolverTestcase();                                        // ソルバーテストケース保存
     Q_INVOKABLE void installLocalRpms(const QVariantList &fileUrls);              // ローカルRPMを選択 (localRpmsFinished発行)
@@ -130,11 +164,22 @@ public:
                                        const QString &version,
                                        const QString &arch,
                                        const QString &repoAlias);
+    Q_INVOKABLE void setPackageVersionStatus(const QString &name,             // 特定版の選択状態変更
+                                             const QString &version,
+                                             const QString &arch,
+                                             const QString &repoAlias,
+                                             int status);
     Q_INVOKABLE void togglePatternStatus(const QString &patternName);         // パターン状態トグル
     Q_INVOKABLE void updateAllPackages();                                     // 全パッケージ更新 (updateAllFinished発行)
     Q_INVOKABLE void resolveDependencies();                                   // 依存関係解決 (resolveFinished発行)
     Q_INVOKABLE void applySolution(int problemIndex, int solutionIndex);      // 解決策適用
     Q_INVOKABLE void prepareCommit();                                         // コミット用リビジョン取得 (commitPrepared発行)
+    /**
+     * @brief 編集へ戻る際にライセンス確認とコミット準備を破棄する
+     * @note m_commitPreparationGenerationを進め、遅延D-Bus応答を無効にする
+     * @note m_commitRevisionとm_rejectedLicensePackagesをクリアして通知する
+     */
+    Q_INVOKABLE void resetCommitPreparation();  // 編集へ戻る際の確認状態破棄
     Q_INVOKABLE void commitAsync();                                           // 変更を非同期コミット
     Q_INVOKABLE void trustKey(const QString &fingerprint);                    // 署名鍵を信頼 (keyTrustFinished発行)
     Q_INVOKABLE void cancelOperation();                                       // 操作キャンセル
@@ -165,6 +210,11 @@ public:
     Q_INVOKABLE void answerPrompt(uint promptId, const QString &action);    // プロンプトへ応答
     Q_INVOKABLE void openExternalUrl(const QString &url);                   // http(s) URLをポータル経由で開く
     Q_INVOKABLE void releaseSession();                                      // 編集セッションを解放
+    /**
+     * @brief 終了前に変更予定を最新状態へ更新し、結果をexitCheckFinishedで通知する
+     * @note 取得中はbusyをtrueにし、新しい編集要求を受け付けない
+     */
+    Q_INVOKABLE void checkPendingChangesForExit();                          // 終了前に最新の変更予定を確認
     Q_INVOKABLE void retryOperation();                                      // ロック等で失敗した操作を再試行
 
     // 一括選択 / ソルバー設定 / RPMグループ / 言語サポート
@@ -178,7 +228,8 @@ public:
     Q_INVOKABLE void loadPackagesByRpmGroup(const QString &path);            // グループ別パッケージ読込
     Q_INVOKABLE void loadLocales();                                          // 言語サポート一覧読込
     Q_INVOKABLE void loadPackagesByLocale(const QString &code);              // ロケール別パッケージ読込
-    Q_INVOKABLE void setLocaleRequested(const QString &code, bool requested);// 言語サポート要求状態変更
+    // 言語サポート要求状態変更
+    Q_INVOKABLE void setLocaleRequested(const QString &code, bool requested);
     Q_INVOKABLE void refreshUpdateCount();                                   // 更新可能パッケージ数取得
     Q_INVOKABLE void refreshReposIfNeeded();                                 // 期限切れリポジトリのみリフレッシュ
     Q_INVOKABLE void runStartupTasks(int installRecommends,                  // 起動時処理 (設定/リフレッシュ/件数)
@@ -194,8 +245,9 @@ signals:
     void reposChanged();                                    // リポジトリ一覧変更
     void servicesChanged();                                 // サービス一覧変更
     void patternsChanged();                                 // パターン一覧変更
+    void productsChanged();                                 // 製品一覧変更
     void currentPackageDetailsChanged();                    // パッケージ詳細変更
-    void pendingChangesChanged();                           // 変更予定一覧 / 有無変更
+    void pendingChangesChanged();                           // 変更予定一覧または有無の変更
     void pendingLocaleChangesChanged();                     // 言語サポート変更予定一覧変更
     void diskUsageChanged();                                // ディスク使用量変更
 
@@ -221,6 +273,12 @@ signals:
     void updateAllFinished(const QVariantMap &result);      // 全更新完了 (success/problems/backendCrashed)
     void resolveFinished(const QVariantMap &result);        // 依存解決完了 (success/problems/backendCrashed)
     void commitPrepared(bool ok);                           // コミット準備完了 (リビジョン取得成功)
+    /** @brief 拒否後の通常依存関係解決をQMLへ要求する */
+    void licenseResolveRequired();
+    /** @brief 拒否後に適用対象が無くなったことをQMLへ通知する */
+    void noChangesLeftToApply();
+    /** @brief ライセンス拒否による除外一覧の変更をQMLへ通知する */
+    void rejectedLicensePackagesChanged();
     void addRepoFinished(bool success);                     // リポジトリ追加完了
     void addServiceFinished(bool success);                  // サービス追加完了
     void keyTrustFinished(bool success);                    // 署名鍵承認完了
@@ -229,6 +287,7 @@ signals:
     void pendingPromptsChanged();                                  // プロンプトキュー変更
     void promptRequested(const QVariantMap &prompt);               // 対話プロンプト要求
     void sessionReleased(bool released);                           // 編集セッション解放完了
+    void exitCheckFinished(bool ok, bool hasPendingChanges);       // 終了前の変更予定確認完了
     void packageLocked(const QVariantMap &lockInfo);               // Zyppロック検出
     void poolReloaded();                                           // プール再読込通知
     void patchesChanged();                                         // パッチ一覧更新
@@ -239,6 +298,14 @@ signals:
     void verifyFinished(const QVariantMap &result);                // システム検証結果
     void selectPatchesFinished(const QVariantMap &result);         // パッチ一括選択結果
     void historyResultReady(const QVariantList &entries);          // 履歴取得結果
+
+    // 履歴グループ取得結果 (空マップは失敗)
+    void historyGroupsReady(int requestId, const QVariantMap &result);
+    // URL展開プレビュー結果 (空は展開なしまたは失敗)
+    void expandedRepoUrlReady(int requestId, const QString &rawUrl, const QString &expandedUrl);
+    // コミュニティリポジトリのプリセット一覧
+    void repoPresetsReady(const QVariantList &presets);
+
     void lockFinished(bool success);                               // ロック追加/削除結果
     void solverTestcaseCreated(const QString &path);               // テストケース保存パス
     void scriptOutputReceived(const QVariantMap &line);            // RPMスクリプト出力 (1行)
@@ -248,7 +315,7 @@ signals:
     void repoFileImported(const QVariantMap &result);              // .repo取込結果 (success/added/skipped)
 
     void solverSettingsChanged();                                  // ソルバー設定変更
-    void solverOptionApplied(const QString &key, bool value);      // ソルバー設定1項目のバックエンドへの適用成功
+    void solverOptionApplied(const QString &key, bool value);      // ソルバー設定1項目のバックエンド適用成功
     void updateCountChanged();                                     // 更新可能パッケージ数変更
     void rpmGroupsChanged();                                       // RPMグループツリー変更
     void localesChanged();                                         // 言語サポート一覧変更
@@ -341,6 +408,8 @@ private:
     QVariantList m_repos;                                            // リポジトリ一覧キャッシュ
     QVariantList m_services;                                         // サービス一覧キャッシュ
     QVariantList m_patterns;                                         // パターン一覧キャッシュ
+    QVariantList m_products;                                         // 製品一覧キャッシュ
+    bool m_productsLoaded = false;                                   // 製品一覧を読み込み済みか
     QVariantList m_patches;                                          // パッチ一覧キャッシュ
     int m_patchCategory = -1;                                        // 表示中のパッチカテゴリ (-1 = 全て)
     QVariantList m_locks;                                            // ロック一覧キャッシュ
@@ -353,6 +422,8 @@ private:
     QVariantMap m_commitResult;                                      // コミット結果
     bool m_hasPendingChanges = false;                                // 変更予定有無キャッシュ
     quint64 m_commitRevision = 0;                                    // コミット用選択リビジョン (0 = 未確定)
+    quint64 m_commitPreparationGeneration = 0;                       // 再読込・中断後の遅延結果を無効化
+    QStringList m_rejectedLicensePackages;                           // 確認ループ全体の拒否済みパッケージ
     PackageSource m_lastSource = PackageSource::None;                // 最後のパッケージソース
     QString m_lastSourceParam;                                       // 最後のソースパラメータ
     int m_lastSearchFlags = 0x07;                                    // 最後の検索フラグ
@@ -366,6 +437,7 @@ private:
     bool m_pendingRefreshQueued = false;                             // 変更予定取得の再要求が待機中
     std::vector<std::function<void(bool)>> m_pendingRefreshWaiters;  // 変更予定取得完了の待機者
     quint64 m_repoPreviewRequest = 0;                                // .repoプレビュー読み込みの最新要求番号
+    int m_expandedUrlRequest = 0;                                    // URL展開プレビューの最新要求番号 (全プレビュー部品で共通)
     QVariantMap m_solverSettings;                                    // ソルバー設定キャッシュ
     int m_updateCount = -1;                                          // 更新可能パッケージ数 (-1 = 不明)
     QVariantList m_rpmGroups;                                        // RPMグループツリーキャッシュ

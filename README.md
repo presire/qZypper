@@ -74,22 +74,30 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 - 2-step wizard for adding repositories (URL, then properties) with URL scheme validation
 - Refresh individual or all repositories with progress indication
 - Configure priority, auto-refresh, and package caching per repository
+- Preview of the URL with repository variables such as `${releasever}` expanded (the raw URL is stored)
+- Community repository presets (Packman, VideoLAN, nVidia, and more) for openSUSE Tumbleweed and Leap 16
 
 ### Service Management
 
-- Add, remove, and modify RIS/plugin package services
+- Add, remove, and modify RIS package services
+- List and refresh plugin services provided by installed packages (they cannot be added, removed, or modified)
 - Refresh services (auto-adds associated repositories)
 
 ### Pattern & Patch Management
 
 - Browse and install software patterns grouped by category
-- View and apply patches by category: security, recommended, optional, feature
+- View and apply patches by category: security, recommended, optional, feature, document, YaST
+- View installed and available products, with the base product marked (read-only)
 
 ### Dependency Resolution
 
 - Automatic dependency resolution via libzypp solver
 - Interactive conflict resolution with multiple solution options
 - Preview pending changes before committing
+- Confirm license agreements before applying changes. A rejected license excludes the package (Taboo for a new package, Protected for an update), the solver runs again, and the remaining changes continue
+- Choose Abort, Retry, or Ignore when downloading, installing, or removing a package fails
+- Install or remove each version of a multiversion package (such as kernels) independently
+- Quitting or ending the session with unapplied changes asks for confirmation
 
 ### Security
 
@@ -109,7 +117,7 @@ with privileged operations handled securely via D-Bus and Polkit authentication.
 
 ### Main Window Tabs
 
-The header toolbar provides eight view tabs.  
+The header toolbar provides nine view tabs.  
 
 | Tab | Description |
 |---|---|
@@ -118,9 +126,10 @@ The header toolbar provides eight view tabs.
 | **Installation Summary** | Review all pending changes (install / update / delete) before committing |
 | **Repository** | Browse packages grouped by repository |
 | **Patterns** | Browse and install software patterns grouped by category |
-| **Patches** | View and apply patches by category: security, recommended, optional, feature |
+| **Patches** | View and apply patches by category: security, recommended, optional, feature, document, YaST |
 | **RPM Groups** | Browse the RPM group hierarchy with package counts |
 | **Languages** | Toggle requested languages and view the packages for each language |
+| **Products** | Installed and available products, with the base product marked (read-only) |
 
 ### Navigation Drawer
 
@@ -128,7 +137,7 @@ The hamburger menu (☰) opens a left-side drawer with the following sections.
 
 - **Packages**: Update All Packages, Distribution Upgrade, Install All Matching -devel/-debuginfo/-debugsource Packages, Install All Recommended Packages, Apply Changes
 - **Options**: Install Recommended Packages, Clean Up Dependencies When Deleting (this session), Allow Vendor Change (this session), Show -devel Packages, Show -debuginfo/-debugsource Packages, Refresh Repositories at Startup
-- **Settings**: Manage Repositories, Refresh Repositories, Install Local RPM Files, Package Locks, Installation History, Verify System
+- **Settings**: Manage Repositories, Refresh Repositories, Install Local RPM Files, Package Locks, Installation History (date tree and grouping by command), Verify System
 - **Help**: About qZypper, About Qt
 - **Quit**
 
@@ -137,7 +146,7 @@ The hamburger menu (☰) opens a left-side drawer with the following sections.
 A full-screen right-side drawer with two tabs.  
 
 - **Repositories** — List, add, remove, and edit repositories with a properties panel (priority, enabled, auto-refresh, keep packages)
-- **Services** — List, add, remove, and refresh RIS/plugin package services
+- **Services** — List, add, remove, and refresh RIS package services; list and refresh plugin services
 
 ### Package Details Pane
 
@@ -146,9 +155,9 @@ The bottom pane displays detailed information for the selected package across si
 | Tab | Content |
 |---|---|
 | **Description** | Package name, summary, and full description |
-| **Technical Data** | Size, architecture, vendor, build time, etc. |
+| **Technical Data** | Version, architecture, license, group, vendor, build host, build time, install time, size, download size, source RPM, URL |
 | **Dependencies** | Requires, provides, conflicts, obsoletes |
-| **Version** | Available versions from all repositories with version selection |
+| **Version** | Available versions from all repositories with version selection; check boxes per version for multiversion packages |
 | **File List** | Files included in the package |
 | **Changelog** | Package change history |
 

@@ -1,3 +1,14 @@
+/**
+ * @file PackageController.cpp
+ * @brief パッケージ管理コントローラの構築、初期化、再接続、起動時処理の実装
+ *
+ * D-Busシグナルの中継、バックエンド切断時の後始末、テーマ適用、
+ * 対話プロンプトの管理、起動時処理の段階実行を担当する
+ *
+ * 入力 : DBusClientからのシグナルと完了コールバック、QMLからの要求
+ * 出力 : QMLプロパティの更新とシグナル
+ * 依存 : Qt Core / Qt Gui、DBusClient、PackageListModel、PackageFilterProxyModel
+ */
 #include <QDebug>
 #include <QUrl>
 #include <QGuiApplication>
@@ -60,11 +71,18 @@ PackageController::PackageController(QObject *parent)
     connect(m_dbus, &DBusClient::promptClosed,
             this, &PackageController::removePrompt);
     connect(m_dbus, &DBusClient::poolReloaded,
-            this, [this]() {
+             this, [this]() {
+        resetCommitPreparation();
         refreshPackageStatuses(true);
         refreshPendingChanges();
         refreshUpdateCount();
         loadPatterns();
+
+        // 製品一覧はProductsタブを一度表示した場合のみ更新する (未表示なら読み込みもしない)
+        if (m_productsLoaded) {
+            // PackageController::loadProducts()で最新の製品一覧を取得する
+            loadProducts();
+        }
         emit poolReloaded();
     });
     connect(m_dbus, &DBusClient::packageLocked,
@@ -82,6 +100,7 @@ PackageController::PackageController(QObject *parent)
         // 旧バックエンドで実行中だった操作は結果を受け取れないため、ビジー状態と改訂番号を初期化する
         setBusy(false);
         m_commitRevision = 0;
+        resetCommitPreparation();
         setStatusMessage(tr("Backend reconnected"));
         // 新しいバックエンドはprompt IDを1から再利用するため、旧プロンプトは破棄する
         clearPrompts();
@@ -106,6 +125,7 @@ PackageController::PackageController(QObject *parent)
         // 切断したバックエンドのプロンプトへの回答が別プロセスの同一IDへ届かないよう全破棄
         clearPrompts();
         m_commitRevision = 0;
+        resetCommitPreparation();
         // 旧セッションで開始した.repoプレビューの結果を、再接続後に表示しない
         ++m_repoPreviewRequest;
         // 実行中の一括操作と起動時処理は結果だけを収集し、通知はbusy解除後に行う
@@ -133,7 +153,7 @@ PackageController::PackageController(QObject *parent)
 
 /**
  * @brief デストラクタ
- *        キャッシュデータをクリアする
+ * キャッシュデータをクリアする
  */
 PackageController::~PackageController()
 {
@@ -519,6 +539,8 @@ bool PackageController::removePrompt(uint promptId)
  *
  * 応答時またはタイムアウト時にsessionReleasedを発行する
  * その後はinitialize()により、再度セッションを開始できる
+ * @note バックエンドが処理中 (Busy) で拒否した場合はセッションが残っているため、状態を保持したままエラーを通知する
+ * @note それ以外の失敗 (バックエンド消失・応答なし・所有者でない) はセッションが既に無いものとして切断状態へ戻す
  */
 void PackageController::releaseSession()
 {
@@ -527,7 +549,16 @@ void PackageController::releaseSession()
         return;
     }
 
-    m_dbus->releaseSession([this](bool ok, const QString &, const QString &, const QVariantList &) {
+    // DBusClient::releaseSessionでReleaseSessionを呼び出し、応答 (またはタイムアウト) をラムダで受け取る
+    m_dbus->releaseSession([this](bool ok, const QString &errorName, const QString &errorMessage, const QVariantList &) {
+        // 処理中のため解放を拒否された場合は、セッションと選択状態がバックエンドに残っているため、切断状態へ戻さない
+        if (!ok && errorName == QLatin1String("org.presire.qzypper.Error.Busy")) {
+            //: %1はバックエンドが返したエラーメッセージ
+            setStatusMessage(tr("Cannot end the editing session: %1").arg(errorMessage));
+            emit sessionReleased(false);
+            return;
+        }
+
         m_connected = false;
         m_initialized = false;
         m_prompts.clear();
@@ -538,6 +569,32 @@ void PackageController::releaseSession()
         emit pendingPromptsChanged();
         setStatusMessage(tr("Editing session ended"));
         emit sessionReleased(ok);
+    });
+}
+
+/**
+ * @brief 終了前に変更予定を最新状態へ更新し、結果をexitCheckFinishedで通知する
+ *
+ * 選択変更の直後はhasPendingChangesのキャッシュが未更新の場合があるため、
+ * 終了やセッション終了の可否を判定する前に変更予定を取得し直す
+ *
+ * @note 取得中はbusyをtrueにし、新しい編集要求を受け付けない
+ * @note 完了時にexitCheckFinished (取得成否、変更予定の有無) を発行する
+ */
+void PackageController::checkPendingChangesForExit()
+{
+    // 未接続の場合は破棄する変更が無いため、取得せずに変更なしとして通知する
+    if (!m_connected) {
+        emit exitCheckFinished(true, false);
+        return;
+    }
+
+    setBusy(true);
+
+    // refreshPendingChangesThen()で呼び出し時点以降の選択状態を反映してから判定する
+    refreshPendingChangesThen([this](bool refreshed) {
+        setBusy(false);
+        emit exitCheckFinished(refreshed, m_hasPendingChanges);
     });
 }
 
@@ -554,7 +611,7 @@ void PackageController::retryOperation()
 
 /**
  * @brief 外部URLをユーザセッションのWebブラウザで開く
- * @param url 開くURL (http / httpsのみ許可)
+ * @param url 開くURL (http/httpsのみ許可)
  * @note xdg-desktop-portalのOpenURIが失敗した場合は、QDesktopServicesにフォールバックする
  */
 void PackageController::openExternalUrl(const QString &url)
@@ -822,6 +879,7 @@ bool PackageController::takeStartupFinish(quint64 generation, bool &refreshRan)
  * @param refreshOk リフレッシュ段階の成否
  *
  * リフレッシュ段階を実行した場合のみrefreshFinishedを発行する
+ * 開始時の読み込み中メッセージが残っている場合はReadyへ戻す
  * 完了時はbusyを解除しstartupTasksFinishedを発行する
  * 世代を進めることで遅延して届く応答を無視する
  */
@@ -833,6 +891,11 @@ void PackageController::finishStartupTasks(quint64 generation, bool refreshOk)
     }
     if (refreshRan) {
         emit refreshFinished(refreshOk);
+    }
+
+    // 途中の段階で別のメッセージ (リフレッシュ完了やエラー等) へ変わった場合は、そのメッセージを残す
+    if (m_statusMessage == tr("Loading package manager settings...")) {
+        setStatusMessage(tr("Ready"));
     }
     setBusy(false);
     emit startupTasksFinished();

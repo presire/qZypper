@@ -19,7 +19,7 @@ namespace qZypper {
 struct SolverResult {
     bool success;                                   // 解決成功フラグ
     std::vector<ConflictInfo> problems;             // 衝突問題のリスト
-    QVariantMap summary;                            // リスクサマリ (TransactionSummary)
+    QVariantMap summary;                            // リスクサマリ(TransactionSummary)
 };
 
 /**
@@ -30,9 +30,9 @@ struct SolverResult {
 struct LocalRpmInstallResult {
     bool success;                                   // 解決成功フラグ
     std::vector<ConflictInfo> problems;             // 衝突問題のリスト
-    QVariantMap summary;                            // リスクサマリ (TransactionSummary)
+    QVariantMap summary;                            // リスクサマリ(TransactionSummary)
     std::vector<std::string> packages;              // 追加対象のパッケージ名
-    std::vector<std::string> unsignedPackages;      // 未署名のパッケージ名 (UIの警告用)
+    std::vector<std::string> unsignedPackages;      // 未署名のパッケージ名(UIの警告用)
 };
 
 /**
@@ -47,19 +47,20 @@ struct CommitResult {
     int updated = 0;                                // 更新件数
     int removed = 0;                                // 削除件数
     std::vector<std::string> failedPackages;        // 失敗したパッケージ名
+    std::vector<std::string> ignoredPackages;       // ユーザが[Ignore]を選択したパッケージ名
     std::vector<std::string> installedPackages;     // インストール済みのパッケージ名
     std::vector<std::string> updatedPackages;       // 更新済みのパッケージ名
     std::vector<std::string> removedPackages;       // 削除済みのパッケージ名
-    quint64 totalInstalledSize = 0;                 // インストールサイズの合計 (bytes)
-    quint64 totalDownloadSize = 0;                  // ダウンロードサイズの合計 (bytes)
-    double elapsedSeconds = 0.0;                    // 経過時間 (秒)
+    quint64 totalInstalledSize = 0;                 // インストールサイズの合計(bytes)
+    quint64 totalDownloadSize = 0;                  // ダウンロードサイズの合計(bytes)
+    double elapsedSeconds = 0.0;                    // 経過時間(秒)
     std::string errorMessage;                       // エラーメッセージ
-    QStringList scriptOutput;                       // スクリプト出力 (最新500行)
-    QStringList rpmMessages;                        // rpmメッセージ (最新500行)
+    QStringList scriptOutput;                       // スクリプト出力(最新500行)
+    QStringList rpmMessages;                        // rpmメッセージ(最新500行)
     bool scriptOutputTruncated = false;             // 出力が上限で切り捨てられたか
     bool rebootNeeded = false;                      // 再起動が必要か
-    bool restartSuggested = false;                  // 再起動が推奨されるか (パッチ)
-    QStringList servicesToRestart;                  // 再起動が必要なSystemdサービスユニット
+    bool restartSuggested = false;                  // 再起動が推奨されるか(パッチ)
+    QStringList servicesToRestart;                  // 再起動が必要なsystemdサービスユニット
     std::vector<SnapshotEntry> snapshots;           // コミットで作成されたスナップショット
 };
 

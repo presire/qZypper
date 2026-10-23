@@ -19,7 +19,7 @@ RowLayout {
     property string currentScheme: schemeModel.get(typeCombo.currentIndex).scheme  // 選択中のスキーム
 
     // 選択可能なスキームの一覧
-    // text : 選択欄の表示名、scheme : URLの先頭に付けるスキーム、placeholder : 入力欄の入力例
+    // text: 選択欄の表示名、scheme: URLの先頭に付けるスキーム、placeholder: 入力欄の入力例
     readonly property var schemeModel: ListModel {
         // HTTPS
         ListElement {
@@ -83,7 +83,7 @@ RowLayout {
     /**
      * @brief 既存のURLを入力欄へ設定し、スキームに合う選択肢へ切り替える
      * @param newUrl 設定するURL
-     * @note 戻り値は無く、一致するスキームがあると早期に戻る
+     * @note 戻り値は無く、一致するスキームが見つかった時点で処理を終える
      * @note 一致するスキームがなければ選択肢は変更しない
      */
     function setUrl(newUrl) {
@@ -93,6 +93,8 @@ RowLayout {
             var s = root.schemeModel.get(i).scheme + "://"
             if (newUrl.startsWith(s)) {
                 typeCombo.currentIndex = i
+                // スキームの切り替えでURLが置き換わる場合に備えて、設定したいURLを再設定する
+                urlField.text = newUrl
                 return
             }
         }

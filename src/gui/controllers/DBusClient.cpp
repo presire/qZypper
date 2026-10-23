@@ -1,3 +1,15 @@
+/**
+ * @file DBusClient.cpp
+ * @brief D-Busクライアントの非同期呼び出しと応答の正規化の実装
+ *
+ * バックエンドのPackageManagerインターフェースをsystem bus経由で呼び出し、
+ * QDBusArgumentの入れ子をQVariantMap / QVariantListへ展開する
+ * バックエンドは同時に1操作しか受け付けないため、呼び出しを直列化する
+ *
+ * 入力 : メソッド名と引数、完了コールバック
+ * 出力 : 正規化済みの戻り値、D-Busシグナルの中継
+ * 依存 : Qt D-Bus、qzypper-backend (org.presire.qzypper)
+ */
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QDBusMetaType>
@@ -136,7 +148,7 @@ static QString describeError(const QDBusError &error)
 }
 
 /**
- * @brief コンストラクタ、バックエンドサービスの登録/解除を監視する
+ * @brief コンストラクタ (バックエンドサービスの登録/解除を監視する)
  * @param parent 親オブジェクト
  */
 DBusClient::DBusClient(QObject *parent)
@@ -158,7 +170,7 @@ DBusClient::DBusClient(QObject *parent)
 }
 
 /**
- * @brief デストラクタ、D-Busインターフェースを解放する
+ * @brief デストラクタ (D-Busインターフェースを解放する)
  */
 DBusClient::~DBusClient()
 {
@@ -759,6 +771,34 @@ void DBusClient::setPackageVersion(const QString &name, const QString &version,
 }
 
 /**
+ * @brief 複数版対応パッケージの特定版の選択状態を変更する
+ * @param name パッケージ名
+ * @param version バージョン
+ * @param arch アーキテクチャ
+ * @param repoAlias リポジトリエイリアス
+ * @param status 新しいステータス
+ * @param callback 完了時に呼ばれるコールバック
+ * @note D-Bus応答は非同期で受け取り、成功時はboolの戻り値をコールバックへ渡す
+ */
+void DBusClient::setPackageVersionStatus(const QString &name, const QString &version,
+                                         const QString &arch, const QString &repoAlias,
+                                         int status, ReplyCallback callback)
+{
+    // バックエンドのSetPackageVersionStatusをD-Busで呼び出す
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetPackageVersionStatus");
+    msg << name << version << arch << repoAlias << status;
+
+    // 非同期呼び出しの応答を待ち、成功時のみ先頭のboolを取り出す
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+        }
+    });
+}
+
+/**
  * @brief パターンの状態を変更する
  * @param name パターン名
  * @param status 新しいステータス
@@ -1157,6 +1197,24 @@ void DBusClient::commitAsync(quint64 expectedRevision, ReplyCallback callback)
     });
 }
 
+/**
+ * @brief タイムアウトを設けず、所有者のライセンス回答と準備結果を待つ
+ * @param callback 完了時にQVariantMapの確認結果を受け取るコールバック
+ * @note PackageManagerAdaptor::ConfirmLicensesは所有者の対話を待つため、通常のタイムアウトを適用しない
+ */
+void DBusClient::confirmLicenses(ReplyCallback callback)
+{
+    const auto msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ConfirmLicenses");
+    // PackageManagerAdaptor::ConfirmLicensesを呼び、D-Busのa{sv}応答をQVariantMapへ復元する
+    callAsync(msg, kNoTimeout, [callback](bool ok, const QString &name,
+                                         const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                      ok && !args.isEmpty() ? QVariantList{demarshallMap(args.at(0))} : QVariantList{});
+        }
+    });
+}
+
 // -- 署名鍵 --
 
 /**
@@ -1284,6 +1342,25 @@ void DBusClient::getPackagesByRepo(const QString &repoAlias, ReplyCallback callb
 }
 
 /**
+ * @brief 製品一覧を取得する (読み取り専用)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ */
+void DBusClient::getProducts(ReplyCallback callback)
+{
+    // D-BusのGetProducts呼び出しメッセージを組み立てる
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetProducts");
+
+    // 非同期で応答を待ち、a{sv}の配列をQVariantListへ変換してコールバックへ渡す
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+        }
+    });
+}
+
+/**
  * @brief パターン一覧を取得する
  * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
  */
@@ -1395,6 +1472,67 @@ void DBusClient::getHistory(const QVariantMap &filter, ReplyCallback callback)
         if (callback)
             callback(ok, name, message,
                      ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+    });
+}
+
+/**
+ * @brief zypp操作履歴をコマンド単位のグループで取得する
+ * @param options 絞り込みマップ (since / until : エポックミリ秒、limit、offset、actions、text)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantMap、入れ子のevents配列は再帰的に展開済み)
+ * @note 読取専用のD-Bus呼び出しであり、応答はcallAsyncの完了コールバックで受け取る
+ */
+void DBusClient::getHistoryGroups(const QVariantMap &options, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetHistoryGroups");
+    msg << options;
+
+    // PackageManagerAdaptor::GetHistoryGroupsの応答を受け取り、a{sv}を入れ子ごとQVariantMapへ変換して返す
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallMap(args.at(0)) } : QVariantList{});
+        }
+    });
+}
+
+/**
+ * @brief リポジトリURLの変数 ($releasever等) 展開結果を取得する (読取専用、ネットワークなし)
+ * @param rawUrl 展開前のURL
+ * @param callback 完了時に呼ばれるコールバック (args[0]に展開後のQString、展開の必要がなければ空)
+ * @note 応答はcallAsyncの完了コールバックで受け取る
+ */
+void DBusClient::getExpandedRepoUrl(const QString &rawUrl, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetExpandedRepoUrl");
+    msg << rawUrl;
+
+    // PackageManagerAdaptor::GetExpandedRepoUrlの応答を受け取り、QDBusVariantを外して文字列として返す
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ normalizeDBusValue(args.at(0)).toString() } : QVariantList{});
+        }
+    });
+}
+
+/**
+ * @brief コミュニティリポジトリのプリセット一覧を取得する (読取専用)
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQVariantList)
+ * @note 応答はcallAsyncの完了コールバックで受け取る
+ */
+void DBusClient::getRepoPresets(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetRepoPresets");
+
+    // PackageManagerAdaptor::GetRepoPresetsの応答を受け取り、av形式をQVariantMapのリストへ変換して返す
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &name,
+                                               const QString &message, const QVariantList &args) {
+        if (callback) {
+            callback(ok, name, message,
+                     ok && !args.isEmpty() ? QVariantList{ demarshallArrayOfMaps(args.at(0)) } : QVariantList{});
+        }
     });
 }
 

@@ -3,11 +3,14 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
+#include <vector>
 #include <atomic>
 #include <zypp/Callback.h>
 #include <zypp/ZYppCallbacks.h>
 #include <zypp/sat/Solvable.h>
+#include "CommitInteraction.h"
 
 namespace qZypper {
 
@@ -50,7 +53,8 @@ public:
     InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,        // コンストラクタ
                     int &completedSteps,
                     int totalSteps, const std::atomic<bool> &cancelFlag,
-                    std::string &problemDetail);
+                    PromptAskFn ask, std::string &problemDetail,
+                    std::vector<std::string> &ignoredPackages);
 
     void start(zypp::Resolvable::constPtr resolvable) override;                 // 処理開始の通知
     bool progress(int value, zypp::Resolvable::constPtr resolvable) override;   // 進捗の通知
@@ -66,8 +70,12 @@ private:
     int &m_completedSteps;                  // 完了済みステップ数 (呼び出し元と共有)
     int m_totalSteps;                       // 全アクションステップ数
     const std::atomic<bool> &m_cancelFlag;  // キャンセル要求フラグ
+    PromptAskFn m_ask;                      // エラー時の問い合わせコールバック
     std::string &m_problemDetail;           // エラー詳細を格納する参照
+    std::set<std::string> m_ignoredPkgs;    // [Ignore]したパッケージ名 (完了扱いにしない)
     std::string m_currentPkg;               // 処理中のパッケージ名
+
+    std::vector<std::string> &m_ignoredPackages;  // [Ignore]したパッケージの記録先
 };
 
 /**
@@ -82,7 +90,8 @@ public:
     RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,         // コンストラクタ
                    int &completedSteps,
                    int totalSteps, const std::atomic<bool> &cancelFlag,
-                   std::string &problemDetail);
+                   PromptAskFn ask, std::string &problemDetail,
+                   std::vector<std::string> &ignoredPackages);
 
     void start(zypp::Resolvable::constPtr resolvable) override;                 // 処理開始の通知
     bool progress(int value, zypp::Resolvable::constPtr resolvable) override;   // 進捗の通知
@@ -97,8 +106,12 @@ private:
     int &m_completedSteps;                  // 完了済みステップ数 (呼び出し元と共有)
     int m_totalSteps;                       // 全アクションステップ数
     const std::atomic<bool> &m_cancelFlag;  // キャンセル要求フラグ
+    PromptAskFn m_ask;                      // エラー時の問い合わせコールバック
     std::string &m_problemDetail;           // エラー詳細を格納する参照
+    std::set<std::string> m_ignoredPkgs;    // [Ignore]したパッケージ名 (完了扱いにしない)
     std::string m_currentPkg;               // 処理中のパッケージ名
+
+    std::vector<std::string> &m_ignoredPackages;  // [Ignore]したパッケージの記録先
 };
 
 /**
@@ -113,7 +126,8 @@ public:
     DownloadReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,              // コンストラクタ
                      int &completedSteps,
                      int totalSteps, const std::atomic<bool> &cancelFlag,
-                     std::string &problemDetail);
+                     PromptAskFn ask, std::string &problemDetail,
+                     std::vector<std::string> &ignoredPackages);
 
     void infoInCache(zypp::Resolvable::constPtr resolvable,                            // キャッシュ済みパッケージの通知
                      const zypp::Pathname &localfile) override;
@@ -132,22 +146,27 @@ private:
     int &m_completedSteps;                  // 完了済みステップ数 (呼び出し元と共有)
     int m_totalSteps;                       // 全アクションステップ数
     const std::atomic<bool> &m_cancelFlag;  // キャンセル要求フラグ
+    PromptAskFn m_ask;                      // エラー時の問い合わせコールバック
     std::string &m_problemDetail;           // エラー詳細を格納する参照
+    std::set<std::string> m_ignoredPkgs;    // [Ignore]したパッケージ名 (完了扱いにしない)
     std::string m_currentPkg;               // 処理中のパッケージ名
+
+    std::vector<std::string> &m_ignoredPackages;  // [Ignore]したパッケージの記録先
     int m_retryCount = 0;                   // 現在パッケージのリトライ回数
     zypp::sat::Solvable m_retrySolvable;    // リトライ回数を数えている対象パッケージ
 };
 
 /**
  * @class InstallReceiverSA
- * @brief libzypp InstallResolvableReportSAの受信クラス (SingleTransaction版)
+ * @brief libzypp InstallResolvableReportSAの受信クラス(SingleTransaction版)
  */
 class InstallReceiverSA : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReportSA>
 {
 public:
     InstallReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,      // コンストラクタ
                       int &completedSteps,
-                      int totalSteps, const std::atomic<bool> &cancelFlag);
+                      int totalSteps, const std::atomic<bool> &cancelFlag,
+                      std::string &problemDetail);
 
     void start(zypp::Resolvable::constPtr resolvable,                           // 処理開始の通知
                const zypp::callback::UserData &userData) override;
@@ -162,12 +181,13 @@ private:
     int &m_completedSteps;                  // 完了済みステップ数 (呼び出し元と共有)
     int m_totalSteps;                       // 全アクションステップ数
     const std::atomic<bool> &m_cancelFlag;  // キャンセル要求フラグ
+    std::string &m_problemDetail;           // エラー詳細を格納する参照
     std::string m_currentPkg;               // 処理中のパッケージ名
 };
 
 /**
  * @class RemoveReceiverSA
- * @brief libzypp RemoveResolvableReportSAの受信クラス (SingleTransaction版)
+ * @brief libzypp RemoveResolvableReportSAの受信クラス(SingleTransaction版)
  */
 class RemoveReceiverSA
     : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReportSA>
@@ -175,7 +195,8 @@ class RemoveReceiverSA
 public:
     RemoveReceiverSA(ProgressCallbackFn cb, StateEventCallbackFn stateCb,       // コンストラクタ
                      int &completedSteps,
-                     int totalSteps, const std::atomic<bool> &cancelFlag);
+                     int totalSteps, const std::atomic<bool> &cancelFlag,
+                     std::string &problemDetail);
 
     void start(zypp::Resolvable::constPtr resolvable,                           // 処理開始の通知
                const zypp::callback::UserData &userData) override;
@@ -190,6 +211,7 @@ private:
     int &m_completedSteps;                  // 完了済みステップ数 (呼び出し元と共有)
     int m_totalSteps;                       // 全アクションステップ数
     const std::atomic<bool> &m_cancelFlag;  // キャンセル要求フラグ
+    std::string &m_problemDetail;           // エラー詳細を格納する参照
     std::string m_currentPkg;               // 処理中のパッケージ名
 };
 

@@ -60,17 +60,17 @@
 <context>
     <name>AddRepoDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/AddRepoDialog.qml" line="+30"/>
+        <location filename="../src/gui/qml/dialogs/AddRepoDialog.qml" line="+32"/>
         <source>Add Repository</source>
         <translation>リポジトリの追加</translation>
     </message>
     <message>
-        <location line="+309"/>
+        <location line="+411"/>
         <source>Failed to add repository.</source>
         <translation>リポジトリの追加に失敗しました。</translation>
     </message>
     <message>
-        <location line="-281"/>
+        <location line="-352"/>
         <source>Enter the repository URL</source>
         <translation>リポジトリのURLを入力してください</translation>
     </message>
@@ -80,7 +80,22 @@
         <translation>URLタイプを選択し、リポジトリのURLを入力してください。</translation>
     </message>
     <message>
-        <location line="+28"/>
+        <location line="+13"/>
+        <source>Source:</source>
+        <translation>ソース:</translation>
+    </message>
+    <message>
+        <location line="+10"/>
+        <source>Custom URL</source>
+        <translation>カスタムURL</translation>
+    </message>
+    <message>
+        <location line="+32"/>
+        <source>Third-party repository: its packages are not provided or reviewed by openSUSE. Add it only if you trust the source. You will be asked to confirm its GPG key.</source>
+        <translation>サードパーティのリポジトリです。パッケージはopenSUSEが提供・審査したものではありません。提供元を信頼できる場合のみ追加してください。GPG鍵の確認を求められます。</translation>
+    </message>
+    <message>
+        <location line="+35"/>
         <location line="+200"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
@@ -159,14 +174,19 @@
         <translation>サービスの追加</translation>
     </message>
     <message>
-        <location line="+135"/>
+        <location line="+144"/>
         <source>Failed to add service.</source>
         <translation>サービスの追加に失敗しました。</translation>
     </message>
     <message>
-        <location line="-115"/>
+        <location line="-124"/>
         <source>Enter the service URL and alias</source>
         <translation>サービスの URL とエイリアスを入力してください</translation>
+    </message>
+    <message>
+        <location line="+9"/>
+        <source>Plugin services are provided by installed packages and cannot be added here; use zypper for those.</source>
+        <translation>プラグインサービスはインストール済みパッケージが提供するため、ここでは追加できません。zypperを使用してください。</translation>
     </message>
     <message>
         <location line="+14"/>
@@ -197,12 +217,17 @@
 <context>
     <name>CommitConfirmDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/CommitConfirmDialog.qml" line="+120"/>
+        <location filename="../src/gui/qml/dialogs/CommitConfirmDialog.qml" line="+121"/>
         <source>Confirm Changes</source>
         <translation>変更の確認</translation>
     </message>
     <message>
-        <location line="+20"/>
+        <location line="+21"/>
+        <source>Excluded because the license was declined: %1</source>
+        <translation>ライセンスを拒否したため除外: %1</translation>
+    </message>
+    <message>
+        <location line="+21"/>
         <source>Install: %1, Update: %2, Remove: %3, Downgrade: %4, Vendor change: %5, Architecture change: %6</source>
         <translation>インストール: %1、更新: %2、削除: %3、ダウングレード: %4、ベンダー変更: %5、アーキテクチャ変更: %6</translation>
     </message>
@@ -302,7 +327,7 @@
         <translation>先に危険な変更を確認してください</translation>
     </message>
     <message>
-        <location line="-497"/>
+        <location line="-519"/>
         <source>Remove</source>
         <translation>削除</translation>
     </message>
@@ -325,12 +350,12 @@
 <context>
     <name>CommitProgressDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/CommitProgressDialog.qml" line="+304"/>
+        <location filename="../src/gui/qml/dialogs/CommitProgressDialog.qml" line="+312"/>
         <source>Installing / Removing Packages</source>
         <translation>パッケージをインストール / 削除中</translation>
     </message>
     <message>
-        <location line="-68"/>
+        <location line="-69"/>
         <source>Downloading</source>
         <translation>ダウンロード中</translation>
     </message>
@@ -365,7 +390,7 @@
         <translation>ダウンロード予定</translation>
     </message>
     <message>
-        <location line="+126"/>
+        <location line="+127"/>
         <source>Preparing...</source>
         <translation>準備中...</translation>
     </message>
@@ -385,7 +410,7 @@
         <translation>保留中</translation>
     </message>
     <message>
-        <location line="+75"/>
+        <location line="+77"/>
         <source>Done (%1)</source>
         <translation>完了 (%1)</translation>
     </message>
@@ -396,7 +421,7 @@
         <translation>完了</translation>
     </message>
     <message>
-        <location line="+42"/>
+        <location line="+44"/>
         <source>Package script output (%1 lines)</source>
         <translation>パッケージスクリプトの出力 (%1 行)</translation>
     </message>
@@ -439,7 +464,7 @@
         <translation>警告</translation>
     </message>
     <message>
-        <location line="+68"/>
+        <location line="+70"/>
         <source>Conflict resolution:</source>
         <translation>競合の解決方法:</translation>
     </message>
@@ -507,12 +532,62 @@
 <context>
     <name>HistoryDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/HistoryDialog.qml" line="+107"/>
+        <location filename="../src/gui/qml/dialogs/HistoryDialog.qml" line="+45"/>
+        <source>All</source>
+        <translation>すべて</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>install</source>
+        <translation>インストール</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>remove</source>
+        <translation>削除</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>patch</source>
+        <translation>パッチ</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Repo+</source>
+        <translation>リポジトリ+</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Repo-</source>
+        <translation>リポジトリ-</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Repo-Alias</source>
+        <translation>リポジトリ-エイリアス</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Repo-URL</source>
+        <translation>リポジトリ-URL</translation>
+    </message>
+    <message>
+        <location line="+62"/>
+        <source>&lt;unknown command&gt;</source>
+        <translation>&lt;不明なコマンド&gt;</translation>
+    </message>
+    <message>
+        <location line="+38"/>
+        <source>All loaded (%1)</source>
+        <translation>すべて読み込み済み (%1)</translation>
+    </message>
+    <message>
+        <location line="+209"/>
         <source>Installation History</source>
         <translation>インストール履歴</translation>
     </message>
     <message>
-        <location line="+24"/>
+        <location line="+29"/>
         <source>Filter:</source>
         <translation>フィルター:</translation>
     </message>
@@ -527,7 +602,7 @@
         <translation>履歴のテキストフィルター</translation>
     </message>
     <message>
-        <location line="+10"/>
+        <location line="+31"/>
         <source>Action:</source>
         <translation>アクション:</translation>
     </message>
@@ -537,18 +612,18 @@
         <translation>履歴のアクションフィルター</translation>
     </message>
     <message>
-        <location line="+38"/>
+        <location line="+10"/>
         <source>Since:</source>
         <translation>開始日:</translation>
     </message>
     <message>
-        <location line="+9"/>
-        <location line="+16"/>
+        <location line="+8"/>
+        <location line="+21"/>
         <source>YYYY-MM-DD</source>
         <translation>YYYY-MM-DD</translation>
     </message>
     <message>
-        <location line="-15"/>
+        <location line="-19"/>
         <source>History start date</source>
         <translation>履歴の開始日</translation>
     </message>
@@ -558,7 +633,7 @@
         <translation>この日付以降のエントリのみ表示</translation>
     </message>
     <message>
-        <location line="+5"/>
+        <location line="+10"/>
         <source>Until:</source>
         <translation>終了日:</translation>
     </message>
@@ -573,32 +648,69 @@
         <translation>この日付以前のエントリのみ表示</translation>
     </message>
     <message>
-        <location line="+7"/>
+        <location line="+11"/>
         <source>Query</source>
         <translation>検索</translation>
     </message>
     <message>
-        <location line="+1"/>
+        <location line="+2"/>
         <source>Run history query</source>
         <translation>履歴を検索</translation>
     </message>
     <message>
-        <location line="+19"/>
+        <location line="+41"/>
+        <source>History date navigation</source>
+        <translation>履歴の日付ナビゲーション</translation>
+    </message>
+    <message>
+        <location line="+35"/>
+        <source>Only the loaded range (%1 of %2 command groups) is shown. Older history is not loaded yet.</source>
+        <translation>読み込んだ範囲 (%2件中%1件のコマンドグループ) のみ表示しています。古い履歴はまだ読み込んでいません。</translation>
+    </message>
+    <message>
+        <location line="+2"/>
+        <source>All %1 command groups are loaded.</source>
+        <translation>%1件のコマンドグループをすべて読み込みました。</translation>
+    </message>
+    <message>
+        <location line="+8"/>
         <source>Load More</source>
         <translation>さらに読み込む</translation>
     </message>
     <message>
-        <location line="+1"/>
-        <source>Load more history entries</source>
-        <translation>履歴エントリをさらに読み込む</translation>
+        <location line="+2"/>
+        <source>Load more history groups</source>
+        <translation>履歴グループをさらに読み込む</translation>
     </message>
     <message>
-        <location line="+17"/>
-        <source>Timestamp</source>
-        <translation>日時</translation>
+        <location line="+39"/>
+        <source>Version</source>
+        <translation>バージョン</translation>
     </message>
     <message>
-        <location line="+7"/>
+        <location line="+34"/>
+        <source>History command groups</source>
+        <translation>履歴のコマンドグループ</translation>
+    </message>
+    <message>
+        <location line="+25"/>
+        <source>Collapsed</source>
+        <translation>折りたたみ</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Expanded</source>
+        <translation>展開</translation>
+    </message>
+    <message numerus="yes">
+        <location line="+96"/>
+        <source>%n more event(s) not shown</source>
+        <translation>
+            <numerusform>表示していないイベントがあと%n件あります</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location line="-169"/>
         <source>Action</source>
         <translation>アクション</translation>
     </message>
@@ -608,12 +720,7 @@
         <translation>名前</translation>
     </message>
     <message>
-        <location line="+7"/>
-        <source>Edition</source>
-        <translation>エディション</translation>
-    </message>
-    <message>
-        <location line="+7"/>
+        <location line="+14"/>
         <source>Arch</source>
         <translation>アーキテクチャ</translation>
     </message>
@@ -623,19 +730,14 @@
         <translation>リポジトリ</translation>
     </message>
     <message>
-        <location line="+7"/>
-        <source>Requested By</source>
-        <translation>要求元</translation>
-    </message>
-    <message>
-        <location line="+7"/>
-        <source>Command</source>
-        <translation>コマンド</translation>
-    </message>
-    <message>
-        <location line="+124"/>
+        <location line="+154"/>
         <source>No history entries found</source>
         <translation>履歴エントリが見つかりません</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Failed to load history</source>
+        <translation>履歴を読み込めませんでした</translation>
     </message>
     <message>
         <location line="+11"/>
@@ -646,7 +748,7 @@
 <context>
     <name>InstallationResultDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/InstallationResultDialog.qml" line="+103"/>
+        <location filename="../src/gui/qml/dialogs/InstallationResultDialog.qml" line="+105"/>
         <source>Installation Report</source>
         <translation>インストールレポート</translation>
     </message>
@@ -697,6 +799,11 @@
     </message>
     <message>
         <location line="+10"/>
+        <source>Excluded because the license was declined:</source>
+        <translation>ライセンスを拒否したため除外:</translation>
+    </message>
+    <message>
+        <location line="+6"/>
         <source>Packages</source>
         <translation>パッケージ</translation>
     </message>
@@ -719,6 +826,11 @@
         <location line="+7"/>
         <source>Failed packages: %1</source>
         <translation>失敗したパッケージ: %1</translation>
+    </message>
+    <message>
+        <location line="+7"/>
+        <source>Ignored packages: %1</source>
+        <translation>無視したパッケージ: %1</translation>
     </message>
     <message>
         <location line="+7"/>
@@ -849,7 +961,7 @@
 <context>
     <name>LanguagesView</name>
     <message>
-        <location filename="../src/gui/qml/views/LanguagesView.qml" line="+98"/>
+        <location filename="../src/gui/qml/views/LanguagesView.qml" line="+120"/>
         <source>No languages available</source>
         <translation>利用可能な言語がありません</translation>
     </message>
@@ -1035,17 +1147,17 @@
 <context>
     <name>Main</name>
     <message>
-        <location filename="../src/gui/qml/Main.qml" line="+250"/>
+        <location filename="../src/gui/qml/Main.qml" line="+401"/>
         <source>qZypper - Software Management</source>
         <translation>qZypper - ソフトウェア管理</translation>
     </message>
     <message>
-        <location line="+760"/>
+        <location line="+764"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location line="-409"/>
+        <location line="-427"/>
         <source>Menu</source>
         <translation>メニュー</translation>
     </message>
@@ -1055,7 +1167,7 @@
         <translation>表示:</translation>
     </message>
     <message>
-        <location line="+37"/>
+        <location line="+43"/>
         <source>Search</source>
         <translation>検索</translation>
     </message>
@@ -1076,18 +1188,18 @@
     </message>
     <message>
         <location line="+6"/>
-        <location line="+944"/>
+        <location line="+1114"/>
         <location line="+4"/>
         <source>Patches</source>
         <translation>パッチ</translation>
     </message>
     <message>
-        <location line="-947"/>
+        <location line="-1117"/>
         <source>Patches view</source>
         <translation>パッチ表示</translation>
     </message>
     <message>
-        <location line="+29"/>
+        <location line="+35"/>
         <source>Dark Mode</source>
         <translation>ダークモード</translation>
     </message>
@@ -1122,12 +1234,12 @@
         <translation>再起動を推奨する必要なパッチ: %1</translation>
     </message>
     <message>
-        <location line="+307"/>
+        <location line="+412"/>
         <source>Error</source>
         <translation>エラー</translation>
     </message>
     <message>
-        <location line="-1128"/>
+        <location line="-1378"/>
         <source>Refreshing repositories...</source>
         <translation>リポジトリをリフレッシュ中...</translation>
     </message>
@@ -1172,7 +1284,32 @@
         <translation>ほか %1 件</translation>
     </message>
     <message>
-        <location line="+517"/>
+        <location line="+111"/>
+        <location line="+24"/>
+        <source>Operation in progress</source>
+        <translation>操作の実行中</translation>
+    </message>
+    <message>
+        <location line="-23"/>
+        <source>qZypper cannot quit while an operation is running.
+Wait until it finishes or cancel it, then quit again.</source>
+        <translation>操作の実行中はqZypperを終了できません。
+完了を待つかキャンセルしてから、再度終了してください。</translation>
+    </message>
+    <message>
+        <location line="+24"/>
+        <source>The editing session cannot be ended while an operation is running.
+Wait until it finishes or cancel it, then try again.</source>
+        <translation>操作の実行中は編集セッションを終了できません。
+完了を待つかキャンセルしてから、再度実行してください。</translation>
+    </message>
+    <message>
+        <location line="+29"/>
+        <source>The pending changes could not be checked. The operation was cancelled to avoid discarding changes.</source>
+        <translation>未適用の変更を確認できませんでした。変更を失わないよう、操作を中止しました。</translation>
+    </message>
+    <message>
+        <location line="+491"/>
         <source>Updates (%1)</source>
         <translation>更新 (%1)</translation>
     </message>
@@ -1192,7 +1329,46 @@
         <translation>言語</translation>
     </message>
     <message>
-        <location line="+528"/>
+        <location line="+6"/>
+        <source>Products</source>
+        <translation>製品</translation>
+    </message>
+    <message>
+        <location line="+465"/>
+        <source>Discard Changes</source>
+        <translation>変更の破棄</translation>
+    </message>
+    <message>
+        <location line="+35"/>
+        <source>There are pending changes that have not been applied.
+Really abandon all changes and end the editing session?</source>
+        <translation>適用されていない変更があります。
+すべての変更を破棄して編集セッションを終了しますか?</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>There are pending changes that have not been applied.
+Really abandon all changes and exit?</source>
+        <translation>適用されていない変更があります。
+すべての変更を破棄して終了しますか?</translation>
+    </message>
+    <message>
+        <location line="+19"/>
+        <source>Quitting...</source>
+        <translation>終了しています...</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>Ending editing session...</source>
+        <translation>編集セッションを終了しています...</translation>
+    </message>
+    <message>
+        <location line="+21"/>
+        <source>Discarding the selection and releasing the editing session...</source>
+        <translation>選択を破棄し、編集セッションを解放しています...</translation>
+    </message>
+    <message>
+        <location line="+92"/>
         <source>Select RPM Files to Install</source>
         <translation>インストールする RPM ファイルを選択</translation>
     </message>
@@ -1227,12 +1403,17 @@
         <translation>選択したパッケージは既にインストールされています。</translation>
     </message>
     <message>
-        <location line="+60"/>
+        <location line="+64"/>
         <source>Package database was changed externally and reloaded</source>
         <translation>パッケージデータベースが外部で変更されたため、再読み込みしました</translation>
     </message>
     <message>
-        <location line="+136"/>
+        <location line="+23"/>
+        <source>The editing session could not be ended because the backend is busy. Try again later.</source>
+        <translation>バックエンドが処理中のため、編集セッションを終了できませんでした。しばらくしてから再度実行してください。</translation>
+    </message>
+    <message>
+        <location line="+146"/>
         <source>Backend disconnected</source>
         <translation>バックエンドから切断されました</translation>
     </message>
@@ -1242,7 +1423,17 @@
         <translation>変更の適用中にバックエンドとの接続が失われました。結果は不明です。新しいセッションを開始して、パッケージの状態を確認してください。</translation>
     </message>
     <message>
-        <location line="+142"/>
+        <location line="+131"/>
+        <source>Apply Changes</source>
+        <translation>変更の適用</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>No changes left to apply</source>
+        <translation>適用する変更がありません</translation>
+    </message>
+    <message>
+        <location line="+33"/>
         <source>Distribution Upgrade</source>
         <translation>ディストリビューションアップグレード</translation>
     </message>
@@ -1272,12 +1463,12 @@
         <translation>システムは整合しています。変更は不要です。</translation>
     </message>
     <message>
-        <location line="-616"/>
+        <location line="-775"/>
         <source>Apply</source>
         <translation>適用</translation>
     </message>
     <message>
-        <location line="-961"/>
+        <location line="-1111"/>
         <source>Initializing...</source>
         <translation>初期化しています...</translation>
     </message>
@@ -1292,7 +1483,7 @@
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="+1473"/>
+        <location line="+1760"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -1566,7 +1757,12 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <translation>状態</translation>
     </message>
     <message>
-        <location line="+312"/>
+        <location line="+215"/>
+        <source>This version cannot be installed independently</source>
+        <translation>この版は個別にインストールできません</translation>
+    </message>
+    <message>
+        <location line="+169"/>
         <source>Installed</source>
         <translation>インストール済み</translation>
     </message>
@@ -1797,50 +1993,56 @@ Click &quot;Apply Changes&quot; to proceed.</source>
     <name>PatchView</name>
     <message>
         <location filename="../src/gui/qml/views/PatchView.qml" line="+42"/>
-        <location line="+33"/>
+        <location line="+34"/>
         <source>Security</source>
         <translation>セキュリティ</translation>
     </message>
     <message>
-        <location line="-32"/>
-        <location line="+32"/>
+        <location line="-33"/>
+        <location line="+33"/>
         <source>Recommended</source>
         <translation>推奨</translation>
     </message>
     <message>
-        <location line="-31"/>
-        <location line="+32"/>
+        <location line="-32"/>
+        <location line="+33"/>
         <source>Optional</source>
         <translation>任意</translation>
     </message>
     <message>
-        <location line="-31"/>
-        <location line="+31"/>
+        <location line="-32"/>
+        <location line="+32"/>
         <source>Feature</source>
         <translation>機能</translation>
     </message>
     <message>
-        <location line="-30"/>
+        <location line="-31"/>
+        <location line="+31"/>
         <source>Document</source>
         <translation>ドキュメント</translation>
     </message>
     <message>
-        <location line="+19"/>
+        <location line="-12"/>
         <source>Category:</source>
         <translation>カテゴリ:</translation>
     </message>
     <message>
-        <location line="+10"/>
+        <location line="+11"/>
         <source>All</source>
         <translation>すべて</translation>
     </message>
     <message>
         <location line="+2"/>
+        <source>YaST</source>
+        <translation>YaST</translation>
+    </message>
+    <message>
+        <location line="+1"/>
         <source>Patch category filter</source>
         <translation>パッチカテゴリフィルター</translation>
     </message>
     <message>
-        <location line="+19"/>
+        <location line="+22"/>
         <source>Security only</source>
         <translation>セキュリティのみ</translation>
     </message>
@@ -1934,6 +2136,24 @@ Click &quot;Apply Changes&quot; to proceed.</source>
     </message>
 </context>
 <context>
+    <name>ProductView</name>
+    <message>
+        <location filename="../src/gui/qml/views/ProductView.qml" line="+121"/>
+        <source>Base</source>
+        <translation>ベース</translation>
+    </message>
+    <message>
+        <location line="+43"/>
+        <source>Loading products...</source>
+        <translation>製品を読み込んでいます...</translation>
+    </message>
+    <message>
+        <location line="+0"/>
+        <source>No products found</source>
+        <translation>製品が見つかりません</translation>
+    </message>
+</context>
+<context>
     <name>PromptDialog</name>
     <message>
         <location filename="../src/gui/qml/dialogs/PromptDialog.qml" line="+71"/>
@@ -1954,6 +2174,21 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         <location line="+1"/>
         <source>Unknown GPG Key</source>
         <translation>不明な GPG 鍵</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Download Error</source>
+        <translation>ダウンロードエラー</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Installation Error</source>
+        <translation>インストールエラー</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Removal Error</source>
+        <translation>削除エラー</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -2019,6 +2254,11 @@ Expires: %5</source>
         <location line="+1"/>
         <source>Retry</source>
         <translation>再試行</translation>
+    </message>
+    <message>
+        <location line="+1"/>
+        <source>Ignore</source>
+        <translation>無視</translation>
     </message>
     <message>
         <location line="+1"/>
@@ -2101,7 +2341,7 @@ Expires: %5</source>
         <translation>60 秒以内に応答しない場合、要求は自動的に拒否されます。</translation>
     </message>
     <message>
-        <location line="-149"/>
+        <location line="-150"/>
         <source>The package manager needs your input.</source>
         <translation>パッケージマネージャーが入力を求めています。</translation>
     </message>
@@ -2143,12 +2383,12 @@ Expires: %5</source>
     </message>
     <message>
         <location line="+44"/>
-        <location line="+558"/>
+        <location line="+565"/>
         <source>Add</source>
         <translation>追加</translation>
     </message>
     <message>
-        <location line="-545"/>
+        <location line="-552"/>
         <source>Import .repo File...</source>
         <translation>.repo ファイルをインポート...</translation>
     </message>
@@ -2159,18 +2399,18 @@ Expires: %5</source>
     </message>
     <message>
         <location line="+12"/>
-        <location line="+544"/>
+        <location line="+565"/>
         <source>Remove</source>
         <translation>削除</translation>
     </message>
     <message>
-        <location line="-526"/>
-        <location line="+541"/>
+        <location line="-547"/>
+        <location line="+566"/>
         <source>Refresh</source>
         <translation>リフレッシュ</translation>
     </message>
     <message>
-        <location line="-523"/>
+        <location line="-548"/>
         <source>Selected Repository</source>
         <translation>選択リポジトリ</translation>
     </message>
@@ -2200,7 +2440,13 @@ Expires: %5</source>
         <translation>タイプ</translation>
     </message>
     <message>
-        <location line="+249"/>
+        <location line="+102"/>
+        <location line="+123"/>
+        <source>Plugin services are provided by installed packages</source>
+        <translation>プラグインサービスはインストール済みパッケージが提供します</translation>
+    </message>
+    <message>
+        <location line="+49"/>
         <source>Apply Changes</source>
         <translation>変更を適用</translation>
     </message>
@@ -2328,7 +2574,7 @@ Expires: %5</source>
         <translation>URL:</translation>
     </message>
     <message>
-        <location line="+22"/>
+        <location line="+40"/>
         <source>Enabled</source>
         <translation>有効</translation>
     </message>
@@ -2834,6 +3080,14 @@ Please wait.</source>
     </message>
 </context>
 <context>
+    <name>UrlExpansionPreview</name>
+    <message>
+        <location filename="../src/gui/qml/components/UrlExpansionPreview.qml" line="+37"/>
+        <source>Expanded URL: %1</source>
+        <translation>展開後のURL: %1</translation>
+    </message>
+</context>
+<context>
     <name>UrlTypeSelector</name>
     <message>
         <location filename="../src/gui/qml/components/UrlTypeSelector.qml" line="+75"/>
@@ -2879,7 +3133,27 @@ Please wait.</source>
         <translation>ソースRPM</translation>
     </message>
     <message>
-        <location line="+6"/>
+        <location line="+4"/>
+        <source>Size</source>
+        <translation>サイズ</translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>Download Size</source>
+        <translation>ダウンロードサイズ</translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>Build Time</source>
+        <translation>ビルド日時</translation>
+    </message>
+    <message>
+        <location line="+4"/>
+        <source>Install Time</source>
+        <translation>インストール日時</translation>
+    </message>
+    <message>
+        <location line="+7"/>
         <location line="+3"/>
         <source>URL</source>
         <translation>URL</translation>
@@ -2924,15 +3198,15 @@ Please wait.</source>
     <name>qZypper::PackageController</name>
     <message>
         <location filename="../src/gui/controllers/PackageController.cpp" line="+39"/>
-        <location line="+717"/>
-        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="+173"/>
+        <location line="+763"/>
+        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="+229"/>
         <location line="+37"/>
         <location line="+41"/>
         <source>Repository refresh completed</source>
         <translation>リポジトリのリフレッシュが完了しました</translation>
     </message>
     <message>
-        <location line="-715"/>
+        <location line="-761"/>
         <source>Refreshing: %1 (%2%)</source>
         <translation>リフレッシュ中: %1 (%2%)</translation>
     </message>
@@ -2944,12 +3218,12 @@ Please wait.</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageController.cpp" line="+44"/>
+        <location filename="../src/gui/controllers/PackageController.cpp" line="+52"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
     <message>
-        <location line="+30"/>
+        <location line="+31"/>
         <source>Backend disconnected</source>
         <translation>バックエンドから切断されました</translation>
     </message>
@@ -2969,7 +3243,13 @@ Please wait.</source>
         <translation>バックエンドの初期化に失敗しました: %1</translation>
     </message>
     <message>
-        <location line="+397"/>
+        <location line="+293"/>
+        <source>Cannot end the editing session: %1</source>
+        <extracomment>%1はバックエンドが返したエラーメッセージ</extracomment>
+        <translation>編集セッションを終了できません: %1</translation>
+    </message>
+    <message>
+        <location line="+141"/>
         <source>Loading package manager settings...</source>
         <translation>パッケージマネージャーの設定を読み込み中...</translation>
     </message>
@@ -2981,7 +3261,7 @@ Please wait.</source>
     </message>
     <message>
         <location line="-36"/>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+642"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+697"/>
         <source>Failed to update solver settings</source>
         <translation>ソルバー設定の更新に失敗しました</translation>
     </message>
@@ -3000,7 +3280,7 @@ Please wait.</source>
         <translation>リポジトリのリフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location line="-523"/>
+        <location line="-560"/>
         <source>Ready</source>
         <translation>準備完了</translation>
     </message>
@@ -3035,23 +3315,23 @@ Please wait.</source>
     </message>
     <message>
         <location line="+168"/>
-        <location line="+58"/>
-        <location line="+296"/>
+        <location line="+59"/>
+        <location line="+357"/>
         <location line="+61"/>
         <source>Loading packages...</source>
         <translation>パッケージを読み込み中...</translation>
     </message>
     <message>
-        <location line="-406"/>
-        <location line="+59"/>
-        <location line="+40"/>
-        <location line="+256"/>
+        <location line="-468"/>
+        <location line="+60"/>
+        <location line="+72"/>
+        <location line="+285"/>
         <location line="+61"/>
         <source>%1 packages loaded</source>
         <translation>%1 件のパッケージを読み込みました</translation>
     </message>
     <message>
-        <location line="-326"/>
+        <location line="-355"/>
         <source>Loading pattern packages...</source>
         <translation>パターンのパッケージを読み込み中...</translation>
     </message>
@@ -3070,12 +3350,12 @@ Please wait.</source>
         <location line="+53"/>
         <location line="+305"/>
         <location line="+248"/>
-        <location line="+285"/>
+        <location line="+382"/>
         <source>Dependency problems found</source>
         <translation>依存関係の問題が見つかりました</translation>
     </message>
     <message>
-        <location line="-933"/>
+        <location line="-1030"/>
         <source>Updating all packages...</source>
         <translation>すべてのパッケージを更新中...</translation>
     </message>
@@ -3201,12 +3481,27 @@ Please wait.</source>
         <translation>依存関係の解決に失敗しました</translation>
     </message>
     <message>
-        <location line="+126"/>
+        <location line="+108"/>
+        <source>Packages whose licenses were declined were selected again after resolving dependencies: %1. Return to editing and change the selection or conflict solutions.</source>
+        <translation>依存関係の解決後に、ライセンスを拒否したパッケージが再度選択されました: %1。編集に戻り、選択内容またはコンフリクトの解決策を変更してください。</translation>
+    </message>
+    <message>
+        <location line="+9"/>
+        <source>Confirming package licenses...</source>
+        <translation>パッケージのライセンスを確認しています...</translation>
+    </message>
+    <message>
+        <location line="+18"/>
+        <source>License confirmation failed</source>
+        <translation>ライセンスの確認に失敗しました</translation>
+    </message>
+    <message>
+        <location line="+54"/>
         <source>Failed to obtain a consistent selection state</source>
         <translation>選択状態を一貫して取得できませんでした</translation>
     </message>
     <message>
-        <location line="+54"/>
+        <location line="+81"/>
         <source>Changes must be confirmed before applying</source>
         <translation>変更を適用する前に確認が必要です</translation>
     </message>
@@ -3216,12 +3511,12 @@ Please wait.</source>
         <translation>変更を適用中...</translation>
     </message>
     <message>
-        <location line="+11"/>
+        <location line="+16"/>
         <source>Changes applied successfully</source>
         <translation>変更が正常に適用されました</translation>
     </message>
     <message>
-        <location line="+2"/>
+        <location line="+3"/>
         <source>Some operations encountered errors</source>
         <translation>一部の操作でエラーが発生しました</translation>
     </message>
@@ -3231,7 +3526,7 @@ Please wait.</source>
         <translation>キャンセル中...</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="-176"/>
+        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="-232"/>
         <source>Adding repository...</source>
         <translation>リポジトリを追加中...</translation>
     </message>
@@ -3246,7 +3541,7 @@ Please wait.</source>
         <translation>リポジトリの追加に失敗しました</translation>
     </message>
     <message>
-        <location line="+77"/>
+        <location line="+133"/>
         <location line="+37"/>
         <source>Refreshing repositories...</source>
         <translation>リポジトリをリフレッシュ中...</translation>
@@ -3259,12 +3554,12 @@ Please wait.</source>
         <translation>リフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageController.cpp" line="+253"/>
+        <location filename="../src/gui/controllers/PackageController.cpp" line="+264"/>
         <source>Editing session ended</source>
         <translation>編集セッションが終了しました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+78"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+79"/>
         <source>Adding local RPM files...</source>
         <translation>ローカル RPM ファイルを追加中...</translation>
     </message>

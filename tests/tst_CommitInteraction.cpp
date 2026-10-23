@@ -8,7 +8,10 @@ using namespace qZypper;
  * @class CommitInteractionTest
  * @brief CommitInteraction.hの補助関数とログ集約の挙動を検証する
  *
- * コミット処理で使うテキスト切り詰め・行サニタイズ・プロンプトデータ生成・スクリプト出力集約を対象にし、libzyppは起動しない
+ * コミット処理で使うテキスト切り詰め、行サニタイズ、
+ * プロンプトデータ生成、スクリプト出力集約を対象にする
+ *
+ * libzyppは起動しない
  */
 class CommitInteractionTest : public QObject {
     Q_OBJECT
@@ -74,7 +77,7 @@ private slots:
         QCOMPARE(buttons.at(1).toMap().value(QStringLiteral("action")).toString(), QStringLiteral("reject"));
     }
 
-    /** @brief ライセンス同意の回答をacceptとrejectにマッピングすることを検証する */
+    /** @brief ライセンス同意の回答をacceptとrejectへ対応付けることを検証する */
     void licenseAnswerMapping()
     {
         QVERIFY(licenseAnswerAccepted(QVariantMap{{QStringLiteral("action"), QStringLiteral("accept")}}));
@@ -100,7 +103,7 @@ private slots:
         QCOMPARE(buttons.at(2).toMap().value(QStringLiteral("action")).toString(), QStringLiteral("abort"));
     }
 
-    /** @brief メディア交換の回答を正規化し不正値はabortにすることを検証する */
+    /** @brief メディア交換の回答を正規化し、不正値はabortにすることを検証する */
     void mediaAnswerMapping()
     {
         QCOMPARE(mediaAnswerAction(QVariantMap{{QStringLiteral("action"), QStringLiteral("retry")}}),
@@ -169,7 +172,7 @@ private slots:
         QCOMPARE(emitted.size(), CommitLimits::kFlushLineThreshold + 1);
     }
 
-    /** @brief 時間間隔を過ぎた行の追加で、バッファを通知することを検証する */
+    /** @brief 時間間隔を過ぎた行の追加で、バッファした行を通知することを検証する */
     void aggregatorFlushesOnTimeInterval()
     {
         QStringList emitted;
@@ -216,6 +219,51 @@ private slots:
         aggregator.addLine(QStringLiteral("p"), QStringLiteral("post"), QStringLiteral("\n"), false);
         QVERIFY(aggregator.collected().isEmpty());
         QCOMPARE(aggregator.pendingCount(), 0);
+    }
+
+    /** @brief 操作エラープロンプトの本文・ボタン・操作種別を検証する */
+    void problemPromptDataHasButtonsAndPackage()
+    {
+        const QStringList actions{QStringLiteral("abort"), QStringLiteral("retry"),
+                                  QStringLiteral("ignore")};
+        const QVariantMap data = buildProblemPromptData(
+            QStringLiteral("install"), QStringLiteral("bash"),
+            QStringLiteral("io"), QStringLiteral("read error"), actions);
+
+        QVERIFY(data.value(QStringLiteral("message")).toString().contains(QStringLiteral("bash")));
+        QCOMPARE(data.value(QStringLiteral("operation")).toString(), QStringLiteral("install"));
+        QCOMPARE(data.value(QStringLiteral("package")).toString(), QStringLiteral("bash"));
+        QCOMPARE(data.value(QStringLiteral("errorKind")).toString(), QStringLiteral("io"));
+        QCOMPARE(data.value(QStringLiteral("details")).toString(), QStringLiteral("read error"));
+        QCOMPARE(data.value(QStringLiteral("actions")).toStringList(), actions);
+
+        const QVariantList buttons = data.value(QStringLiteral("buttons")).toList();
+        QCOMPARE(buttons.size(), 3);
+        QCOMPARE(buttons.at(0).toMap().value(QStringLiteral("action")).toString(),
+                 QStringLiteral("abort"));
+        QCOMPARE(buttons.at(2).toMap().value(QStringLiteral("action")).toString(),
+                 QStringLiteral("ignore"));
+    }
+
+    /** @brief 許可されたアクションだけを採用し、それ以外は[abort]へ倒すことを検証する */
+    void problemAnswerMappingRejectsDisallowedAction()
+    {
+        const QStringList all{QStringLiteral("abort"), QStringLiteral("retry"),
+                              QStringLiteral("ignore")};
+        QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("retry")}}, all),
+                 QStringLiteral("retry"));
+        QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("ignore")}}, all),
+                 QStringLiteral("ignore"));
+        QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("abort")}}, all),
+                 QStringLiteral("abort"));
+
+        // 検証系ダウンロードエラーでは[Ignore]を提示しないため、回答されても[abort]とする
+        const QStringList noIgnore{QStringLiteral("abort"), QStringLiteral("retry")};
+        QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("ignore")}}, noIgnore),
+                 QStringLiteral("abort"));
+        QCOMPARE(problemAnswerAction({}, noIgnore), QStringLiteral("abort"));
+        QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("bogus")}}, all),
+                 QStringLiteral("abort"));
     }
 };
 

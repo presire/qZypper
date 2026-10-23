@@ -17,19 +17,20 @@ import org.presire.qzypper.gui
 Dialog {
     id: confirmDialog  // ダイアログ自身の参照名
 
-    property var summaryModel: []          // 保留中の変更一覧 (カテゴリと名前とバージョン)
+    property var summaryModel: []          // 保留中の変更一覧 (カテゴリ、名前、バージョン)
     property var diskUsageModel: []        // マウントポイントごとのディスク使用量
-    // バックエンドのGetTransactionSummary結果 (件数 + 危険な変更の一覧)
+    // バックエンドのGetTransactionSummary結果 (件数と危険な変更の一覧)
     property var transactionSummary: ({})  // 取引サマリー (件数と危険な変更の集計)
-    // 概要の取得待ち (取得完了までApply不可)
+    // 概要の取得待ち、取得完了までは[Apply]を押せない
     property bool summaryPending: false    // 概要を取得中かどうか
+    property var rejectedLicensePackages: []  // ライセンス拒否により確認対象から除外したパッケージ
 
     readonly property bool summaryAvailable: transactionSummary.installCount !== undefined  // バックエンド集計を取得済みか
     readonly property int removeCount: transactionSummary.removeCount || 0                  // 削除されるパッケージ数
     readonly property int downgradeCount: transactionSummary.downgradeCount || 0            // ダウングレードされるパッケージ数
     readonly property int vendorChangeCount: transactionSummary.vendorChangeCount || 0      // ベンダーが変更されるパッケージ数
     readonly property int archChangeCount: transactionSummary.archChangeCount || 0          // アーキテクチャが変更されるパッケージ数
-    // 危険な変更があるか : 概要が取得できない場合も危険扱いとし、明示承認を求める (fail closed)
+    // 危険な変更があるか : 概要が取得できない場合も危険とみなし、明示的な承認を求める
     readonly property bool hasRiskyChanges: !summaryPending &&
                                             (!summaryAvailable || removeCount + downgradeCount + vendorChangeCount + archChangeCount > 0)
     readonly property var riskyEntries: buildRiskyEntries(transactionSummary)               // 危険な変更を表示用の一覧へ展開したもの
@@ -46,7 +47,7 @@ Dialog {
     /**
      * @brief summaryの各危険リストを表示用の一覧へ平坦化する
      * @param s バックエンド集計の結果
-     * @return 種類と名前と詳細を持つ要素の配列
+     * @return 種類、名前、詳細を持つ要素の配列
      */
     function buildRiskyEntries(s) {
         var out = []
@@ -82,7 +83,7 @@ Dialog {
     }
 
     /**
-     * @brief 符号付きのバイト数を桁区切り付きの文字列へ整形する
+     * @brief 符号付きのバイト数を単位付きの文字列へ整形する
      * @param bytes バイト数 (負値は減少量を表す)
      * @return 先頭に符号を付けたサイズ表記
      */
@@ -131,10 +132,31 @@ Dialog {
         anchors.fill: parent  // ダイアログ内側全体を使う
         spacing: 8            // 項目の間隔
 
-        // --- 件数サマリ ---
+        // 拒否したライセンスにより確認対象から除外されたパッケージを表示する
+        Label {
+            Layout.fillWidth: true       // ダイアログの内容幅いっぱいに表示する
+            Layout.maximumHeight: 90     // 多数の除外候補で確認画面が広がりすぎないようにする
+            // ライセンス拒否がある場合だけ、選択が変化した理由を利用者へ示す
+            visible: confirmDialog.rejectedLicensePackages.length > 0  // 拒否候補がある場合だけ表示する
+            // 翻訳対象の除外理由とパッケージ名を表示する
+            text: qsTr("Excluded because the license was declined: %1")
+                .arg(confirmDialog.rejectedLicensePackages.join(", "))
+            textFormat: Text.PlainText  // パッケージ名をマークアップとして解釈しない
+            wrapMode: Text.Wrap         // 長い除外一覧を複数行で読めるようにする
+            elide: Text.ElideRight      // 高さ上限を超える一覧を末尾で省略する
+            color: palette.text         // 通常の本文色で除外理由を表示する
+            ToolTip.visible: excludedHover.hovered  // 見切れたパッケージ名をホバー時に表示する
+            ToolTip.text: text                      // ラベルと同じ除外パッケージ名を表示する
+
+            // 見切れた除外パッケージ名のツールチップ表示を制御する
+            HoverHandler {
+                id: excludedHover  // 除外パッケージ表示のホバー状態
+            }
+        }
+
+            // 件数とサイズのサマリ
         Label {
             Layout.fillWidth: true                                                // 親の幅いっぱいに広げる
-            // 取引サマリーが取得できているときのみ表示する
             visible: confirmDialog.transactionSummary.installCount !== undefined  // 取引サマリーがある場合のみ表示する
             // 種類ごとの件数と、ダウンロードサイズ・インストールサイズの増減
             text: qsTr("Install: %1, Update: %2, Remove: %3, Downgrade: %4, Vendor change: %5, Architecture change: %6")
@@ -151,11 +173,10 @@ Dialog {
             wrapMode: Text.WordWrap                                               // 幅に収まらない場合は単語単位で折り返す
         }
 
-        // --- 危険な変更の警告 (削除 / ダウングレード / ベンダー変更 / アーキテクチャ変更) ---
+            // 危険な変更の警告、削除、ダウングレード、ベンダー変更、アーキテクチャ変更をまとめる
         Rectangle {
             Layout.fillWidth: true                                          // 親の幅いっぱいに広げる
             Layout.preferredHeight: riskColumn.implicitHeight + 16          // 内容に上下の余白を加えた高さ
-            // 注意が必要な変更がある場合のみリスク欄を表示する
             visible: confirmDialog.hasRiskyChanges                          // 危険な変更がある場合のみ表示する
             color: Qt.rgba(0.96, 0.26, 0.21, Theme.darkMode ? 0.18 : 0.10)  // 薄い赤の背景色 (ダークモードでは濃いめ)
             radius: 4                                                       // 角の丸み
@@ -198,7 +219,7 @@ Dialog {
 
                     // 危険な変更1件分の行 (種類、名前、詳細)
                     delegate: RowLayout {
-                        required property var modelData  // 危険な変更の1件 (種類と名前と詳細)
+                        required property var modelData  // 危険な変更の1件 (種類、名前、詳細)
 
                         // スクロールバー表示中はその幅を除いた幅にする
                         width: riskList.width - (riskList.ScrollBar.vertical.visible ? riskList.ScrollBar.vertical.width + 4 : 0)
@@ -243,7 +264,7 @@ Dialog {
             }
         }
 
-        // --- 変更予定パッケージ一覧 ---
+        // 変更予定パッケージ一覧
         Label {
             text: qsTr("Changes to apply:")  // 一覧の見出し
             font.bold: true                  // 太字で表示する
@@ -267,12 +288,12 @@ Dialog {
 
             // 変更予定1件分の行 (記号、名前、バージョン)
             delegate: RowLayout {
-                required property var modelData  // 変更予定の1件 (カテゴリと名前とバージョン)
+                required property var modelData  // 変更予定の1件 (カテゴリ、名前、バージョン)
 
                 // スクロールバー表示中はその幅を除いた幅にする
                 width: changesList.width - (changesList.ScrollBar.vertical.visible ? changesList.ScrollBar.vertical.width + 4 : 12)
 
-                // 変更の種類を表す記号 (インストール/更新/削除)
+                    // 変更の種類を表す記号 (インストール、更新、削除)
                 Label {
                     Layout.preferredWidth: 24  // 列の幅
                     // カテゴリに対応する記号 (インストールは+、更新は↑、削除は-)
@@ -334,46 +355,55 @@ Dialog {
             }
         }
 
+        // 言語サポートの変更を一覧する領域
+        // 言語の追加や削除を選んでいない場合は、領域ごと非表示にする
         ColumnLayout {
-            visible: PackageController.pendingLocaleChanges.length > 0
-            Layout.fillWidth: true
-            spacing: 4
+            Layout.fillWidth: true                                      // 親の幅いっぱいに広げる
+            visible: PackageController.pendingLocaleChanges.length > 0  // 言語サポートの変更がある場合のみ表示する
+            spacing: 4                                                  // 見出しと一覧の間隔
 
+            // [Language Support]の見出し
             Label {
-                text: qsTr("Language Support")
-                color: palette.text
-                font.bold: true
+                text: qsTr("Language Support")  // 見出しの文字列
+                color: palette.text             // 通常の文字色
+                font.bold: true                 // 見出しとして太字にする
             }
 
+            // 追加または削除する言語の一覧
+            // 件数が多い場合は高さを96pxまでに抑え、超えた分はスクロールで表示する
             ListView {
-                id: localeChangesList
+                id: localeChangesList  // 言語サポートの変更一覧の参照名
 
-                Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(contentHeight, 96)
-                clip: true
-                model: PackageController.pendingLocaleChanges
-                boundsBehavior: Flickable.StopAtBounds
+                Layout.fillWidth: true                               // 親の幅いっぱいに広げる
+                Layout.preferredHeight: Math.min(contentHeight, 96)  // 内容の高さに合わせ、最大96pxまでにする
+                clip: true                                           // スクロール時に枠外へはみ出した行を描画しない
+                model: PackageController.pendingLocaleChanges        // PackageController::pendingLocaleChangesの変更一覧
+                boundsBehavior: Flickable.StopAtBounds               // 端を越えて引っ張れないようにする
 
+                // 行が収まらない場合のみ表示する縦スクロールバー
                 ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
+                    policy: ScrollBar.AsNeeded  // 必要な場合のみ表示する
                 }
 
+                // 言語サポートの変更1件分の行
                 delegate: Label {
-                    required property var modelData
+                    required property var modelData  // 言語サポートの変更1件分のデータ (action、name、code)
 
+                    // スクロールバーの表示中は、その幅と隙間を差し引いて文字との重なりを避ける
                     width: localeChangesList.width - (localeChangesList.ScrollBar.vertical.visible
                                                       ? localeChangesList.ScrollBar.vertical.width + 4 : 0)
+                    // 追加か削除かに応じた説明文 (言語名がない場合は言語コードで代用する)
                     text: modelData.action === "add"
                           ? qsTr("Add language support: %1 (%2)").arg(modelData.name || modelData.code || "").arg(modelData.code || "")
                           : qsTr("Remove language support: %1 (%2)").arg(modelData.name || modelData.code || "").arg(modelData.code || "")
-                    textFormat: Text.PlainText
-                    color: palette.text
-                    elide: Text.ElideRight
+                    textFormat: Text.PlainText  // 外部由来の文字列をHTMLとして解釈させない
+                    color: palette.text         // 通常の文字色
+                    elide: Text.ElideRight      // 収まらない場合は末尾を省略する
                 }
             }
         }
 
-        // --- 区切り線 ---
+        // 区切り線
         Rectangle {
             Layout.fillWidth: true  // 親の幅いっぱいに広げる
             height: 1               // 線の太さ
@@ -381,7 +411,7 @@ Dialog {
             color: palette.mid      // 線の色
         }
 
-        // --- ディスク使用量テーブル ---
+        // ディスク使用量テーブル
         Label {
             text: qsTr("Disk Usage:")  // テーブルの見出し
             font.bold: true            // 太字で表示する
@@ -446,13 +476,13 @@ Dialog {
             delegate: RowLayout {
                 required property var modelData  // ディスク使用量の1件 (マウントと容量)
 
-                // コミット後の空き容量を計算
+                // コミット後の使用量を計算する
                 property real afterCommit: (modelData.usedSize || 0) + (modelData.packageUsage || 0)  // コミット後の使用量
                 // マウントの総容量 (0除算を避けるため最低1)
                 property real totalSize: modelData.totalSize || 1                                     // 総容量 (最低1)
                 // コミット後に残る空き容量
                 property real freeAfter: totalSize - afterCommit                                      // コミット後の空き容量
-                // 空き容量が10%未満で警告
+                // 空き容量が10%未満なら警告を出す
                 property bool isWarning: freeAfter < totalSize * 0.1                                  // 10%未満で警告
 
                 width: diskList.width  // 一覧の幅に合わせる
@@ -517,7 +547,7 @@ Dialog {
             }
         }
 
-        // --- ボタン行 ---
+        // 操作ボタンを並べる行
         RowLayout {
             Layout.fillWidth: true  // 親の幅いっぱいに広げる
             spacing: 8              // ボタンの間隔

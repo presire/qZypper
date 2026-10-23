@@ -24,7 +24,7 @@ namespace qZypper {
  *        バックエンドの全D-Busメソッドを公開する
  *
  * system busに直接登録し、呼出コンテキスト・所有者・Polkit認可を管理する
- * libzyppに触れる呼出は単一ワーカーとの同時実行を禁止する
+ * libzyppを操作する呼出は単一のワーカースレッドで直列に実行する
  */
 class PackageManagerAdaptor : public QObject, protected QDBusContext
 {
@@ -32,12 +32,12 @@ class PackageManagerAdaptor : public QObject, protected QDBusContext
     Q_CLASSINFO("D-Bus Interface", "org.presire.qzypper.PackageManager")
 
 public:
-    /** @brief D-Busアダプタを親オブジェクトへ関連付けて生成する */
+    /** @brief 親オブジェクトを指定してD-Busアダプタを生成する */
     explicit PackageManagerAdaptor(QObject *parent = nullptr);
 
 public slots:
     // 初期化
-    /** @brief 呼出元の認可後にlibzyppセッションを初期化する */
+    /** @brief 呼出元の認可を得たうえでlibzyppセッションを初期化する */
     bool Initialize();                                             // libzypp初期化
 
     // リポジトリ操作
@@ -64,7 +64,7 @@ public slots:
     /** @brief .repo内容を検査して登録可能なリポジトリとして取り込む */
     QVariantMap ImportRepoFile(const QString &content);            // .repo内容を取込
     /** @brief .repo内容を変更せずに解析結果だけを返す */
-    QVariantList ParseRepoFile(const QString &content);            // .repo内容を構文解析 (読取専用)
+    QVariantList ParseRepoFile(const QString &content);            // .repo内容を解析 (読み取り専用)
 
     // サービス操作
     /** @brief 登録済みサービスの一覧を返す */
@@ -81,12 +81,17 @@ public slots:
     // パッケージ検索・一覧
     /** @brief 指定フィールドを対象にパッケージを部分一致検索する */
     QVariantList SearchPackages(const QString &query, int searchFlags);  // パッケージ検索
-    /** @brief 検索オプションに従いパッケージを検索する */
+    /** @brief 検索オプションに従ってパッケージを検索する */
     QVariantList SearchPackagesEx(const QVariantMap &options);           // 拡張パッケージ検索 (PoolQuery)
     /** @brief 指定したパッケージの詳細情報を返す */
     QVariantMap GetPackageDetails(const QString &name);                  // パッケージ詳細取得
     /** @brief リポジトリが提供するパッケージを返す */
     QVariantList GetPackagesByRepo(const QString &repoAlias);            // リポ別パッケージ
+    /**
+     * @brief 利用可能な製品を返す (読み取り専用)
+     * @return 製品情報のQVariantMap一覧
+     */
+    QVariantList GetProducts();                                          // 製品一覧取得
     /** @brief 利用可能なパターンを返す */
     QVariantList GetPatterns();                                          // パターン一覧取得
     /** @brief パターンに含まれるパッケージを返す */
@@ -107,7 +112,7 @@ public slots:
     QVariantList GetRpmGroups();                                         // RPMグループツリー取得
     /** @brief 指定RPMグループ配下のパッケージ一覧を返す */
     QVariantList GetPackagesByRpmGroup(const QString &path);             // グループ別パッケージ取得
-    /** @brief 利用可能・要求済みロケールの一覧を返す */
+    /** @brief 利用可能なロケールと要求済みロケールの一覧を返す */
     QVariantList GetLocales();                                           // ロケール一覧取得
     /** @brief 指定ロケールに対応するパッケージ一覧を返す */
     QVariantList GetPackagesByLocale(const QString &code);               // ロケール別パッケージ取得
@@ -129,6 +134,22 @@ public slots:
                            const QString &version,
                            const QString &arch,
                            const QString &repoAlias);
+    /**
+     * @brief 複数版同時インストール可能なパッケージの特定版の選択状態を変更する
+     *
+     * @param name パッケージ名
+     * @param version バージョン
+     * @param arch アーキテクチャ
+     * @param repoAlias リポジトリエイリアス
+     * @param status 新しいステータス
+     * @return 変更を受け付けた場合はtrue
+     * @note 選択状態を変更するため、呼び出せるのはセッション所有者だけに限定される
+     */
+    bool SetPackageVersionStatus(const QString &name,                    // 特定版の選択状態変更
+                                 const QString &version,
+                                 const QString &arch,
+                                 const QString &repoAlias,
+                                 int status);
     /** @brief パターンの要求状態を変更する */
     bool SetPatternStatus(const QString &name, int status);   // パターン状態変更
 
@@ -138,7 +159,7 @@ public slots:
                                   const QString &action);
     /** @brief インストール済みパッケージのサブパッケージを選択する */
     QVariantMap SelectSubpackages(const QString &suffix);     // サブパッケージ選択
-    /** @brief 推奨パッケージをすべて選択して依存を解決する */
+    /** @brief 推奨パッケージをすべて選択して依存関係を解決する */
     QVariantMap SelectAllRecommended();                       // 推奨パッケージ選択
 
     // 全パッケージ更新
@@ -148,7 +169,7 @@ public slots:
     // 依存関係解決
     /** @brief 現在の選択に対して依存関係を解決する */
     QVariantMap ResolveDependencies();                        // ソルバー実行
-    /** @brief 指定した競合の解決策を適用する */
+    /** @brief 指定した問題の解決策を適用する */
     bool ApplySolution(int problemIndex, int solutionIndex);  // 解決策適用
 
     // ソルバー設定
@@ -158,15 +179,25 @@ public slots:
     bool SetSolverSettings(const QVariantMap &settings);      // ソルバー設定上書き
 
     // ディストリビューションアップグレード
-    /** @brief 配布版アップグレードの選択変更を作成する */
+    /** @brief ディストリビューションアップグレードの対象を選択する */
     QVariantMap DistUpgrade(const QVariantMap &options);      // dup (ディストリビューション更新)
-    /** @brief 現在の変更が持つリスク要約を返す */
+    /** @brief 現在の変更内容のリスク要約を返す */
     QVariantMap GetTransactionSummary();                      // 現在のリスクサマリ取得
 
     // コミット
     /** @brief 現在の選択改訂番号を返す */
     qulonglong GetSelectionRevision();                        // 選択改訂番号取得 (処理中も可)
-    /** @brief 確認済みの選択改訂と一致する場合だけ変更を適用する */
+    /**
+     * @brief 解決済み選択のライセンスを確認し、拒否した候補を除外する
+     * @return 非同期D-Bus応答で確認結果を返すため空のマップ
+     * @note D-Bus所有者だけが回答でき、ZyppManagerをワーカーで実行する
+     */
+    QVariantMap ConfirmLicenses();  // 所有者限定・ワーカー上の対話
+    /**
+     * @brief 確認済みの選択改訂と一致する場合だけ変更を適用する
+     * @param expectedRevision ライセンス確認後に取得した選択改訂番号
+     * @return 非同期D-Bus応答でコミット結果を返すため空のマップ
+     */
     QVariantMap Commit(qulonglong expectedRevision);          // 確認した選択の変更をコミット
 
     // 状態保存・復元
@@ -192,8 +223,16 @@ public slots:
     QVariantList GetPackagesByClassification(const QString &cls);  // 分類別パッケージ一覧
 
     // zyppヒストリ
-    /** @brief 検証済みの範囲で操作履歴を新しい順に返す */
+    /** @brief 検証済みの条件で操作履歴を新しい順に返す */
     QVariantList GetHistory(const QVariantMap &options); // 操作履歴取得 (新しい順)
+    /** @brief command単位にグループ化した操作履歴を新しいグループ順に返す */
+    QVariantMap GetHistoryGroups(const QVariantMap &options); // グループ化した操作履歴取得 (読み取り専用)
+
+    // リポジトリURL変数の展開プレビュー、コミュニティリポジトリのプリセット (読取専用、ネットワーク不使用)
+    /** @brief URL内の変数 ($releasever等) を展開して返す (パスワードは伏せ、展開できない場合は空文字列) */
+    QString GetExpandedRepoUrl(const QString &rawUrl);        // 展開後URL取得 (読み取り専用)
+    /** @brief インストール済みベース製品に対応するコミュニティリポジトリのプリセットを返す */
+    QVariantList GetRepoPresets();                            // プリセット一覧取得 (読み取り専用)
 
     // システム検証 / ソルバーテストケース
     /** @brief システム整合性を検証して問題を返す */
@@ -239,10 +278,10 @@ private:
 
     /** @brief 別のlibzypp操作が実行中ではないことを確認する */
     bool checkNotBusy();                                                // libzypp呼出の並行実行を拒否
-    /** @brief 読取呼出の所有者と初期化状態を検査する */
-    bool checkRead();                                                   // 読取呼出の検査
-    /** @brief 読取ジョブを例外から保護して実行する */
-    QVariant runRead(const std::function<QVariant()> &job);             // 読取処理を例外から保護して実行
+    /** @brief 読み取り呼出の所有者と初期化状態を検査する */
+    bool checkRead();                                                   // 読み取り呼出の検査
+    /** @brief 読み取りジョブを例外から保護して実行する */
+    QVariant runRead(const std::function<QVariant()> &job);             // 読み取り処理を例外から保護して実行
     void emitToOwner(const QString &member, const QVariantList &args);  // 所有者宛てのシグナル送信
     bool checkOwner();                                                  // 生存する所有者の呼出か検査
     bool preparePrivileged();                                           // 処理中・所有者・初期化を順に検査
@@ -251,9 +290,9 @@ private:
     void idleTimeout();                                                 // アイドル期限で終了または終了待ちに移行
     void bumpRevision();                                                // 選択改訂を進め解決済み状態を無効化
     QVariant runOwnerSync(const std::function<QVariant()> &job,
-                          bool bump = true, bool solver = false);       // 同期操作と例外・改訂の管理
+                          bool bump = true, bool solver = false);       // 所有者限定の操作をワーカーで実行
     bool runPrivilegedBool(const QString &actionId,
-                           const std::function<bool()> &job);           // 真偽値を返す特権操作
+                           const std::function<bool()> &job);           // Polkit認可後に操作を実行
     void startWorker(const QDBusMessage &msg,
                      const std::function<AsyncOutcome()> &job);         // 単一ワーカーで実行 (認可なし)
     void startPrivileged(const QString &actionId,
@@ -281,15 +320,15 @@ private:
     void publishState();
     /** @brief 所有者消失後にワーカー上でセッションを安全に解放する */
     void releaseAbandonedSession();
-    /** @brief 保留中のPolkit認可要求を取消す */
+    /** @brief 保留中のPolkit認可要求を取り消す */
     void cancelAuthorization(const QString &id);
 
-    QTimer m_idleTimer;                                // 所有者不在時の5分アイドル自動終了タイマ
+    QTimer m_idleTimer;                                // 所有者不在が5分続くと自動終了するタイマ
     QDBusServiceWatcher m_ownerWatcher;                // 所有者のバス接続消失を監視
     QString m_owner;                                   // セッション所有者の一意バス名
     bool m_busy = false;                               // 主スレッドのみが変更する処理中フラグ
     bool m_quitWhenIdle = false;                       // ワーカー完了後に終了するフラグ
-    bool m_idleExpired = false;                        // アイドル期限後、期限時点の認可待ちの終了を待っている
+    bool m_idleExpired = false;                        // アイドル期限切れ後、期限時点の認可待ちの完了を待っている状態
     quint64 m_revision = 1;                            // 現在の選択改訂番号
     quint64 m_resolvedRevision = 0;                    // 解決成功時の選択改訂番号
     ZyppExecutor m_executor;                           // libzypp専用ワーカーと問合せ管理

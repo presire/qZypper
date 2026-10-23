@@ -28,18 +28,19 @@ Dialog {
     readonly property string outcome: resultData.outcome
                                       || (resultSuccess ? "completed" : "failed")
     // スクリプト出力とRPMメッセージを結合した行一覧
-    // スクリプト出力の行一覧
     readonly property var scriptLines: (resultData.scriptOutput || []).concat(resultData.rpmMessages || [])
     // 再起動が必要なサービス一覧
     readonly property var servicesToRestart: resultData.servicesToRestart || []  // 再起動が必要なサービス
     // 作成されたスナップショット一覧
     readonly property var snapshots: resultData.snapshots || []                  // 作成されたスナップショット
+    readonly property var rejectedLicensePackages: resultData.rejectedLicensePackages || []  // ライセンス拒否で除外したパッケージ
 
     // 注意表示が必要か : 再起動・サービス再起動の案内やエラーがある場合は、サマリーページ設定に関わらず表示すべき
     readonly property bool needsAttention: outcome !== "completed"
                                            || resultData.rebootNeeded === true
                                            || resultData.restartSuggested === true
                                            || servicesToRestart.length > 0
+                                           || rejectedLicensePackages.length > 0  // 除外理由を結果画面で案内する
 
     // パッケージ一覧の再検索を要求する
     signal refreshRequested()  // 再検索の要求
@@ -206,7 +207,6 @@ Dialog {
             // 完了・エラー・スキップの件数
             Label {
                 Layout.fillWidth: true                                      // 親の幅いっぱいに広げる
-                // 集計値が取得できているときのみ表示する
                 visible: (resultDialog.resultData.doneCount !== undefined)  // 集計値がある場合のみ表示する
                 // 完了ステップ数、エラー数、スキップ数を埋め込んだ文字列
                 text: qsTr("Completed steps: %1, errors: %2, skipped: %3")
@@ -228,7 +228,7 @@ Dialog {
                 wrapMode: Text.WordWrap                           // 幅に収まらない場合は単語単位で折り返す
             }
 
-            // 再起動 / サービス再起動の案内
+            // 再起動やサービス再起動の案内
             Frame {
                 Layout.fillWidth: true  // 親の幅いっぱいに広げる
                 // 再起動が必要、再起動を推奨、または再起動が必要なサービスがある場合のみ表示する
@@ -263,7 +263,6 @@ Dialog {
                         // システム再起動は不要だが、再起動を推奨する場合のみ表示する
                         visible: resultDialog.resultData.rebootNeeded !== true
                                  && resultDialog.resultData.restartSuggested === true
-                        // 案内文
                         text: qsTr("Restarting the package manager or affected applications is recommended.")
                         wrapMode: Text.WordWrap  // 幅に収まらない場合は単語単位で折り返す
                     }
@@ -272,7 +271,7 @@ Dialog {
                     Label {
                         Layout.fillWidth: true                              // 親の幅いっぱいに広げる
                         visible: resultDialog.servicesToRestart.length > 0  // 該当サービスがある場合のみ表示する
-                        // 案内文
+                        // 再起動すべきサービスの案内文
                         text: qsTr("The following services use updated files and should be restarted:")
                         wrapMode: Text.WordWrap                             // 幅に収まらない場合は単語単位で折り返す
                     }
@@ -297,6 +296,12 @@ Dialog {
 
             // 案内とパッケージセクションの区切り線
             Separator {}
+
+            // ライセンス拒否で今回の適用対象から除外したパッケージを表示する
+            PackageSection {
+                heading: qsTr("Excluded because the license was declined:")  // 除外したパッケージの見出し
+                items: resultDialog.rejectedLicensePackages                    // 結果に記録した除外パッケージ一覧
+            }
 
             // パッケージセクション
             Label {
@@ -332,6 +337,13 @@ Dialog {
                 heading: qsTr("Failed packages: %1").arg(count)      // 件数付きの見出し
                 items: resultDialog.resultData.failedPackages || []  // 失敗したパッケージの一覧
                 textColor: "#F44336"                                 // エラー色 (赤)
+            }
+
+            // 利用者が[Ignore]を選んだパッケージを一覧表示する
+            PackageSection {
+                heading: qsTr("Ignored packages: %1").arg(count)      // 件数付きの見出し
+                items: resultDialog.resultData.ignoredPackages || []  // 無視したパッケージの一覧
+                textColor: "#FF9800"                                  // 警告色 (オレンジ)
             }
 
             // スキップしたパッケージ
@@ -437,7 +449,7 @@ Dialog {
                 font.pixelSize: 13        // 文字サイズ
             }
 
-            // 統計の項目名と値を2列で並べる
+            // 経過時間とサイズの統計を項目名と値の組で表示する領域
             GridLayout {
                 Layout.fillWidth: true  // 親の幅いっぱいに広げる
                 columns: 2              // 項目名と値の2列

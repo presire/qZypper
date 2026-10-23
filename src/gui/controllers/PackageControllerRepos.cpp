@@ -96,6 +96,62 @@ void PackageController::addRepoFull(const QVariantMap &properties)
 }
 
 /**
+ * @brief リポジトリURLの変数展開プレビューを要求する (非同期、読取専用)
+ *
+ * 失敗時や展開不要時はexpandedUrlが空のまま通知する (プレビューはエラー表示しない)
+ * 結果は必ずイベントループ経由で通知するため、呼び出し側は戻り値の要求番号を保存してから応答を受け取れる
+ * 要求番号は全呼び出しで一意なので、呼び出し側は最新の要求番号以外の応答を破棄できる
+ *
+ * @param rawUrl 展開前のURL
+ * @return この要求の要求番号 (結果シグナルへそのまま返す)
+ * @note 完了はexpandedRepoUrlReadyシグナルで通知する
+ */
+int PackageController::requestExpandedRepoUrl(const QString &rawUrl)
+{
+    const int requestId = ++m_expandedUrlRequest;
+
+    // 未接続・空・変数を含まないURLは展開結果が変わらないため、バックエンドを呼ばずに空で通知する
+    // シグナルを即時に発行すると呼び出し側が要求番号を保存する前に応答が届くため、QueuedConnectionで遅延させる
+    if (!m_connected || rawUrl.isEmpty() || !rawUrl.contains(QLatin1Char('$'))) {
+        QMetaObject::invokeMethod(this, [this, requestId, rawUrl]() {
+            emit expandedRepoUrlReady(requestId, rawUrl, QString());
+        }, Qt::QueuedConnection);
+        return requestId;
+    }
+
+    // DBusClient::getExpandedRepoUrlを呼び出し、完了は非同期コールバックで受け取ってexpandedRepoUrlReadyで通知する
+    // 失敗時はプレビューを出さないだけなので、エラー通知はせず空文字列で返す
+    m_dbus->getExpandedRepoUrl(rawUrl, [this, requestId, rawUrl](bool ok, const QString &, const QString &,
+                                                                 const QVariantList &args) {
+        emit expandedRepoUrlReady(requestId, rawUrl,
+                                  ok && !args.isEmpty() ? args.at(0).toString() : QString());
+    });
+    return requestId;
+}
+
+/**
+ * @brief コミュニティリポジトリのプリセット一覧を読み込む (非同期)
+ *
+ * 未対応のディストリビューションや旧バックエンドでは空リストを通知する
+ *
+ * @note 完了はrepoPresetsReadyシグナルで通知する
+ */
+void PackageController::loadRepoPresets()
+{
+    // バックエンド未接続の間は呼び出せないため、プリセットなしとして即座に通知する
+    if (!m_connected) {
+        emit repoPresetsReady(QVariantList());
+        return;
+    }
+
+    // DBusClient::getRepoPresetsを呼び出し、完了は非同期コールバックで受け取ってrepoPresetsReadyで通知する
+    // 旧バックエンドなどでメソッドが無い場合も、エラー表示はせず空リストとして扱う
+    m_dbus->getRepoPresets([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        emit repoPresetsReady(ok && !args.isEmpty() ? args.at(0).toList() : QVariantList());
+    });
+}
+
+/**
  * @brief リポジトリを非同期で削除する
  * @param alias 削除対象のリポジトリエイリアス
  */
@@ -187,7 +243,8 @@ void PackageController::refreshReposAsync()
  * @brief 期限切れの場合のみリポジトリをリフレッシュする (非同期)
  *
  * 完了時にrefreshFinishedシグナルを発行する
- * 成功時はリポジトリ一覧を再読込し、最後に更新可能数を再取得する
+ * 成功時はリポジトリ一覧を再読込する
+ * 更新可能数の再取得は保留フラグに積み、解放時に1回だけ実行する
  */
 void PackageController::refreshReposIfNeeded()
 {
@@ -264,7 +321,7 @@ void PackageController::refreshSingleRepo(const QString &alias)
 // -- 署名鍵 --
 
 /**
- * @brief GPG署名鍵の指紋を非同期で承認する (鍵の取込は操作の再試行時)
+ * @brief GPG署名鍵の指紋を非同期で承認する (鍵の取り込みは操作の再試行時)
  *
  * 完了後、keyTrustFinishedシグナルで成功可否を通知する
  *
@@ -419,7 +476,7 @@ void PackageController::refreshService(const QString &alias)
 /**
  * @brief .repoファイルを読み込み、バックエンドで解析してプレビューを通知する
  *
- * ファイルはユーザ権限でUI側が読み込み、内容のみをバックエンドへ渡す (rootプロセスにユーザ指定パスを開かせないため)
+ * ファイルはユーザー権限でUI側が読み込み、内容のみをバックエンドへ渡す (rootプロセスにユーザーが指定したパスを開かせないため)
  *
  * @param fileUrl 選択された.repoファイルのURL
  */

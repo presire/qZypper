@@ -19,6 +19,7 @@
 #include <zypp/Package.h>
 #include <zypp/Pattern.h>
 #include <zypp/Patch.h>
+#include <zypp/Product.h>
 #include <zypp/Resolver.h>
 #include <zypp/ProblemTypes.h>
 #include <zypp/ServiceInfo.h>
@@ -26,6 +27,7 @@
 #include "RepoInfo.h"
 #include "ServiceInfo.h"
 #include "PatternPatchInfo.h"
+#include "ProductInfo.h"
 #include "ResolverInfo.h"
 #include "ZyppLocks.h"
 #include "ZyppHistory.h"
@@ -37,6 +39,7 @@
 #include "CommitInteraction.h"
 #include "SnapshotInfo.h"
 #include "LocalRpm.h"
+#include "LicenseConfirmationResult.h"
 
 namespace qZypper {
 
@@ -81,7 +84,7 @@ public:
     struct SolverOverrides {
         std::optional<bool> installRecommends;  // 推奨パッケージを導入するか
         std::optional<bool> cleandepsOnRemove;  // 削除時に不要な依存も削除するか
-        std::optional<bool> allowVendorChange;  // ベンダ変更を許可するか
+        std::optional<bool> allowVendorChange;  // ベンダー変更を許可するか
     };
 
     static ZyppManager& instance();                                          // シングルトンの取得
@@ -132,7 +135,7 @@ public:
     QVariantList getRpmGroups() const;
     /** @brief 指定RPMグループ配下のパッケージ一覧を取得する */
     std::vector<PackageInfo> getPackagesByRpmGroup(const std::string& path) const;
-    /** @brief 利用可能・要求済みロケールの一覧を取得する */
+    /** @brief 利用可能なロケールと要求済みロケールの一覧を取得する */
     QVariantList getLocales() const;
     /** @brief 指定ロケールの要求状態を変更する */
     bool setLocaleRequested(const std::string& code, bool requested);
@@ -149,6 +152,11 @@ public:
     std::vector<PackageInfo> getPackagesByPattern(const std::string& patternName) const;  // パターン別のパッケージ
     std::vector<PatchInfo> getPatches(int category = -1) const;                           // パッチ一覧の取得
     bool setPatchStatus(const std::string& id, int status);                               // パッチの選択状態の変更
+    /**
+     * @brief プール内の製品一覧を取得する (読み取り専用)
+     * @return 製品情報を名前順に並べたベクタ (初期化前は空)
+     */
+    std::vector<ProductInfo> getProducts() const;                                         // 製品一覧の取得 (読み取り専用)
 
     // 永続ロック (zypper al/rl互換、/etc/zypp/locks)
     std::vector<LockInfo> getLocks() const;                      // ロック一覧の取得
@@ -160,10 +168,20 @@ public:
      * @param options 取得範囲と絞り込み条件
      * @param entries 取得したエントリの格納先
      * @param error 失敗時の理由
-     * @return ファイルが無い場合は空で成功、上限超過・取消し・読込失敗はfalse
+     * @return ファイルがない場合は空の結果でtrue、上限超過・取り消し・読み込み失敗の場合はfalse
      */
     bool getHistory(const HistoryOptions& options, std::vector<HistoryEntry>& entries,
                     std::string& error);
+
+    /**
+     * @brief zyppヒストリをcommand単位のグループで新しい順に取得する
+     * @param options 絞り込み条件とグループ単位のページング
+     * @param result 取得したグループの格納先
+     * @param error 失敗時の理由
+     * @return ファイルが無い場合は空で成功、上限超過・取消し・読込失敗はfalse
+     */
+    bool getHistoryGroups(const HistoryGroupOptions& options, HistoryGroupResult& result,
+                          std::string& error);
 
     std::string createSolverTestcase();                          // ソルバーテストケースを/var/log配下に生成し、作成したディレクトリパスを返す
 
@@ -173,6 +191,11 @@ public:
                            const std::string& version,
                            const std::string& arch,
                            const std::string& repoAlias);
+    bool setPackageVersionStatus(const std::string& name,        // 特定版の選択状態の変更 [multiversion]
+                                 const std::string& version,
+                                 const std::string& arch,
+                                 const std::string& repoAlias,
+                                 int status);
     bool setPatternStatus(const std::string& name, int status);  // パターン状態の変更
     void saveState();                                            // 選択状態の保存
     void restoreState();                                         // 選択状態の復元
@@ -181,7 +204,7 @@ public:
     /**
      * @brief 複数パッケージへ同じ操作を一括適用する
      *
-     * 名前は重複除去して処理し、適用できなかったパッケージはfailedへ記録する
+     * 名前は重複を除いて処理し、適用できなかったパッケージはfailedへ記録する
      *
      * @param names 対象パッケージ名
      * @param action install/remove/update/updateForce/keep/taboo/protect
@@ -191,9 +214,9 @@ public:
                                   const std::string& action);
 
     /**
-     * @brief インストール済みパッケージの対応するサブパッケージを選択する
+     * @brief インストール済みパッケージに対応するサブパッケージを選択する
      *
-     * 対象接尾辞は-devel/-debuginfo/-debugsourceのみ
+     * 対象の接尾辞は-devel/-debuginfo/-debugsourceのみ
      *
      * @param suffix サブパッケージの接尾辞
      * @return 変更・スキップ・失敗の集計結果
@@ -201,9 +224,9 @@ public:
     BatchResult selectSubpackages(const std::string& suffix);
 
     /**
-     * @brief 推奨パッケージをすべて選択して依存を解決する
+     * @brief 推奨パッケージをすべて選択して依存関係を解決する
      *
-     * 既推奨の抑制を一時的に解除し、solver.onlyRequiresが有効なら一時的に無効化する
+     * 推奨パッケージの抑制を一時的に解除し、solver.onlyRequiresが有効なら一時的に無効化する
      *
      * @return ソルバー結果 (success, problems)
      */
@@ -211,7 +234,7 @@ public:
 
     // 依存関係の解決
     SolverResult resolveDependencies();                          // ソルバーの実行
-    SolverResult updateAllPackages();                            // 全パッケージの更新 (doUpdate +依存関係の解決)
+    SolverResult updateAllPackages();                            // 全パッケージの更新 (doUpdateと依存関係の解決)
     SolverResult verifySystem();                                 // システム整合性の検証 (zypper verify相当)
     bool applySolution(int problemIndex, int solutionIndex);     // 解決策の適用
     SolverResult distUpgrade(bool allowVendorChange);            // ディストリビューションの更新 (doUpgrade、zypper dup)
@@ -220,6 +243,13 @@ public:
     QVariantMap getTransactionSummary();                         // 現在のプール状態のリスクサマリの取得
 
     // コミット
+    /**
+     * @brief コミット前に選択済み候補のライセンスを確認する
+     * @param askCallback 所有者へ確認プロンプトを送るコールバック
+     * @return 承認数、拒否候補、選択変更、失敗内容を持つ結果
+     * @note m_mutexを保持し、承認済み候補はm_acceptedLicensesへ記録する
+     */
+    LicenseConfirmationResult confirmLicenses(PromptAskFn askCallback);
     CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミットの実行
                         StateEventCallbackFn stateCallback = nullptr,
                         PromptAskFn askCallback = nullptr,
@@ -240,7 +270,7 @@ public:
     bool isCancelRequested() const { return m_cancelRequested.load(); }
     /** @brief 直前の操作が取消し要求で中断されたかを返す */
     bool lastOperationCancelled() const { return m_lastOpCancelled.load(); }
-    /** @brief 操作の開始を記録する */
+    /** @brief 操作の開始時に直前の取消し結果を消去する */
     void beginOperation() { m_lastOpCancelled = false; }
 
     /**
@@ -256,7 +286,7 @@ public:
     /**
      * @brief GPG鍵フィンガープリントを承認する (ワンショット)
      * @param fingerprint フィンガープリント (正規化前の生文字列も可)
-     * @return 正規化成功時はtrue、不正な場合はfalseを返しm_lastErrorを設定する
+     * @return 正規化に成功した場合はtrue、不正な場合はm_lastErrorを設定してfalseを返す
      * @note m_mutexは取得しない (receiverが独自mutexを持つ)
      */
     bool approveKeyFingerprint(const std::string &fingerprint);
@@ -264,12 +294,13 @@ public:
     /**
      * @brief 未信頼鍵の通知コールバックを設定する
      * @param cb 通知コールバック
-     * @note m_mutexは取得しない。initialize()前の呼び出しも可能
+     * @note m_mutexは取得しない
+     *       initialize()前の呼び出しも可能
      */
     void setUntrustedKeyCallback(UntrustedKeyCallbackFn cb);
 
     /**
-     * @brief 未知鍵のin-flight信頼プロンプトのコールバックを設定する
+     * @brief 未知の鍵に対する信頼確認プロンプトのコールバックを設定する
      * @param cb 回答コールバック (ワーカースレッドで実行)
      */
     void setKeyTrustPromptCallback(KeyTrustPromptFn cb);
@@ -277,14 +308,14 @@ public:
     /**
      * @brief 検証済みのローカルRPMを一時plaindirリポジトリ経由で選択・解決する
      *
-     * 各ファイルはLocalRpm::validatePathで検証済みであることが前提であり、root所有0700の一時ディレクトリへTOCTOU-safeにコピーする
+     * 各ファイルはLocalRpm::validatePathで検証済みであることが前提であり、root所有の0700一時ディレクトリへTOCTOU競合を避けてコピーする
      *
      * plaindirリポジトリは/etc/zypp/repos.dへは永続化せず、プールへロードしてS_Installを選択後にソルバーを実行する
      *
      * 未署名のRPMは許可するがunsignedPackagesに列挙する
      *
      * @param files インストール対象のローカルRPM
-     * @return 解決結果、失敗時はsuccess=falseかつm_lastErrorを設定する
+     * @return 解決結果 (失敗時はsuccess=falseとし、m_lastErrorを設定する)
      */
     LocalRpmInstallResult installLocalRpms(std::vector<LocalRpmFile> files);
 
@@ -302,8 +333,8 @@ private:
     /**
      * @brief 指定ポリシーでリポジトリをリフレッシュする
      *
-     * 各リポジトリに対してメタデータリフレッシュ、キャッシュ構築、キャッシュ読込を行う
-     * (キャンセル可能)
+     * 各リポジトリに対してメタデータのリフレッシュ、キャッシュの構築、キャッシュの読み込みを行う
+     * (取り消し可能)
      *
      * @param policy メタデータリフレッシュポリシー
      * @param autoRefreshOnly trueの場合は自動更新が有効なリポジトリだけを対象にする
@@ -333,7 +364,8 @@ private:
     /**
      * @brief ソルバー設定の上書きを適用する
      * @param resolver 対象のリゾルバ
-     * @note m_mutex保持中に呼ぶこと。設定された項目だけを適用する
+     * @note m_mutex保持中に呼ぶこと
+     *       設定された項目だけを適用する
      */
     void applySolverOverridesLocked(const zypp::Resolver_Ptr& resolver);
 
@@ -360,7 +392,7 @@ private:
      * @param serviceAlias 対象サービスのエイリアス
      * @param report 削除内容の報告 (エイリアスと理由のみ、URLなし)
      * @param preexistingRepoFiles サービスの追加/更新前に存在した.repoファイル
-     * @return 違反がなく全て健全な場合はtrue
+     * @return 違反がなくすべて健全な場合はtrue
      * @note 呼び出し側のm_mutex配下で呼ぶこと (内部でロックしない)
      */
     bool sanitizeServiceRepos(const std::string &serviceAlias, std::string &report,
@@ -369,7 +401,8 @@ private:
     /**
      * @brief サービスの.serviceファイルの汚染を検証し、必要であれば隔離する
      *
-     * メモリ上のサービスにRepoPolicy::checkServicePolicyを適用し、更にディスク上の.serviceファイルをServiceFileReaderで解析して一致を要求する
+     * メモリ上のサービスにRepoPolicy::checkServicePolicyを適用し、
+ * さらにディスク上の.serviceファイルをServiceFileReaderで解析して一致を要求する
      * 不一致の場合はサービスを削除し、残留ファイルを除去する
      *
      * 残留ファイルの除去は、操作前にファイルがこのサービス専有であったことが前提となる
@@ -395,7 +428,7 @@ private:
     SolverOverrides m_solverOverrides;                                // ソルバー設定の上書き (未設定項目はzypp.conf既定値)
 
     // ディストリビューション更新
-    bool m_distUpgradeMode = false;                                   // DistUpgradeの選択を保持中 (再解決もdupで行う)
+    bool m_distUpgradeMode = false;                                   // DistUpgrade選択の保持中 (再解決もdup)
     bool m_dupAllowVendorChange = false;                              // DistUpgradeのベンダー変更許可
 
     // 排他制御・エラー・取消し
@@ -408,7 +441,8 @@ private:
     // コールバック受信器・コミット時の対話
     KeyRingReceiver m_keyRingReceiver;                                // GPG鍵の信頼コールバック
     DigestReceiver m_digestReceiver;                                  // ダイジェスト検証コールバック
-    std::set<std::string> m_acceptedLicenses;                         // 承認済みライセンス (pkg|version)
+    // 候補の名前・版・arch・repo・本文SHA-256に束縛した承認
+    std::set<std::string> m_acceptedLicenses;
 
     // ローカルRPM
     std::string m_localRpmAlias;                                      // 一時ローカルRPMリポジトリのエイリアス

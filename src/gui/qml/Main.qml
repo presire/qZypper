@@ -3,9 +3,9 @@
  * @brief qZypperのメインウィンドウ (ApplicationWindow)
  *
  * main.cppからロードされる最上位コンポーネントで、ヘッダのビュータブ、左ペイン (検索/概要/リポジトリ/パターン/パッチ概要とステータスフィルタ)、
- * 右ペイン (パッケージ一覧と詳細)、フッタ (進捗表示とApply/Cancel) を構成する
+ * 右ペイン (パッケージ一覧と詳細)、フッタ (進捗表示と[Apply]/[Cancel]) を構成する
  *
- * 各ダイアログを生成し、PackageController経由のD-BusシグナルをConnectionsで受けて、リフレッシュ/依存解決/コミット/セッション管理の一連フローを制御する
+ * 各ダイアログを生成し、ConnectionsでPackageControllerのD-Busシグナルを受けて、リフレッシュ、依存解決、コミット、セッション管理の一連の流れを制御する
  *
  * 入力 : なし (最上位のため外部プロパティは受けない)
  * 出力 : 自身はシグナルを発行しない (子コンポーネントのハンドラで完結する)
@@ -27,11 +27,14 @@ ApplicationWindow {
     // --- テーマ切り替え ---
     // 初回起動時はシステム設定に従い、以降はユーザ選択をSettingsへ永続化
     property bool darkMode: themeSettings.darkMode  // ダークモードフラグ (theme設定とバインド)
-    property bool applyPendingCommit: false         // [Apply Changes]起点のresolveかを追跡 (非同期チェーン用)
+    property bool applyPendingCommit: false         // [Apply Changes]から始まった依存解決かを追跡 (非同期チェーン用)
     property bool sessionWasConnected: false        // 接続済みだったか (切断時の再開始ダイアログ表示判定用)
     property bool quitting: false                   // 終了時にreleaseSessionの応答を待っているか
+    property bool finalQuit: false                  // 終了処理が完了し、ウィンドウのcloseを受け入れてよいか
+    property bool releasingSession: false           // [End Editing Session]の解放応答を待っているか
+    property string exitCheckAction: ""             // 最新の変更予定を取得中の操作 (quit/endSession、空文字列は取得中でない)
     property bool startupRefreshShown: false        // 起動時処理のリフレッシュで進捗モーダルを開いているか
-    property bool updatableLoadPending: false       // 更新可能パッケージの一覧を読込中か (読込の成否判定用)
+    property bool updatableLoadPending: false       // 更新可能パッケージの一覧を読込中か (読込成功の判定に使う)
     property bool updatableLoadDeferred: false      // 処理中に[Updates]タブを開いたため、一覧の読込を保留しているか
 
     // --- 表示タブのTabBar index (左ペインのStackLayoutも同じ順序で並べる) ---
@@ -43,6 +46,7 @@ ApplicationWindow {
     readonly property int patchesTabIndex: 5     // [Patches]タブ
     readonly property int rpmGroupsTabIndex: 6   // [RPM Groups]タブ
     readonly property int languagesTabIndex: 7   // [Languages]タブ
+    readonly property int productsTabIndex: 8    // [Products]タブ
 
     // --- ヘルパー関数 ---
 
@@ -170,14 +174,21 @@ ApplicationWindow {
 
     /**
      * @brief 接続済みかつ待機中のときだけ依存解決を開始して適用フローを記録する
+     * @param continuePreparation ライセンス拒否後の再解決では確認状態を維持する場合はtrue
      * @note 戻り値は無く、開始できない状態では早期に戻る
      * @note applyPendingCommitを立て、PackageController::resolveDependenciesを呼ぶ
      */
-    function applyChanges() {
+    function applyChanges(continuePreparation) {
         // 依存解決を開始できない状態ではフラグを立てない (resolveFinishedが届かず残るため)
         if (!PackageController.connected || !PackageController.initialized || PackageController.busy) {
             return
         }
+        // PackageController::resetCommitPreparationで通常の編集から持ち越した確認状態を破棄する
+        if (!continuePreparation) {
+            PackageController.resetCommitPreparation()
+        }
+
+        // PackageController::resolveDependenciesを呼び、確認対象の依存関係を非同期で解決する
         root.applyPendingCommit = true
         PackageController.resolveDependencies()
     }
@@ -207,6 +218,146 @@ ApplicationWindow {
         updateInfoDialog.title = title
         updateInfoDialog.message = message
         updateInfoDialog.open()
+    }
+
+    // -- 終了・セッション終了の共通フロー --
+    // ウィンドウの[×]、[Ctrl]+[Q]、[Quit]メニュー、フッタの[Cancel]は全てrequestQuitを経由する
+    // 選択変更直後はキャッシュが古い場合があるため、最新の変更予定を取得してから判定する
+    // 未適用の変更がある場合は確認し (既定は[No])、承認後はセッション解放 (選択状態の破棄) を待ってから終了する
+
+    /**
+     * @brief 終了要求を受け付け、必要であれば変更の破棄を確認する
+     * @note 終了処理中の再要求は無視し、処理中 (busy) は終了を拒否して理由を表示する
+     * @note PackageController::checkPendingChangesForExitで最新の変更予定を取得し、結果はonExitCheckFinishedで判定する
+     * @note [End Editing Session]の解放応答待ちの場合は、その解放に合流して完了後に終了する
+     */
+    function requestQuit() {
+        // セッション解放の応答待ち、変更予定の取得中、または終了済みの場合は、二重に終了処理を始めない
+        if (root.quitting || root.finalQuit || root.exitCheckAction !== "") {
+            return
+        }
+
+        // 編集セッションが無い場合は破棄する変更も無いため、そのまま終了する
+        if (!PackageController.initialized) {
+            root.finishQuit()
+            return
+        }
+
+        // [End Editing Session]の解放が進行中の場合は、ReleaseSessionを二重に送らず完了後に終了する
+        if (root.releasingSession) {
+            root.quitting = true
+            return
+        }
+
+        // パッケージの適用等の実行中にセッションを解放すると処理が中断されるため、終了を拒否する
+        if (PackageController.busy) {
+            root.showInfo(qsTr("Operation in progress"),
+                          qsTr("qZypper cannot quit while an operation is running.\n"
+                               + "Wait until it finishes or cancel it, then quit again."))
+            return
+        }
+
+        // PackageController::checkPendingChangesForExitで最新の変更予定を取得してから判定する
+        root.exitCheckAction = "quit"
+        PackageController.checkPendingChangesForExit()
+    }
+
+    /**
+     * @brief [End Editing Session]の要求を受け付け、必要であれば変更の破棄を確認する
+     * @note PackageController::checkPendingChangesForExitで最新の変更予定を取得し、結果はonExitCheckFinishedで判定する
+     */
+    function requestEndSession() {
+        // 終了処理中・解放の応答待ち・変更予定の取得中・セッション未開始の場合は何もしない
+        if (root.quitting || root.releasingSession || root.exitCheckAction !== ""
+                || !PackageController.initialized) {
+            return
+        }
+
+        // 実行中の処理を中断させないため、処理中はセッションの終了を拒否する
+        if (PackageController.busy) {
+            root.showInfo(qsTr("Operation in progress"),
+                          qsTr("The editing session cannot be ended while an operation is running.\n"
+                               + "Wait until it finishes or cancel it, then try again."))
+            return
+        }
+
+        // PackageController::checkPendingChangesForExitで最新の変更予定を取得してから判定する
+        root.exitCheckAction = "endSession"
+        PackageController.checkPendingChangesForExit()
+    }
+
+    /**
+     * @brief 最新の変更予定の取得結果に応じて、破棄の確認または終了処理へ進む
+     * @param action 取得を要求した操作 (quit/endSession)
+     * @param ok 変更予定の取得に成功したか
+     * @param hasChanges 未適用の変更があるか
+     * @note 取得に失敗した場合は変更を失わないよう、終了を中止してerrorDialogを開く
+     * @note 未適用の変更がある場合はdiscardChangesDialogを開き、無い場合はbeginQuitまたはbeginEndSessionを呼ぶ
+     */
+    function continueExit(action, ok, hasChanges) {
+        // 取得に失敗し、セッションも失われた場合は破棄する変更が無いため、終了要求のみ続行する
+        if (!ok && !PackageController.initialized) {
+            if (action === "quit") {
+                root.finishQuit()
+            }
+            return
+        }
+
+        // 取得に失敗した場合は未適用の変更の有無が分からないため、変更を失わないよう中止する
+        if (!ok) {
+            errorDialog.message = qsTr("The pending changes could not be checked. "
+                                       + "The operation was cancelled to avoid discarding changes.")
+            errorDialog.open()
+            return
+        }
+
+        // 未適用の変更を破棄してよいかを利用者に確認する
+        if (hasChanges) {
+            discardChangesDialog.action = action
+            discardChangesDialog.open()
+            return
+        }
+
+        if (action === "quit") {
+            root.beginQuit()
+        }
+        else {
+            root.beginEndSession()
+        }
+    }
+
+    /**
+     * @brief セッションを解放してから終了する
+     * @note quittingをtrueにする
+     * @note PackageController::releaseSessionを呼び出し、解放の完了 (またはD-Busのタイムアウト) をonSessionReleasedで受け取る
+     */
+    function beginQuit() {
+        // 解放の応答待ちの間に再度呼ばれても、ReleaseSessionを二重に送らない
+        if (root.quitting) {
+            return
+        }
+
+        root.quitting = true
+        PackageController.releaseSession()
+    }
+
+    /**
+     * @brief 編集セッションを解放する
+     * @note releasingSessionをtrueにする
+     * @note PackageController::releaseSessionを呼び出し、結果はonSessionReleasedで受け取る
+     */
+    function beginEndSession() {
+        root.releasingSession = true
+        PackageController.releaseSession()
+    }
+
+    /**
+     * @brief ウィンドウのcloseを受け入れる状態にしてアプリケーションを終了する
+     * @note finalQuitをtrueにしてからQt.quit()を呼ぶ
+     */
+    function finishQuit() {
+        root.finalQuit = true
+        Qt.quit()
     }
 
     // ソルバー結果 (dup / パッチ一括選択 / 検証) を共通フローで処理する:
@@ -251,24 +402,22 @@ ApplicationWindow {
 
     // テーマ配色はC++側へ委任し、PackageController.applyDarkMode()が
     // QGuiApplication::setPalette()で全コントロールへ一括適用する
-    // 理由 : Qt 6.5ではQMLのpaletteグループ化プロパティへの動的バインディングが
+    // 理由: Qt 6.5ではQMLのpaletteグループ化プロパティへの動的バインディングが
     // 子コントロールへ正しく伝播しないため
     onDarkModeChanged: {
         PackageController.applyDarkMode(darkMode)
     }
 
-    /**
-     * @brief セッション解放の応答を待ってから終了し、応答なしではTimerが終了する
-     * @param close 終了要求イベント
-     * @note 初期化済みの初回終了要求では終了を保留し、quittingを設定してquitTimerを開始し、PackageController::releaseSessionを呼ぶ
-     */
+    // 終了処理が完了するまでウィンドウのcloseを保留し、終了要求をrequestQuitへ渡す
+    // Qt.quit()もウィンドウのcloseを経由するため、[Quit]メニュー等の終了要求もここで確認される
     onClosing: function(close) {
-        if (PackageController.initialized && !root.quitting) {
-            close.accepted = false
-            root.quitting = true
-            quitTimer.start()
-            PackageController.releaseSession()
+        // finishQuitから呼ばれた最終的なcloseだけは、確認せずに受け入れる
+        if (root.finalQuit) {
+            return
         }
+
+        close.accepted = false
+        root.requestQuit()
     }
 
     // テーマ設定の永続化 (ダークモードの選択を保存する)
@@ -320,7 +469,7 @@ ApplicationWindow {
     Settings {
         id: solverStore  // ソルバー設定の参照名
 
-        property int installRecommends: -1  // 推奨パッケージをインストールするか (-1 : 未設定でzypp.confに従う、0 : しない、1 : する)
+        property int installRecommends: -1  // 推奨パッケージをインストールするか (-1: 未設定でzypp.confに従う、0: しない、1: する)
 
         category: "solver"  // 設定ファイル内のグループ名
     }
@@ -340,9 +489,9 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Q"  // 割り当てるキー
 
-        // アプリケーションを終了する
+        // 未適用の変更を確認してからアプリケーションを終了する
         onActivated: {
-            Qt.quit()
+            root.requestQuit()
         }
     }
 
@@ -377,43 +526,44 @@ ApplicationWindow {
             PackageController.installAllRecommended()
         }
 
-        // ソルバー設定の切り替え : PackageController::setSolverOptionで即時に適用する
+        // ソルバー設定の切り替え: PackageController::setSolverOptionで即時に適用する
         // 保存値は適用の成功通知 (solverOptionApplied) を受けたときだけ更新する
         onSolverOptionToggled: function(key, value) {
             PackageController.setSolverOption(key, value)
         }
 
-        // [Show -devel Packages]の切り替え : 保存値を更新する (一覧のhideDevelは保存値にバインドしている)
+        // [Show -devel Packages]の切り替え: 保存値を更新する (一覧のhideDevelは保存値にバインドしている)
         onShowDevelToggled: function(show) {
             packageFilterStore.hideDevel = !show
         }
 
-        // [Show -debuginfo/-debugsource Packages]の切り替え : 保存値を更新する (一覧のhideDebugは保存値にバインドしている)
+        // [Show -debuginfo/-debugsource Packages]の切り替え: 保存値を更新する (一覧のhideDebugは保存値にバインドしている)
         onShowDebugToggled: function(show) {
             packageFilterStore.hideDebug = !show
         }
 
-        // [Refresh Repositories at Startup]の切り替え : 次回起動時に使う保存値を更新する
+        // [Refresh Repositories at Startup]の切り替え: 次回起動時に使う保存値を更新する
         onRefreshOnStartupToggled: function(enabled) {
             refreshStore.onStartup = enabled
         }
 
-        // [Update All Packages]メニュー : 全パッケージ更新の選択を要求する
+        // [Update All Packages]メニュー: 全パッケージ更新の選択を要求する
         onUpdateAllRequested: {
             root.updateAllPackages()
         }
 
-        // [Apply Changes]メニュー : 変更の適用フローを開始する
+        // [Apply Changes]メニュー: 変更の適用フローを開始する
+        // ConflictDialogの解決後に、拒否履歴を維持したまま依存関係解決を再開する
         onApplyChangesRequested: {
             root.applyChanges()
         }
 
-        // [Manage Repositories]メニュー : リポジトリ管理ドロワーを開く
+        // [Manage Repositories]メニュー: リポジトリ管理ドロワーを開く
         onManageReposRequested: {
             repoDrawer.open()
         }
 
-        // [Refresh Repositories]メニュー : 全リポジトリのリフレッシュを開始する
+        // [Refresh Repositories]メニュー: 全リポジトリのリフレッシュを開始する
         onRefreshReposRequested: {
             // 未接続/処理中は要求が即時破棄されrefreshFinishedが届かないため、オーバーレイを開かない
             if (!PackageController.connected || PackageController.busy) {
@@ -424,42 +574,42 @@ ApplicationWindow {
             PackageController.refreshReposAsync()
         }
 
-        // [About qZypper]メニュー : qZypperの情報ダイアログを開く
+        // [About qZypper]メニュー: qZypperの情報ダイアログを開く
         onAboutqZypperRequested: {
             aboutqZypperDialog.open()
         }
 
-        // [About Qt]メニュー : Qtの情報ダイアログを開く
+        // [About Qt]メニュー: Qtの情報ダイアログを開く
         onAboutQtRequested: {
             aboutQtDialog.open()
         }
 
-        // [End Session]メニュー : 編集セッションを解放する (結果はonSessionReleasedで受け取る)
+        // [End Session]メニュー: 未適用の変更を確認してから編集セッションを解放する (結果はonSessionReleasedで受け取る)
         onEndSessionRequested: {
-            PackageController.releaseSession()
+            root.requestEndSession()
         }
 
-        // [Distribution Upgrade]メニュー : ディストリビューション更新の確認ダイアログを開く
+        // [Distribution Upgrade]メニュー: ディストリビューション更新の確認ダイアログを開く
         onDistUpgradeRequested: {
             distUpgradeDialog.open()
         }
 
-        // [Package Locks]メニュー : パッケージロックの管理ダイアログを開く
+        // [Package Locks]メニュー: パッケージロックの管理ダイアログを開く
         onPackageLocksRequested: {
             locksDialog.open()
         }
 
-        // [History]メニュー : 操作履歴ダイアログを開く
+        // [History]メニュー: 操作履歴ダイアログを開く
         onHistoryRequested: {
             historyDialog.open()
         }
 
-        // [Verify System]メニュー : システムの検証を開始する (結果はonVerifyFinishedで受け取る)
+        // [Verify System]メニュー: システムの検証を開始する (結果はonVerifyFinishedで受け取る)
         onVerifySystemRequested: {
             PackageController.verifySystem()
         }
 
-        // [Install Local RPMs]メニュー : RPMファイルの選択ダイアログを開く
+        // [Install Local RPMs]メニュー: RPMファイルの選択ダイアログを開く
         onInstallLocalRpmsRequested: {
             localRpmFileDialog.open()
         }
@@ -504,12 +654,12 @@ ApplicationWindow {
             sourceComponent: Component {
                 // リポジトリ/サービス管理画面本体
                 Dialogs.RepoManagerDrawerContent {
-                    // [閉じる]ボタン : ドロワーを閉じる
+                    // [閉じる]ボタン: ドロワーを閉じる
                     onCloseRequested: {
                         repoDrawer.close()
                     }
 
-                    // [すべてリフレッシュ]ボタン : 全リポジトリのリフレッシュを開始する
+                    // [すべてリフレッシュ]ボタン: 全リポジトリのリフレッシュを開始する
                     onRefreshAllRequested: {
                         // 未接続または処理中は要求が即時に破棄されrefreshFinishedが届かないため、オーバーレイを開かない
                         if (!PackageController.connected || PackageController.busy) {
@@ -519,7 +669,7 @@ ApplicationWindow {
                         PackageController.refreshReposAsync()
                     }
 
-                    // [Refresh]メニューの[Selected Repository] : 選択中のリポジトリのリフレッシュを開始する
+                    // [Refresh]メニューの[Selected Repository]: 選択中のリポジトリのリフレッシュを開始する
                     onRefreshRepoRequested: function(alias) {
                         // 未接続または処理中は要求が即時に破棄されrefreshFinishedが届かないため、オーバーレイを開かない
                         if (!PackageController.connected || PackageController.busy) {
@@ -529,7 +679,7 @@ ApplicationWindow {
                         PackageController.refreshSingleRepo(alias)
                     }
 
-                    // [Services]タブの[Refresh]ボタン : 選択中のサービスのリフレッシュを開始する
+                    // [Services]タブの[Refresh]ボタン: 選択中のサービスのリフレッシュを開始する
                     onRefreshServiceRequested: function(alias) {
                         // 未接続または処理中は要求が即時に破棄されrefreshFinishedが届かないため、オーバーレイを開かない
                         if (!PackageController.connected || PackageController.busy) {
@@ -570,19 +720,6 @@ ApplicationWindow {
     // --- リフレッシュ進捗オーバーレイ ---
     RefreshOverlay {
         id: refreshOverlay  // リフレッシュ進捗オーバーレイの参照名
-    }
-
-    // 終了時にreleaseSessionの応答を待つためのタイマ (応答が無ければ強制終了)
-    Timer {
-        id: quitTimer  // 終了待ちタイマの参照名
-
-        interval: 3000  // 応答を待つ最大時間 (ミリ秒)
-        repeat: false   // 1回だけ実行する
-
-        // 応答が無いまま時間切れになったため強制終了する
-        onTriggered: {
-            Qt.quit()
-        }
     }
 
     // --- ヘッダツールバー ---
@@ -641,6 +778,12 @@ ApplicationWindow {
                         // 要求状態はセッション中に変わるため、表示のたびにPackageController::loadLocalesで読み直す
                         PackageController.loadLocales()
                     }
+                    else if (currentIndex === root.productsTabIndex) {
+                        // 製品一覧は読み取り専用で、初回表示時だけ読み込む
+                        // 以降はプール再読込時にPackageControllerが更新する
+                        // ProductView::ensureLoadedで初回のみ取得する
+                        productView.ensureLoaded()
+                    }
                 }
 
                 // [Search]タブ
@@ -652,7 +795,7 @@ ApplicationWindow {
                 // [Updates]タブ (更新可能数が分かっている場合は件数を併記する)
                 TabButton {
                     width: Math.max(80, implicitWidth)  // 最小80pxを確保したタブ幅
-                    // PackageController::updateCount (-1 : 不明、0 : 更新なし) が1以上の場合のみ件数を表示する
+                    // PackageController::updateCount (-1: 不明、0: 更新なし) が1以上の場合のみ件数を表示する
                     text: PackageController.updateCount > 0 ? qsTr("Updates (%1)").arg(PackageController.updateCount)
                                                             : qsTr("Updates")
                 }
@@ -693,6 +836,12 @@ ApplicationWindow {
                     width: Math.max(90, implicitWidth)  // 最小90pxを確保したタブ幅
                     text: qsTr("Languages")             // タブの表示名
                 }
+
+                // [Products]タブ
+                TabButton {
+                    width: Math.max(80, implicitWidth)  // 最小80pxを確保したタブ幅
+                    text: qsTr("Products")              // タブの表示名
+                }
             }
 
             // 残りの幅を埋めてテーマ切り替えを右寄せにするスペーサー
@@ -732,7 +881,7 @@ ApplicationWindow {
         anchors.fill: parent        // ヘッダとフッタの間の領域全体に広げる
         orientation: Qt.Horizontal  // 左右に分割する
 
-        // 左ペイン : フィルタ
+        // 左ペイン: フィルタ
         Pane {
             id: leftPane  // 左ペインの参照名
 
@@ -776,22 +925,22 @@ ApplicationWindow {
                         // [Updates]タブの表示中は、右ペインの一覧が更新可能パッケージになっている
                         active: filterTabBar.currentIndex === root.updatesTabIndex
 
-                        // [Show Updates]ボタン : 更新可能なパッケージを読み直す
+                        // [Show Updates]ボタン: 更新可能なパッケージを読み直す
                         onShowUpdatesRequested: {
                             root.showUpdatableList()
                         }
 
-                        // [Update All]ボタン : ドロワーの[Update All Packages]と同じ処理を行う
+                        // [Update All]ボタン: ドロワーの[Update All Packages]と同じ処理を行う
                         onUpdateAllRequested: {
                             root.updateAllPackages()
                         }
 
-                        // [Distribution Upgrade...]ボタン : ディストリビューション更新の確認ダイアログを開く
+                        // [Distribution Upgrade...]ボタン: ディストリビューション更新の確認ダイアログを開く
                         onDistUpgradeRequested: {
                             distUpgradeDialog.open()
                         }
 
-                        // [Refresh Repositories]ボタン : ドロワーの[Refresh Repositories]と同じ処理を行う
+                        // [Refresh Repositories]ボタン: ドロワーの[Refresh Repositories]と同じ処理を行う
                         onRefreshRequested: {
                             navDrawer.refreshReposRequested()
                         }
@@ -806,7 +955,7 @@ ApplicationWindow {
                     RepositoryView {
                         id: repositoryView  // リポジトリビューの参照名
 
-                        // リポジトリ選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        // リポジトリ選択で読込を開始した: 一定時間を超えた場合だけウェイトポップアップを表示する
                         onPackageLoadStarted: {
                             packageLoadWaitDialog.start()
                         }
@@ -817,7 +966,7 @@ ApplicationWindow {
                         id: patternView  // パターンビューの参照名
                     }
 
-                    // パッチタブ : 左ペインには必要パッチの件数概要を表示 (一覧は右ペイン)
+                    // パッチタブ: 左ペインには必要パッチの件数概要を表示 (一覧は右ペイン)
                     Pane {
                         id: patchSummaryPane  // パッチ概要の参照名
 
@@ -872,13 +1021,13 @@ ApplicationWindow {
                                 text: qsTr("Needed security patches: %1").arg(patchSummaryPane.counts.security)
                             }
 
-                            // インストール対象に選ばれているパッチの件数
+                            // インストール対象に選択中のパッチ件数
                             Label {
                                 // 選択済みパッチの件数
                                 text: qsTr("Selected for installation: %1").arg(patchSummaryPane.counts.selected)
                             }
 
-                            // 再起動を推奨する必要なパッチの件数 (該当するパッチがある場合のみ注意を促す)
+                            // 再起動を推奨する必要パッチの件数 (該当がある場合のみ注意を促す)
                             Label {
                                 visible: patchSummaryPane.counts.reboot > 0  // 該当するパッチがある場合のみ表示する
                                 // 再起動推奨のパッチ件数
@@ -897,7 +1046,7 @@ ApplicationWindow {
                     RpmGroupsView {
                         id: rpmGroupsView  // RPMグループビューの参照名
 
-                        // グループ選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        // グループ選択で読込を開始した: 一定時間を超えた場合だけウェイトポップアップを表示する
                         onPackageLoadStarted: {
                             packageLoadWaitDialog.start()
                         }
@@ -907,10 +1056,16 @@ ApplicationWindow {
                     LanguagesView {
                         id: languagesView  // 言語ビューの参照名
 
-                        // ロケール選択で読込を開始した : 一定時間を超えた場合だけウェイトポップアップを表示する
+                        // ロケール選択で読込を開始した: 一定時間を超えた場合だけウェイトポップアップを表示する
                         onPackageLoadStarted: {
                             packageLoadWaitDialog.start()
                         }
+                    }
+
+                    // [Products]タブのビュー
+                    // 参照のみでインストール/削除操作は行わない
+                    ProductView {
+                        id: productView  // 製品ビューの参照名
                     }
                 }
 
@@ -942,7 +1097,7 @@ ApplicationWindow {
             }
         }
 
-        // 右ペイン : パッケージリスト+詳細
+        // 右ペイン: パッケージリスト+詳細
         SplitView {
             SplitView.fillWidth: true  // 残りの幅をすべて使う
             orientation: Qt.Vertical   // 上下に分割する
@@ -1005,14 +1160,13 @@ ApplicationWindow {
                 text: root.operationStageText(PackageController.operationState)  // 現在の操作フェーズ
             }
 
-            // 変更を破棄して終了するボタン
+            // 未適用の変更を破棄して終了するボタン (破棄の前に確認する)
             Button {
                 text: qsTr("Cancel")  // ボタンの表示名
 
-                // 起動時に保存した状態へ戻してから終了する
+                // 未適用の変更がある場合は破棄の確認後に終了する (破棄はセッション解放で行う)
                 onClicked: {
-                    PackageController.restoreState()
-                    Qt.quit()
+                    root.requestQuit()
                 }
             }
 
@@ -1045,7 +1199,7 @@ ApplicationWindow {
         id: packageLoadWaitDialog  // パッケージ読込待機ダイアログの参照名
     }
 
-    // コミット進捗ダイアログ (myrlyn風To Do / Downloads / Doing / Done)
+    // コミット進捗ダイアログ (myrlyn風のTo Do / Downloads / Doing / Done)
     Dialogs.CommitProgressDialog {
         id: commitProgressDialog  // コミット進捗ダイアログの参照名
     }
@@ -1066,12 +1220,14 @@ ApplicationWindow {
 
         // 解決策の適用後に、変更の適用フローを再開する
         onApplyChangesRequested: {
-            root.applyChanges()
+            root.applyChanges(true)
         }
 
         // 適用フローを中断したため、保留中の適用フラグを解除する
+        // ConflictDialogで適用を中断したため、PackageControllerの確認状態も破棄する
         onApplyPendingCommitCleared: {
             root.applyPendingCommit = false
+            PackageController.resetCommitPreparation()
         }
     }
 
@@ -1086,10 +1242,16 @@ ApplicationWindow {
 
         diskUsageModel: PackageController.diskUsage               // PackageController::diskUsageのディスク使用量
         transactionSummary: PackageController.transactionSummary  // PackageController::transactionSummaryの変更概要
+        rejectedLicensePackages: PackageController.rejectedLicensePackages  // PackageController::rejectedLicensePackagesの除外一覧
+
+        // 確認画面を閉じて編集へ戻る場合は、PackageControllerの確認状態を破棄する
+        onRejected: {
+            PackageController.resetCommitPreparation()
+        }
 
         // 確認後にコミットを開始する
         onAccepted: {
-            // コミット実行 (非同期 : 進捗はシグナルで通知される)
+            // コミット実行 (非同期: 進捗はシグナルで通知される)
             var pending = PackageController.pendingChanges
             commitProgressDialog.initFromPendingChanges(pending)
             commitProgressDialog.open()
@@ -1131,6 +1293,98 @@ ApplicationWindow {
         // ロックが解放された後に、中断した操作をやり直す
         onRetryRequested: {
             PackageController.retryOperation()
+        }
+    }
+
+    // --- 未適用の変更の破棄確認ダイアログ ---
+    // 終了・セッション終了の前に表示し、既定のボタンは[No] (変更を保持する)
+    Dialog {
+        id: discardChangesDialog  // 破棄確認ダイアログの参照名
+
+        property string action: "quit"  // 承認時の操作 ("quit": 終了、"endSession": 編集セッションの終了)
+
+        anchors.centerIn: parent                 // ウィンドウの中央に表示する
+        width: Math.min(root.width * 0.7, 460)   // ウィンドウ幅の70% (最大460px)
+        title: qsTr("Discard Changes")           // ダイアログのタイトル
+        standardButtons: Dialog.Yes | Dialog.No  // [Yes]ボタンと[No]ボタンを表示する
+        modal: true                              // 表示中は背後の画面を操作できないようにする
+        closePolicy: Dialog.CloseOnEscape        // [Esc]キーは[No]と同じく変更を保持する
+
+        // 誤操作で変更を失わないよう、[No]ボタンへフォーカスを移す
+        onOpened: {
+            const noButton = standardButton(Dialog.No)
+
+            if (noButton) {
+                noButton.forceActiveFocus()
+            }
+        }
+
+        // 変更を破棄して、要求された操作 (終了または編集セッションの終了) を続行する
+        onAccepted: {
+            // 確認中に変更の適用等が始まった場合は、実行中の処理を中断させないため続行しない
+            if (PackageController.busy) {
+                return
+            }
+
+            if (action === "endSession") {
+                root.beginEndSession()
+            }
+            else {
+                root.beginQuit()
+            }
+        }
+
+        // 破棄してよいかを問い合わせる確認メッセージ
+        Label {
+            width: parent ? parent.width : implicitWidth  // ダイアログの本文幅に合わせる
+
+            // 承認時の操作に応じて、終了または編集セッションの終了を問い合わせる
+            text: discardChangesDialog.action === "endSession"
+                  ? qsTr("There are pending changes that have not been applied.\nReally abandon all changes and end the editing session?")
+                  : qsTr("There are pending changes that have not been applied.\nReally abandon all changes and exit?")
+
+            wrapMode: Text.Wrap         // 長い文は折り返す
+            textFormat: Text.PlainText  // HTMLとして解釈させない
+        }
+    }
+
+    // --- セッション解放中の待機ダイアログ ---
+    // 変更の破棄を承認した後、解放の応答を受け取るまで編集操作をさせない
+    Dialog {
+        id: releasingSessionDialog  // セッション解放待機ダイアログの参照名
+
+        anchors.centerIn: parent  // ウィンドウの中央に表示する
+        width: 320                // ダイアログの幅
+
+        // 変更の破棄を承認した後、セッション解放の応答を受け取るまでの間だけ表示し、編集操作をさせない
+        visible: (root.quitting || root.releasingSession) && !root.finalQuit
+
+        // 終了とセッション終了のどちらの解放を待っているかに応じたタイトル
+        title: root.quitting ? qsTr("Quitting...") : qsTr("Ending editing session...")
+
+        standardButtons: Dialog.NoButton  // 解放が終わるまで閉じさせないため、ボタンを表示しない
+        modal: true                       // 表示中は背後の画面を操作できないようにする
+        closePolicy: Dialog.NoAutoClose   // [Esc]キーや外側のクリックでは閉じない
+
+        // 処理中インジケータと待機メッセージを横に並べた本文
+        contentItem: RowLayout {
+            spacing: 12  // インジケータとメッセージの間隔
+
+            // セッション解放の処理中であることを示すインジケータ
+            BusyIndicator {
+                Layout.preferredWidth: 32                // インジケータの幅
+                Layout.preferredHeight: 32               // インジケータの高さ
+                running: releasingSessionDialog.visible  // ダイアログの表示中のみ回転させる
+            }
+
+            // 選択状態を破棄してセッションを解放していることを伝える待機メッセージ
+            Label {
+                Layout.fillWidth: true  // 残りの幅に広げる
+
+                text: qsTr("Discarding the selection and releasing the editing session...")  // 待機メッセージ
+
+                wrapMode: Text.Wrap  // 長い文は折り返す
+            }
         }
     }
 
@@ -1331,6 +1585,10 @@ ApplicationWindow {
          * @note infoToastで再読込の完了を通知する
          */
         function onPoolReloaded() {
+            // 外部変更後の古い確認画面を閉じ、PackageControllerが再読込した選択と混在させない
+            root.applyPendingCommit = false
+            commitConfirmDialog.close()
+            conflictDialog.close()
             infoToast.show(qsTr("Package database was changed externally and reloaded"))
         }
     }
@@ -1342,17 +1600,50 @@ ApplicationWindow {
         /**
          * @brief 解放結果に応じて終了を続行し、通常時はセッション再開を促す
          * @param ok セッション解放が成功したか
-         * @note 戻り値は無く、終了中はQt.quit後に早期に戻る
-         * @note 終了中はタイマーを止めて終了し、通常時はsessionEndedDialogを開く
+         * @note quittingとreleasingSessionをfalseに戻してから結果を判定する
+         * @note 処理中で拒否された場合は終了も中止してerrorDialogを開き、終了中に解放した場合はfinishQuitで終了する
+         * @note 通常時に解放した場合はsessionEndedDialogを開く
          */
         function onSessionReleased(ok) {
-            // ウィンドウを閉じる途中の場合は、応答を受け取れたので待たずに終了する
-            if (root.quitting) {
-                quitTimer.stop()
-                Qt.quit()
+            const wasQuitting = root.quitting   // 終了要求による解放だったか
+
+            root.quitting = false
+            root.releasingSession = false
+
+            // バックエンドが処理中で解放を拒否した場合は、セッションが残っているため終了せず編集を続ける
+            if (!ok && PackageController.initialized) {
+                errorDialog.message = qsTr("The editing session could not be ended because the backend is busy. Try again later.")
+                errorDialog.open()
                 return
             }
+
+            // ウィンドウを閉じる途中の場合は、セッションが解放されたので終了する
+            // (応答なし・バックエンド消失でも、バックエンドはセッション所有者の切断を検出して選択状態を破棄する)
+            if (wasQuitting) {
+                root.finishQuit()
+                return
+            }
+
             sessionEndedDialog.open()
+        }
+
+        /**
+         * @brief 終了前の変更予定の取得結果を受け取り、終了処理を続ける
+         * @param ok 変更予定の取得に成功したか
+         * @param hasPendingChanges 未適用の変更があるか
+         * @note exitCheckActionを空に戻してからcontinueExitを呼ぶ
+         */
+        function onExitCheckFinished(ok, hasPendingChanges) {
+            const action = root.exitCheckAction   // 取得を要求した操作
+
+            root.exitCheckAction = ""
+
+            // 終了要求以外から発行された通知は無視する
+            if (action === "") {
+                return
+            }
+
+            root.continueExit(action, ok, hasPendingChanges)
         }
     }
 
@@ -1521,7 +1812,7 @@ ApplicationWindow {
          * @brief 全更新の選択結果を情報または競合解決画面に表示する
          * @param result 全更新の選択結果
          * @note 戻り値は無く、結果が無効なときは早期に戻る
-         * @note 変更なしはshowInfo、成功時はshowInfo、失敗時はconflictDialogを表示する
+         * @note 変更なしと成功時はshowInfo、失敗時はconflictDialogを表示する
          */
         function onUpdateAllFinished(result) {
             if (!result || result.backendCrashed || result.busError) {
@@ -1558,6 +1849,7 @@ ApplicationWindow {
             if (!result || result.backendCrashed || result.busError || !PackageController.connected) {
                 // 依存解決が進行せず終了した場合は保留中の適用フラグを解除する
                 root.applyPendingCommit = false
+                PackageController.resetCommitPreparation()
                 return
             }
 
@@ -1578,6 +1870,24 @@ ApplicationWindow {
         }
 
         /**
+         * @brief ライセンス拒否後に依存関係解決をやり直す
+         * @note PackageController::resolveDependenciesを呼び、除外済み候補を反映する
+         */
+        function onLicenseResolveRequired() {
+            // PackageController::resolveDependenciesで拒否により変化した選択を再解決する
+            root.applyPendingCommit = true
+            PackageController.resolveDependencies()
+        }
+
+        /**
+         * @brief ライセンス拒否後に適用対象が無くなったことを通知する
+         * @note 適用対象が無い旨をshowInfoで表示する
+         */
+        function onNoChangesLeftToApply() {
+            root.showInfo(qsTr("Apply Changes"), qsTr("No changes left to apply"))
+        }
+
+        /**
          * @brief コミット準備完了後に危険変更と容量を取得して確認画面を開く
          * @param ok コミット準備が成功したか
          * @note 戻り値は無く、準備失敗時は早期に戻る
@@ -1585,6 +1895,9 @@ ApplicationWindow {
          */
         function onCommitPrepared(ok) {
             if (!ok) {
+                // 準備失敗後の遅延D-Bus応答を無効にするため、PackageControllerの確認状態を破棄する
+                root.applyPendingCommit = false
+                PackageController.resetCommitPreparation()
                 return
             }
 
@@ -1616,8 +1929,8 @@ ApplicationWindow {
         /**
          * @brief 必要パッチの一括選択結果を確認案内または共通フローへ渡す
          * @param result パッチ一括選択の結果
-         * @note 戻り値は無く、変更があるときはshowInfo後に早期に戻る
-         * @note 変更がある時はshowInfo、それ以外はhandleSolverResultを使う
+         * @note 戻り値は無く、変更があるときはshowInfoで案内して早期に戻る
+         * @note それ以外はhandleSolverResultへ振り分ける
          */
         function onSelectPatchesFinished(result) {
             // パッチ一括選択は確認画面へ直行せず、一覧で選択内容を確認できるようにする

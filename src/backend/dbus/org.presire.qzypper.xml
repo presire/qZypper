@@ -1,8 +1,10 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- 本ファイルはPackageManagerAdaptor.hの実際のイントロスペクション (qdbuscpp2xml6 -A) と同じ内容を記述した資料 -->
 <node name="/org/presire/qzypper">
   <interface name="org.presire.qzypper.PackageManager">
 
+    <!-- セッション (初期化・所有者・解放) -->
     <!-- 初期化 (org.presire.qzypper.initializeの認可が必要。成功した呼出元が所有者になる) -->
     <method name="Initialize">
       <arg direction="out" type="b" name="success"/>
@@ -10,170 +12,392 @@
            org.freedesktop.DBus.Error.AccessDenied -->
     </method>
 
-    <!-- リポジトリ操作 -->
+    <!-- 所有者のセッションを解放する (未適用の選択は破棄される。実行中はError.Busy) -->
+    <method name="ReleaseSession">
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <!-- リポジトリ操作 (更新はrefresh-repos、変更はmanage-reposの認可が必要) -->
     <method name="RefreshRepos">
       <arg direction="out" type="b" name="success"/>
     </method>
 
-    <method name="RefreshSingleRepo">
-      <arg direction="in"  type="s" name="alias"/>
+    <!-- 自動更新が有効で期限切れのリポジトリのみ更新する -->
+    <method name="RefreshReposIfNeeded">
       <arg direction="out" type="b" name="success"/>
     </method>
 
+    <method name="RefreshSingleRepo">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="alias"/>
+    </method>
+
+    <!-- 要素はa{sv}を格納したvariant (以下のav戻り値も同様) -->
     <method name="GetRepos">
-      <arg direction="out" type="aa{sv}" name="repos"/>
+      <arg direction="out" type="av" name="repos"/>
     </method>
 
     <method name="AddRepo">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
       <arg direction="in"  type="s" name="url"/>
       <arg direction="in"  type="s" name="name"/>
-      <arg direction="out" type="a{sv}" name="result"/>
     </method>
 
     <method name="AddRepoFull">
-      <arg direction="in"  type="a{sv}" name="properties"/>
       <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="a{sv}" name="properties"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
     </method>
 
     <method name="RemoveRepo">
-      <arg direction="in"  type="s" name="alias"/>
       <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="alias"/>
     </method>
 
     <method name="SetRepoEnabled">
-      <arg direction="in" type="s" name="alias"/>
-      <arg direction="in" type="b" name="enabled"/>
       <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="alias"/>
+      <arg direction="in"  type="b" name="enabled"/>
     </method>
 
     <method name="ModifyRepo">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="alias"/>
       <arg direction="in"  type="a{sv}" name="properties"/>
-      <arg direction="out" type="b" name="success"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
     </method>
 
-    <!-- サービス操作 -->
+    <!-- .repoファイルの内容を解析して一括追加する -->
+    <method name="ImportRepoFile">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="s" name="content"/>
+    </method>
+
+    <!-- .repoファイルの内容を解析するだけで追加しない (読み取り専用) -->
+    <method name="ParseRepoFile">
+      <arg direction="out" type="av" name="repos"/>
+      <arg direction="in"  type="s" name="content"/>
+    </method>
+
+    <!-- $releasever等の変数を展開したURLを返す (読み取り専用。パスワードは***で伏せる。変化しない場合は空文字列) -->
+    <method name="GetExpandedRepoUrl">
+      <arg direction="out" type="s" name="expandedUrl"/>
+      <arg direction="in"  type="s" name="rawUrl"/>
+    </method>
+
+    <!-- 稼働中のディストリビューション向けコミュニティリポジトリのプリセット (読み取り専用) -->
+    <method name="GetRepoPresets">
+      <arg direction="out" type="av" name="presets"/>
+    </method>
+
+    <!-- リポジトリ署名鍵の明示承認 (trust-keyの認可が必要) -->
+    <method name="TrustKey">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="fingerprint"/>
+    </method>
+
+    <!-- サービス操作 (manage-reposの認可が必要。pluginサービスは削除・変更不可) -->
     <method name="GetServices">
-      <arg direction="out" type="aa{sv}" name="services"/>
+      <arg direction="out" type="av" name="services"/>
     </method>
 
     <method name="AddService">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="url"/>
       <arg direction="in"  type="s" name="alias"/>
-      <arg direction="out" type="b" name="success"/>
     </method>
 
     <method name="RemoveService">
-      <arg direction="in"  type="s" name="alias"/>
       <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="alias"/>
     </method>
 
     <method name="ModifyService">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="alias"/>
       <arg direction="in"  type="a{sv}" name="properties"/>
-      <arg direction="out" type="b" name="success"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
     </method>
 
     <method name="RefreshService">
-      <arg direction="in"  type="s" name="alias"/>
       <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="alias"/>
     </method>
 
     <!-- パッケージ検索・一覧 (読み取り専用) -->
     <method name="SearchPackages">
+      <arg direction="out" type="av" name="results"/>
       <arg direction="in"  type="s" name="query"/>
       <arg direction="in"  type="i" name="searchFlags"/>
-      <arg direction="out" type="aa{sv}" name="results"/>
+    </method>
+
+    <method name="SearchPackagesEx">
+      <arg direction="out" type="av" name="results"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
     </method>
 
     <method name="GetPackageDetails">
-      <arg direction="in"  type="s" name="name"/>
       <arg direction="out" type="a{sv}" name="details"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="s" name="name"/>
     </method>
 
     <method name="GetPackagesByRepo">
+      <arg direction="out" type="av" name="packages"/>
       <arg direction="in"  type="s" name="repoAlias"/>
-      <arg direction="out" type="aa{sv}" name="packages"/>
+    </method>
+
+    <!-- 製品一覧 -->
+    <method name="GetProducts">
+      <arg direction="out" type="av" name="products"/>
     </method>
 
     <method name="GetPatterns">
-      <arg direction="out" type="aa{sv}" name="patterns"/>
+      <arg direction="out" type="av" name="patterns"/>
     </method>
 
     <method name="GetPackagesByPattern">
+      <arg direction="out" type="av" name="packages"/>
       <arg direction="in"  type="s" name="patternName"/>
-      <arg direction="out" type="aa{sv}" name="packages"/>
     </method>
 
+    <!-- category: -1=全て, 0=security, 1=recommended, 2=optional, 3=feature, 4=全て, 5=document, 6=yast -->
     <method name="GetPatches">
+      <arg direction="out" type="av" name="patches"/>
       <arg direction="in"  type="i" name="category"/>
-      <arg direction="out" type="aa{sv}" name="patches"/>
+    </method>
+
+    <method name="GetRpmGroups">
+      <arg direction="out" type="av" name="groups"/>
+    </method>
+
+    <method name="GetPackagesByRpmGroup">
+      <arg direction="out" type="av" name="packages"/>
+      <arg direction="in"  type="s" name="path"/>
+    </method>
+
+    <method name="GetLocales">
+      <arg direction="out" type="av" name="locales"/>
+    </method>
+
+    <method name="GetPackagesByLocale">
+      <arg direction="out" type="av" name="packages"/>
+      <arg direction="in"  type="s" name="code"/>
+    </method>
+
+    <method name="GetPackagesByClassification">
+      <arg direction="out" type="av" name="packages"/>
+      <arg direction="in"  type="s" name="cls"/>
     </method>
 
     <!-- 変更予定一覧 -->
     <method name="GetPendingChanges">
-      <arg direction="out" type="aa{sv}" name="changes"/>
+      <arg direction="out" type="av" name="changes"/>
     </method>
 
-    <!-- パッケージ状態変更 -->
+    <method name="GetPendingLocaleChanges">
+      <arg direction="out" type="av" name="changes"/>
+    </method>
+
+    <method name="GetTransactionSummary">
+      <arg direction="out" type="a{sv}" name="summary"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </method>
+
+    <!-- 選択状態の変更 (所有者のみ) -->
     <method name="SetPackageStatus">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="name"/>
       <arg direction="in"  type="i" name="status"/>
-      <arg direction="out" type="b" name="success"/>
     </method>
 
     <method name="SetPackageVersion">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="name"/>
       <arg direction="in"  type="s" name="version"/>
       <arg direction="in"  type="s" name="arch"/>
       <arg direction="in"  type="s" name="repoAlias"/>
+    </method>
+
+    <!-- 複数版同時インストール可能なパッケージの特定版を個別に追加・削除する -->
+    <method name="SetPackageVersionStatus">
       <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="name"/>
+      <arg direction="in"  type="s" name="version"/>
+      <arg direction="in"  type="s" name="arch"/>
+      <arg direction="in"  type="s" name="repoAlias"/>
+      <arg direction="in"  type="i" name="status"/>
     </method>
 
     <method name="SetPatternStatus">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="name"/>
       <arg direction="in"  type="i" name="status"/>
-      <arg direction="out" type="b" name="success"/>
     </method>
 
-    <!-- 全パッケージ更新 -->
+    <method name="SetPatchStatus">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="id"/>
+      <arg direction="in"  type="i" name="status"/>
+    </method>
+
+    <method name="SelectAllNeededPatches">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <method name="SetPackagesAction">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="as" name="names"/>
+      <arg direction="in"  type="s" name="action"/>
+    </method>
+
+    <method name="SelectSubpackages">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="s" name="suffix"/>
+    </method>
+
+    <method name="SelectAllRecommended">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </method>
+
+    <method name="SetLocaleRequested">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="s" name="code"/>
+      <arg direction="in"  type="b" name="requested"/>
+    </method>
+
     <method name="UpdateAllPackages">
       <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
     </method>
 
-    <!-- 依存関係解決 -->
+    <method name="DistUpgrade">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <method name="SaveState"/>
+
+    <method name="RestoreState"/>
+
+    <!-- 依存関係解決とソルバー設定 -->
     <method name="ResolveDependencies">
       <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
     </method>
 
     <method name="ApplySolution">
+      <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="i" name="problemIndex"/>
       <arg direction="in"  type="i" name="solutionIndex"/>
-      <arg direction="out" type="b" name="success"/>
     </method>
 
-    <!-- 選択改訂番号と確認済み選択のコミット -->
+    <method name="GetSolverSettings">
+      <arg direction="out" type="a{sv}" name="settings"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </method>
+
+    <method name="SetSolverSettings">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="a{sv}" name="settings"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <!-- ライセンス確認・選択改訂番号・コミット (コミットはinstall-packagesの認可が必要) -->
     <method name="GetSelectionRevision">
       <arg direction="out" type="t" name="revision"/>
     </method>
 
-    <method name="Commit">
-      <arg direction="in"  type="t" name="expectedRevision"/>
+    <!-- コミット前に未承認ライセンスを所有者へ問い合わせる (拒否したパッケージはTABOO/PROTECTEDにして再解決を要求する) -->
+    <method name="ConfirmLicenses">
       <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
     </method>
 
-    <!-- リポジトリ署名鍵の明示承認 -->
-    <method name="TrustKey">
-      <arg direction="in"  type="s" name="fingerprint"/>
-      <arg direction="out" type="b" name="success"/>
+    <!-- 未確認のライセンスが残っている場合は副作用の前に失敗する -->
+    <method name="Commit">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="t" name="expectedRevision"/>
     </method>
 
-    <method name="SaveState"/>
-    <method name="RestoreState"/>
+    <method name="InstallLocalRpms">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="ah" name="files"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QList&lt;QDBusUnixFileDescriptor&gt;"/>
+      <arg direction="in"  type="as" name="fileNames"/>
+    </method>
 
-    <!-- ディスク使用量 -->
+    <!-- ディスク使用量・ロック (ロック変更はmanage-locksの認可が必要) -->
     <method name="GetDiskUsage">
-      <arg direction="out" type="aa{sv}" name="diskUsage"/>
+      <arg direction="out" type="av" name="diskUsage"/>
+    </method>
+
+    <method name="GetLocks">
+      <arg direction="out" type="av" name="locks"/>
+    </method>
+
+    <method name="AddLock">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="a{sv}" name="lock"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <method name="RemoveLock">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="a{sv}" name="lock"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <!-- 履歴・検証・テストケース -->
+    <method name="GetHistory">
+      <arg direction="out" type="av" name="entries"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <!-- コマンド単位にまとめた履歴 (新しい順。グループ単位でページング) -->
+    <method name="GetHistoryGroups">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <method name="VerifySystem">
+      <arg direction="out" type="a{sv}" name="result"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </method>
+
+    <method name="CreateSolverTestcase">
+      <arg direction="out" type="s" name="path"/>
+    </method>
+
+    <!-- 操作状態・対話・キャンセル -->
+    <method name="GetOperationState">
+      <arg direction="out" type="a{sv}" name="state"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </method>
+
+    <!-- PromptRequestedで通知した問い合わせへの回答 (answerは {"action": s} のみ) -->
+    <method name="AnswerPrompt">
+      <arg direction="out" type="b" name="success"/>
+      <arg direction="in"  type="u" name="id"/>
+      <arg direction="in"  type="a{sv}" name="answer"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In1" value="QVariantMap"/>
     </method>
 
     <!-- キャンセル (所有者のみ。認可待ち・実行中の操作を取り消す) -->
@@ -182,7 +406,7 @@
            org.freedesktop.DBus.Error.AccessDenied -->
     </method>
 
-    <!-- シグナル -->
+    <!-- シグナル (所有者へのユニキャスト送信) -->
     <signal name="ProgressChanged">
       <arg type="s" name="packageName"/>
       <arg type="i" name="percentage"/>
@@ -211,6 +435,7 @@
 
     <signal name="UntrustedKeyDetected">
       <arg type="a{sv}" name="keyInfo"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
     </signal>
 
     <signal name="RepoRefreshProgress">
@@ -221,6 +446,30 @@
     <signal name="ErrorOccurred">
       <arg type="s" name="errorMessage"/>
     </signal>
+
+    <!-- 操作状態・対話・スクリプト出力・プール再読み込みの通知 -->
+    <signal name="OperationStateChanged">
+      <arg type="a{sv}" name="state"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </signal>
+
+    <signal name="PromptRequested">
+      <arg type="u" name="id"/>
+      <arg type="s" name="type"/>
+      <arg type="a{sv}" name="data"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out2" value="QVariantMap"/>
+    </signal>
+
+    <signal name="PromptClosed">
+      <arg type="u" name="id"/>
+    </signal>
+
+    <signal name="ScriptOutput">
+      <arg type="a{sv}" name="output"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    </signal>
+
+    <signal name="PoolReloaded"/>
 
   </interface>
 </node>

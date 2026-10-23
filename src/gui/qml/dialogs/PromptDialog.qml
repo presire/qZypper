@@ -1,8 +1,8 @@
 /**
  * @file PromptDialog.qml
- * @brief バックエンドが要求する選択式のユーザー応答を表示するダイアログ
+ * @brief バックエンドからの選択式プロンプトを表示し、ユーザーの応答を返すダイアログ
  *
- * Main.qmlで生成され、PackageControllerの保留プロンプトに応じて自動開閉する
+ * Main.qmlで生成され、PackageControllerの保留プロンプトに応じて自動で開閉する
  *
  * 入力 : プロンプト本文と選択肢
  * 出力 : 選択した応答
@@ -15,24 +15,24 @@ import org.presire.qzypper.gui
 
 // バックエンドの対話プロンプト (PromptRequested) を表示する汎用ダイアログ
 // PackageController.currentPrompt / pendingPromptsに連動し、複数プロンプトを順番に表示する
-// 回答はactionキーのみを送信する
+// 回答はactionキーのみをバックエンドへ送信する
 //
-// data.buttons ([{action, label}]) をバックエンドが許可したアクションとして扱い、
-// 表示ラベルはtype/actionからローカライズ済み文言へ変換する
+// data.buttons ([{action, label}]) をバックエンドが許可したアクションの一覧として扱い、
+// 表示ラベルはtypeとactionからローカライズ済みの文言へ変換する
 Dialog {
     id: promptDialog  // ダイアログ自身の参照名
 
     // PackageControllerが保持する現在のプロンプト ({promptId, type, data})
     readonly property var prompt: PackageController.currentPrompt                                   // 現在のプロンプト情報
-    // 現在のプロンプトのdata辞書 (無ければ空)
+    // 現在のプロンプトのdata辞書 (無ければ空の辞書)
     readonly property var promptData: (prompt && prompt.data) ? prompt.data : ({})                  // プロンプトのdata辞書
     // data.typeを文字列化したプロンプト種別 (無ければ空)
     readonly property string promptType: (prompt && prompt.type) ? String(prompt.type) : ""         // プロンプト種別の文字列
-    // 長文レイアウトが必要な種別 (ライセンス/ファイル競合) か
+    // 長文レイアウトが必要な種別 (ライセンスやファイル競合) か
     readonly property bool isLongText: promptType === "license" || promptType === "file-conflicts"  // 長文レイアウトが必要か
 
     /**
-     * @brief バックエンドが許可したactionの一覧を返す
+     * @brief バックエンドが許可したactionキーの一覧を返す
      * @return actionキーの配列
      * @note data.buttonsが無ければ安全側の既定値 (gpg/licenseはreject、その他はabort) を使う
      */
@@ -64,7 +64,7 @@ Dialog {
     /**
      * @brief プロンプト種別に対応するダイアログタイトルを返す
      * @param type プロンプト種別
-     * @return 翻訳済みのタイトル、未知の種別はPackage Manager
+     * @return 翻訳済みのタイトル、未知の種別ではPackage Managerを返す
      */
     function titleForType(type) {
         switch (type) {
@@ -72,13 +72,16 @@ Dialog {
         case "media-change":      return qsTr("Media Change Required")
         case "file-conflicts":    return qsTr("File Conflicts")
         case "gpg-key":           return qsTr("Unknown GPG Key")
+        case "download-error":    return qsTr("Download Error")
+        case "install-error":     return qsTr("Installation Error")
+        case "remove-error":      return qsTr("Removal Error")
         default:                  return qsTr("Package Manager")
         }
     }
 
     /**
      * @brief プロンプト種別ごとの本文メッセージを組み立てる
-     * @return 翻訳済みの本文、種別ごとのdata値で整形する
+     * @return 翻訳済みの本文、種別ごとにdata値で整形する
      */
     function messageForPrompt() {
         var d = promptData || {}
@@ -108,7 +111,7 @@ Dialog {
     /**
      * @brief フィンガープリントを4文字ごとに区切って目視確認しやすくする
      * @param fp フィンガープリント文字列
-     * @return 空白を除去して大文字化し4文字区切りにした文字列
+     * @return 空白を除去して大文字にし、4文字ごとに区切った文字列
      */
     function formatFingerprint(fp) {
         var s = String(fp || "").replace(/\s+/g, "").toUpperCase()
@@ -131,7 +134,7 @@ Dialog {
 
     /**
      * @brief プロンプト種別ごとの詳細情報を組み立てる
-     * @return gpg-keyは鍵の詳細、その他はdata.details、無ければ空文字
+     * @return gpg-keyでは鍵の詳細、その他ではdata.details、無ければ空文字
      */
     function detailsForPrompt() {
         var d = promptData || {}
@@ -159,6 +162,7 @@ Dialog {
         case "no":                return qsTr("No")
         case "ok":                return qsTr("OK")
         case "retry":             return qsTr("Retry")
+        case "ignore":            return qsTr("Ignore")
         case "skip":              return qsTr("Skip")
         case "cancel":            return qsTr("Cancel")
         case "continue":          return qsTr("Continue")
@@ -170,7 +174,7 @@ Dialog {
         case "trust-permanent":   return qsTr("Trust Permanently")
         // 未知のactionはバックエンド (data.buttons) 由来の外部文字列
         // Fusion Buttonの内部IconLabelはAutoTextで描画し、'&'はニーモニックとして消費されるため、
-        // escapeHtmlではなく'<' '>' '&'を除去してHTML解釈を無効化する
+        // escapeHtmlを使わず、'<'、'>'、'&'を除去してHTML解釈を無効化する
         default:                  return String(action).replace(/[<>&]/g, "")
         }
     }
@@ -178,7 +182,7 @@ Dialog {
     /**
      * @brief actionキーの補足説明 (ツールチップ) を返す
      * @param action バックエンドが返すactionキー
-     * @return 翻訳済みの説明、説明が無いactionは空文字
+     * @return 翻訳済みの説明、説明が無いactionでは空文字を返す
      */
     function actionDescription(action) {
         switch (action) {
@@ -244,12 +248,12 @@ Dialog {
             }
         }
 
-        // GPG鍵の確認時のみ表示する自動拒否の注意書き
+        // GPG鍵の確認時のみ表示する、無回答なら自動で拒否される旨の注意書き
         Label {
             Layout.fillWidth: true                                 // 親の幅いっぱいに広げる
             visible: promptDialog.promptType.indexOf("gpg") === 0  // GPG関連のプロンプトのみ表示する
             opacity: 0.7                                           // 補足情報として控えめに表示する
-            // 注意書きの文字列
+            // 無回答時の自動拒否を伝える文
             text: qsTr("If you do not answer within 60 seconds, the request is rejected automatically.")
             font.pixelSize: 11                                     // 文字サイズ
             wrapMode: Text.WordWrap                                // 幅に収まらない場合は単語単位で折り返す
@@ -292,7 +296,7 @@ Dialog {
         }
     }
 
-    // プロンプトキューの変化に追従して自動開閉
+    // プロンプトキューの変化に追従して自動で開閉する
     Connections {
         target: PackageController  // 保留プロンプトを通知するPackageController
 

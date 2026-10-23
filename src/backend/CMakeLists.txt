@@ -15,6 +15,7 @@ add_library(qzypper-zypp STATIC
     ZyppSelection.cpp
     ZyppResolver.cpp
     ZyppCommit.cpp
+    ZyppLicenses.cpp LicenseConfirmation.cpp LicenseConfirmation.h
     ZyppCallbackReceiver.cpp
     ZyppCallbackReceiver.h
     ZyppKeyReceiver.cpp ZyppKeyReceiver.h
@@ -39,6 +40,7 @@ add_library(qzypper-zypp STATIC
     KeyTrustPrompt.cpp KeyTrustPrompt.h
     LocalRpm.cpp LocalRpm.h
     RepoFileParser.cpp RepoFileParser.h
+    RepoPresets.cpp RepoPresets.h
 )
 
 target_include_directories(qzypper-zypp PUBLIC

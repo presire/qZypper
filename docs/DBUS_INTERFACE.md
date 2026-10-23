@@ -61,6 +61,7 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 | `org.presire.qzypper.refresh-repos` | Refresh repositories | auth_admin_keep |
 | `org.presire.qzypper.manage-repos` | Add / remove / modify repos and services | auth_admin_keep |
 | `org.presire.qzypper.install-packages` | Install / remove / update packages | auth_admin_keep |
+| `org.presire.qzypper.manage-locks` | Add / remove package locks | auth_admin_keep |
 | `org.presire.qzypper.trust-key` | Trust a new repository signing key | auth_admin |
 
 The `org.presire.qzypper.initialize` action carries the annotation `org.freedesktop.policykit.imply` = `org.presire.qzypper.refresh-repos`. The session authorization is retained with `auth_admin_keep`, so the automatic repository refresh at startup does not ask for a password a second time. The default values of the other actions are unchanged.
@@ -70,6 +71,7 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | Category | Method | Description |
 |---|---|---|
 | Initialization | `Initialize()` | Open the session (owner only) and initialize libzypp |
+| | `ReleaseSession() → b` | End the owner's session and discard the uncommitted selection (fails with `org.presire.qzypper.Error.Busy` while an operation runs) |
 | Repository | `GetRepos()` | Get repository list |
 | | `RefreshRepos()` | Refresh all repositories |
 | | `RefreshReposIfNeeded() → b` | Refresh only stale, enabled, auto-refresh repositories (Polkit `org.presire.qzypper.refresh-repos`) |
@@ -82,6 +84,9 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `SetRepoEnabled(alias, enabled)` | Enable / disable repository |
 | | `ModifyRepo(alias, properties)` | Modify repository properties |
 | | `ParseRepoFile(content)` | Parse `.repo` file content (read-only, owner only) |
+| | `ImportRepoFile(s content) → a{sv}` | Add the repositories defined in `.repo` content (Polkit `org.presire.qzypper.manage-repos`) |
+| | `GetExpandedRepoUrl(s rawUrl) → s` | Preview a raw URL with repository variables expanded (read; see below) |
+| | `GetRepoPresets() → aa{sv}` | Community repository presets for the running distribution (read; see below) |
 | Service | `GetServices()` | Get service list |
 | | `AddService(url, alias)` | Add service |
 | | `RemoveService(alias)` | Remove service |
@@ -91,9 +96,10 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `SearchPackagesEx(options)` | Extended search: substring, prefix, exact, glob, or POSIX ERE regex (see below) |
 | | `GetPackageDetails(name)` | Get package details |
 | | `GetPackagesByRepo(repoAlias)` | Get packages by repository |
+| | `GetProducts() → aa{sv}` | Get the product list (read; see below) |
 | | `GetPatterns()` | Get pattern list |
 | | `GetPackagesByPattern(patternName)` | Get packages by pattern |
-| | `GetPatches(category)` | Get patch list |
+| | `GetPatches(category)` | Get patch list (see Patch Categories) |
 | | `GetPendingChanges()` | Get pending changes |
 | | `GetPackagesByClassification(s classification) → aa{sv}` | Get packages in a classification such as `recommended` or `updatable` (read; see below) |
 | | `GetRpmGroups() → aa{sv}` | Get the RPM group tree with package counts (read) |
@@ -103,24 +109,111 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `GetPendingLocaleChanges() → aa{sv}` | Get locale changes not yet committed (read) |
 | Status | `SetPackageStatus(name, status)` | Change package status |
 | | `SetPackageVersion(name, version, arch, repoAlias)` | Select specific package version |
+| | `SetPackageVersionStatus(s name, s version, s arch, s repoAlias, i status) → b` | Install or remove one version of a multiversion package (owner only; see below) |
 | | `SetPatternStatus(name, status)` | Change pattern status |
 | | `SetPackagesAction(as names, s action) → a{sv}` | Apply one action to many packages (owner only; see below) |
 | | `SelectSubpackages(s suffix) → a{sv}` | Select `-devel`, `-debuginfo`, or `-debugsource` subpackages of installed packages (owner only) |
 | | `SelectAllRecommended() → a{sv}` | Select all recommended packages and resolve (owner only) |
 | | `SetLocaleRequested(s code, b requested) → b` | Mark a locale as requested or not (owner only) |
+| | `SetPatchStatus(s id, i status) → b` | Change patch status (owner only) |
+| | `SelectAllNeededPatches(a{sv} options) → a{sv}` | Select all needed patches (owner only) |
 | Update | `UpdateAllPackages()` | Update all packages (doUpdate) |
+| | `DistUpgrade(a{sv} options) → a{sv}` | Prepare a distribution upgrade (owner only) |
+| | `GetTransactionSummary() → a{sv}` | Summary of the resolved transaction (owner only) |
 | Solver | `ResolveDependencies()` | Run dependency resolver |
 | | `ApplySolution(problemIndex, solutionIndex)` | Apply conflict resolution |
 | | `GetSolverSettings() → a{sv}` | Get the effective solver settings and the `zypp.conf` defaults (read; see below) |
 | | `SetSolverSettings(a{sv} settings) → b` | Override solver settings for this backend session (owner only) |
 | Commit | `GetSelectionRevision()` | Get the current selection revision (owner only) |
+| | `ConfirmLicenses() → a{sv}` | Ask the owner to accept or reject pending licenses before committing (owner only; see below) |
 | | `Commit(expectedRevision)` | Commit the confirmed selection revision |
+| | `InstallLocalRpms(ah files, as fileNames) → a{sv}` | Install local RPM files passed as file descriptors (Polkit `org.presire.qzypper.install-packages`) |
 | State | `SaveState()` | Save selection state |
 | | `RestoreState()` | Restore selection state |
 | Other | `GetDiskUsage()` | Get disk usage info |
+| | `GetLocks() → aa{sv}` | Get package locks (read) |
+| | `AddLock(a{sv} lock) → b` / `RemoveLock(a{sv} lock) → b` | Add / remove a package lock (Polkit `org.presire.qzypper.manage-locks`) |
+| | `GetHistory(a{sv} options) → aa{sv}` | Get the flat operation history (see below) |
+| | `GetHistoryGroups(a{sv} options) → a{sv}` | Get the operation history grouped by command (see below) |
+| | `VerifySystem() → a{sv}` | Check dependencies of the installed system (owner only) |
+| | `CreateSolverTestcase() → s` | Write a solver testcase and return its path (owner only) |
+| | `GetOperationState() → a{sv}` | Get the current operation state |
 | | `CancelOperation()` | Request cooperative cancellation (owner only) |
 
+In this document `aa{sv}` means an array of maps. On the bus these values are sent as `av` whose elements are `a{sv}`; the exact signatures are in `src/backend/dbus/org.presire.qzypper.xml`.
+
 Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are owner-gated as well: every query requires that `Initialize()` has authorized the caller as the session owner, including `ParseRepoFile` and `GetSelectionRevision`.
+
+## Products
+
+`GetProducts()` returns one map per product in the pool, sorted by name. An installed product uses the installed object's data; `available` tells whether a candidate exists. The list is read-only.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | `s` | Product name |
+| `shortName` | `s` | Short name |
+| `summary` | `s` | Summary |
+| `version` | `s` | Version of the shown object |
+| `installedVersion` | `s` | Installed version (empty if not installed) |
+| `vendor` | `s` | Vendor |
+| `arch` | `s` | Architecture |
+| `repoAlias` | `s` | Repository alias |
+| `repoName` | `s` | Repository name |
+| `status` | `i` | Status (`PackageStatus`) |
+| `installed` | `b` | Installed |
+| `available` | `b` | A candidate is available |
+| `isBase` | `b` | Installed base product (target distribution) |
+
+## Patch Categories
+
+`GetPatches(category)` accepts these values. `-1` and `4` return every category.
+
+| Value | Category |
+|---|---|
+| `0` | `security` |
+| `1` | `recommended` |
+| `2` | `optional` |
+| `3` | `feature` |
+| `4` | All |
+| `5` | `document` |
+| `6` | `yast` |
+
+## Multiversion Packages and Technical Data
+
+`GetPackageDetails(name)` includes `buildTime`, `installTime` (ISO 8601 local time; empty when unknown or not installed), `installSize`, `downloadSize` (bytes), `multiversion`, and `mixedMultiversion`. Each entry of `availableVersions` comes from the selectable's pick list (available versions and installed versions without an identical available one) and has `version`, `arch`, `repoAlias`, `repoName`, `installed`, `status` (pick status), `multiversion`, `size`, `downloadSize`, `buildTime`, and `installTime`.
+
+`SetPackageVersionStatus(name, version, arch, repoAlias, status)` changes the pick status of one version of a multiversion package. Only `Install`, `NoInst`, `KeepInstalled`, and `Del` are accepted. The call fails for unknown, ambiguous, or non-multiversion entries. `GetPendingChanges()` and `GetTransactionSummary()` list multiversion packages per version.
+
+## License Confirmation
+
+`ConfirmLicenses()` runs after a successful `ResolveDependencies()` and before `Commit()`. It sends a `license` prompt for each package whose license still needs confirmation.
+
+- Accept: the approval is bound to the package name, edition, architecture, repository alias, and the SHA-256 of the license text.
+- Reject: a package to be installed becomes `Taboo`, a package to be updated becomes `Protected`, the selection revision changes, and the client must resolve and call `ConfirmLicenses()` again.
+
+| Result key | Type | Meaning |
+|---|---|---|
+| `success` | `b` | The check finished without error |
+| `changed` | `b` | At least one license was rejected and the selection changed |
+| `rejectedPackages` | `as` | Names of the rejected packages |
+| `acceptedCount` | `i` | Number of accepted licenses |
+| `errorMessage` | `s` | Error text |
+
+`Commit()` fails before any change if a license that was not confirmed remains.
+
+## Commit Problem Prompts
+
+When downloading, installing, or removing a package fails during `Commit()`, the backend sends a `PromptRequested` signal with the type `download-error`, `install-error`, or `remove-error`. Its data contains `message`, `details`, `operation`, `package`, `errorKind`, `actions`, and `buttons`. The answer is `{"action": "abort" | "retry" | "ignore"}`; `ignore` is not offered for verification errors of downloads. Download I/O errors are retried automatically 3 times before the prompt appears. An ignored package is reported in `failedPackages` and `ignoredPackages` of the commit result and never counts as success. The safe default is `abort`.
+
+## Repository Variables and Presets
+
+`GetExpandedRepoUrl(rawUrl)` expands repository variables such as `$releasever`, `$basearch`, and `$arch` with libzypp. A password in the URL is replaced with `***`. It returns an empty string when the URL has no variables or does not change. URLs longer than 2048 bytes or with control characters are rejected with `org.freedesktop.DBus.Error.InvalidArgs`. Repositories are always stored with the raw URL.
+
+`GetRepoPresets()` returns third-party community repositories for openSUSE Tumbleweed and openSUSE Leap 16 (empty for other distributions). Each map has `id`, `name`, `alias`, `url`, `priority`, `autoRefresh`, `enabled`, `thirdParty`, and `description`. Adding a preset goes through the normal `AddRepoFull()` validation, Polkit check, and key trust.
+
+## Plugin Services
+
+Plugin services are discovered by libzypp from `/usr/lib/zypp/plugins/services/` and are listed by `GetServices()` with the type `plugin`. They cannot be added, removed, or modified. `RefreshService()` runs a plugin only when the script path contains no symbolic links, the script is a regular, root-owned file that is not writable by group or others, and every parent directory is root-owned and not writable by group or others.
 
 ## Package Classifications
 
@@ -253,6 +346,10 @@ Repository URLs are validated before use. The scheme must be one of `http`, `htt
 
 `GetHistory(options)` returns the operation history (newest first) read from the libzypp history file. `offset` and `limit` are validated so that `offset + limit` does not exceed 1,000,000, the history file is rejected if it exceeds 64 MiB, and it is also rejected if the number of valid lines scanned exceeds 1,000,000. Exceeding any of these limits returns an error, and a history read failure returns an error (`org.presire.qzypper.Error.Cancelled` when the operation was cancelled, otherwise `org.freedesktop.DBus.Error.Failed`). A missing history file yields an empty result.
 
+## Grouped History
+
+`GetHistoryGroups(options)` returns the history grouped by the `command` line that started each operation (newest first). Paging works on groups. Options: `limit` (1 to 1000 groups, default 100), `offset`, `text` (at most 256 bytes), `since` and `until` (epoch milliseconds), and `actions` (filters child events only). Each group has `id`, `seq`, `timestamp` (epoch seconds), `command`, `requestedBy`, `userdata`, `artificial` (events before the first command), `eventCount`, `installCount`, `removeCount`, `hiddenCount`, `truncated`, and `events`. The result has `groups`, `totalGroups`, `offset`, `limit`, `hiddenEvents`, `truncated`, and `hasMore`. A group keeps at most 500 events and a response at most 5000 events; extra events are counted in `hiddenCount` / `hiddenEvents`. The limits of `GetHistory` (64 MiB, 1,000,000 lines) also apply.
+
 ## Signals
 
 | Signal | Description |
@@ -264,7 +361,10 @@ Repository URLs are validated before use. The scheme must be one of `http`, `htt
 | `ErrorOccurred(errorMessage)` | Error notification |
 | `PackageStateChanged(packageName, event)` | Package state transition during commit |
 | `UntrustedKeyDetected(keyInfo)` | Untrusted signing key detected (`a{sv}` including the fingerprint) |
-| `PromptRequested(id, type, data)` | In-flight prompt that needs an answer via `AnswerPrompt` (e.g. `gpg-key`) |
+| `PromptRequested(id, type, data)` | In-flight prompt that needs an answer via `AnswerPrompt` (e.g. `gpg-key`, `license`, `media-change`, `file-conflicts`, `download-error`, `install-error`, `remove-error`) |
 | `PromptClosed(id)` | Prompt ended (answered, expired, or interrupted) |
+| `OperationStateChanged(state)` | Operation state changed (`a{sv}`, same keys as `GetOperationState()`) |
+| `ScriptOutput(output)` | Output of RPM scripts during commit (`a{sv}`) |
+| `PoolReloaded()` | The package pool was reloaded; clients must reload lists |
 
 These signals are unicast: they are sent only to the session owner, not broadcast to all bus clients.

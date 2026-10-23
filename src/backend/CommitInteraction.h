@@ -14,7 +14,7 @@
 namespace qZypper {
 
 /**
- * @brief プロンプト問い合わせコールバック型
+ * @brief プロンプト要求を処理するコールバック型
  *
  * zyppワーカースレッド上でPromptRegistryを呼び出し、所有者の回答を返す
  */
@@ -22,8 +22,8 @@ using PromptAskFn = std::function<QVariantMap(const PromptRequest &request)>;
 
 /**
  * @brief RPM/スクリプト出力1行を通知するコールバック型
- * @param package 対象パッケージ名 (不明時は空)
- * @param scriptType スクリプト種別 ("pre"/"post"/"preun"/"postun"/"pretrans"/"posttrans"/"rpm")
+ * @param package 対象パッケージ名(不明時は空)
+ * @param scriptType スクリプト種別("pre"/"post"/"preun"/"postun"/"pretrans"/"posttrans"/"rpm")
  * @param line 出力行
  * @param isError エラー出力かどうか
  */
@@ -36,23 +36,24 @@ namespace CommitLimits {
 constexpr int kMaxLicenseTextBytes = 256 * 1024;   // ライセンス本文の上限 (256 KiB)
 constexpr int kMaxConflictTextBytes = 64 * 1024;   // 競合詳細本文の上限 (64 KiB)
 constexpr int kMaxScriptLineBytes = 8 * 1024;      // スクリプト1行の上限 (8 KiB)
-constexpr int kMaxScriptLines = 500;               // Commit返信に含める最大行数
+constexpr int kMaxScriptLines = 500;               // コミット返信に含める最大行数
 constexpr int kFlushLineThreshold = 50;            // この行数でフラッシュ
 constexpr int kFlushIntervalMs = 100;              // この経過時間でフラッシュ
 constexpr int kMaxConflictsReported = 200;         // 競合として列挙する最大件数
+constexpr int kMaxProblemTextBytes = 8 * 1024;     // エラー詳細本文の上限 (8 KiB)
 } // namespace CommitLimits
 
 /**
  * @brief UTF-8バイト長でテキストを上限内に切り詰める
  * @param text 対象テキスト
  * @param maxBytes 最大バイト数
- * @param truncated 切り詰めが発生した場合にtrueを設定 (nullptr可)
- * @return 切り詰め後のテキスト (不正な末尾バイトは除去)
+ * @param truncated 切り詰めが発生した場合にtrueを設定(nullptr可)
+ * @return 切り詰め後のテキスト(不正な末尾バイトは除去)
  */
 QString capText(const QString &text, int maxBytes, bool *truncated = nullptr);
 
 /**
- * @brief スクリプト出力1行をD-Bus安全な形へ整える
+ * @brief スクリプト出力1行をD-Busで安全に送れる形へ整える
  * @param line 元の行
  * @return 制御文字を除去し長さを上限内に収めた行
  */
@@ -61,9 +62,9 @@ QString sanitizeScriptLine(const QString &line);
 /**
  * @brief ライセンス確認プロンプトのデータを構築する
  * @param package パッケージ名
- * @param version バージョン (edition文字列)
- * @param licenseText ライセンス本文 (内部で256 KiBに切り詰め)
- * @return type "license"用data (message/details/package/version/buttons)
+ * @param version バージョン(edition文字列)
+ * @param licenseText ライセンス本文(内部で256 KiBに切り詰め)
+ * @return typeが"license"のデータ(message/details/package/version/buttons)
  */
 QVariantMap buildLicensePromptData(const QString &package, const QString &version,
                                    const QString &licenseText);
@@ -82,7 +83,7 @@ bool licenseAnswerAccepted(const QVariantMap &answer);
  * @param mediaNr メディア番号
  * @param message 概要メッセージ
  * @param details 詳細メッセージ
- * @return type "media-change"用data
+ * @return typeが"media-change"のデータ
  */
 QVariantMap buildMediaChangePromptData(const QString &url, const QString &label,
                                        unsigned int mediaNr, const QString &message,
@@ -91,15 +92,37 @@ QVariantMap buildMediaChangePromptData(const QString &url, const QString &label,
 /**
  * @brief メディア交換の回答を正規化されたアクション文字列へ変換する
  * @param answer AnswerPromptの回答マップ
- * @return "retry" / "skip" / "abort" (不明時は"abort")
+ * @return "retry" / "skip" / "abort"(不明時は"abort")
  */
 QString mediaAnswerAction(const QVariantMap &answer);
+
+/**
+ * @brief パッケージ操作エラープロンプトのデータを構築する
+ * @param operation 操作種別 [download]/[install]/[remove]
+ * @param package 対象パッケージ名
+ * @param errorKind エラー種別 [io]/[invalid]/[not-found]など
+ * @param description libzyppからのエラー詳細
+ * @param actions 提示するアクション [abort]/[retry]/[ignore]
+ * @return typeが[download-error]/[install-error]/[remove-error]のデータ
+ */
+QVariantMap buildProblemPromptData(const QString &operation, const QString &package,
+                                   const QString &errorKind, const QString &description,
+                                   const QStringList &actions);
+
+/**
+ * @brief エラープロンプトの回答を許可されたアクションへ正規化する
+ * @param answer AnswerPromptの回答マップ
+ * @param allowed 許可されたアクション一覧
+ * @return 許可された範囲のアクション
+ * @note 不正または不明なときは[abort]
+ */
+QString problemAnswerAction(const QVariantMap &answer, const QStringList &allowed);
 
 /**
  * @brief ファイル競合プロンプトのデータを構築する
  * @param conflicts 競合の説明行一覧
  * @param totalCount 競合総数
- * @return type "file-conflicts"用data (message/details/count/buttons)
+ * @return typeが"file-conflicts"のデータ(message/details/count/buttons)
  */
 QVariantMap buildFileConflictPromptData(const QStringList &conflicts, int totalCount);
 
@@ -115,7 +138,7 @@ bool fileConflictAnswerContinue(const QVariantMap &answer);
  * @brief スクリプト/rpm出力を集約・レート制限して通知する
  *
  * 到着行を内部バッファに貯め、閾値行数または経過時間でまとめてコールバックへ流す
- * 収集した最新500行とrpmメッセージも保持し、Commit返信に利用できる
+ * 収集した最新500行とrpmメッセージも保持し、コミット返信に利用できる
  */
 class ScriptOutputAggregator
 {
@@ -124,7 +147,7 @@ public:
 
     /**
      * @brief 集約器を構築する
-     * @param sink フラッシュ時に1行ずつ呼ぶコールバック (nullptr可)
+     * @param sink フラッシュ時に1行ずつ呼ぶコールバック(nullptr可)
      */
     explicit ScriptOutputAggregator(ScriptOutputFn sink = nullptr);
 
@@ -134,7 +157,7 @@ public:
      * @param scriptType スクリプト種別
      * @param line 出力行
      * @param isError エラー出力か
-     * @param now 現在時刻 (テスト用に注入可能)
+     * @param now 現在時刻(テスト用に注入可能)
      */
     void addLine(const QString &package, const QString &scriptType, const QString &line,
                  bool isError, Clock::time_point now = Clock::now());
@@ -149,18 +172,18 @@ public:
 
     /**
      * @brief 保留中の行を全てフラッシュする
-     * @param now 現在時刻 (テスト用に注入可能)
+     * @param now 現在時刻(テスト用に注入可能)
      */
     void flush(Clock::time_point now = Clock::now());
 
     /**
-     * @brief 収集済みスクリプト出力 (最新500行)
+     * @brief 収集済みスクリプト出力(最新500行)
      * @return 行一覧
      */
     const QStringList &collected() const { return m_collected; }
 
     /**
-     * @brief 収集済みrpmメッセージ (最新500行)
+     * @brief 収集済みrpmメッセージ(最新500行)
      * @return 行一覧
      */
     const QStringList &rpmMessages() const { return m_rpmMessages; }
@@ -190,7 +213,7 @@ private:
     };
 
     /**
-     * @brief 閾値判定を行い、必要な場合にフラッシュする
+     * @brief 閾値を判定し、必要な場合にフラッシュする
      * @param now 現在時刻
      */
     void maybeFlush(Clock::time_point now);

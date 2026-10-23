@@ -61,6 +61,7 @@ qt_add_qml_module(qzypper
         qml/components/RepoTable.qml
         qml/components/RepoPropertiesPanel.qml
         qml/components/UrlTypeSelector.qml
+        qml/components/UrlExpansionPreview.qml
         qml/components/StatusIcon.qml
         qml/components/StatusFilterPanel.qml
         qml/components/Util.qml
@@ -77,6 +78,7 @@ qt_add_qml_module(qzypper
         qml/views/UpdatesView.qml
         qml/views/RpmGroupsView.qml
         qml/views/LanguagesView.qml
+        qml/views/ProductView.qml
         qml/dialogs/InstallationResultDialog.qml
         qml/dialogs/ConflictDialog.qml
         qml/dialogs/UpdateInfoDialog.qml

@@ -8,9 +8,9 @@ namespace qZypper {
 
 /**
  * @brief 新旧パッケージ情報から変更種別とリスクを分類する
- * @param tuple 導入前後のパッケージ属性
+ * @param tuple 変更前後のパッケージ属性
  * @param cmp バージョン比較関数
- * @return 導入、削除、更新、ダウングレード等のリスク
+ * @return 変更種別ごとのフラグを持つリスク情報
  */
 ChangeRisk classifyChange(const ChangeTuple &tuple, const VersionCompareFn &cmp)
 {
@@ -121,9 +121,10 @@ QVariantMap tallyToVariantMap(const TransactionTally &tally)
 /**
  * @brief 現在のプール状態からトランザクションのリスクサマリを計算する
  *
- * 導入予定/削除予定のSelectableを走査し、新規・更新・削除・ダウングレード・ベンダ変更・アーキテクチャ変更を集計する
+ * 導入予定/削除予定のSelectableを走査し、新規・更新・削除・ダウングレード・ベンダー変更・アーキテクチャ変更を集計する
  *
- * ResolveDependencies、UpdateAllPackages、DistUpgrade、SelectAllNeededPatches、Commitの各結果に添付するサマリと同じ形状を返す
+ * 各操作 (ResolveDependencies、UpdateAllPackages、DistUpgrade、Commit等) の結果に
+ * 添付するサマリと同じ形状を返す
  *
  * @return サマリのa{sv}
  */
@@ -131,6 +132,55 @@ QVariantMap ZyppManager::computeTransactionSummary() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return computeTransactionSummaryLocked();
+}
+
+/**
+ * @brief トランザクション対象のプールアイテム1件を集計へ追加する
+ *
+ * 複数版同時インストール可能なパッケージでは、同一Selectableの旧版削除と
+ * 新版導入が併存するため、アイテム単位で導入/削除として集計する
+ *
+ * @param tally 更新するトランザクション集計
+ * @param name パッケージ名
+ * @param item 集計するプールアイテム
+ * @note tallyの導入・削除・サイズ集計を更新する
+ */
+void accumulateTransactingItem(TransactionTally &tally, const QString &name,
+                               const zypp::PoolItem &item)
+{
+    // トランザクション対象でないアイテムは集計しない
+    if (!item.status().transacts()) {
+        return;
+    }
+
+    const bool install = item.status().isToBeInstalled();
+    const bool remove  = item.status().isToBeUninstalled();
+
+    // 導入でも削除でもない状態は集計対象外とする
+    if (!install && !remove) {
+        return;
+    }
+
+    ChangeEntry entry;
+    entry.name      = name;
+    entry.repoAlias = QString::fromStdString(item.repoInfo().alias());
+    if (install) {
+        entry.newVersion = QString::fromStdString(item.edition().asString());
+        entry.newVendor  = QString::fromStdString(item.vendor().asString());
+        entry.newArch    = QString::fromStdString(item.arch().asString());
+        entry.risk.install = true;
+        tally.downloadSize += static_cast<qlonglong>(item.downloadSize());
+        tally.installedSizeChange += static_cast<qlonglong>(item.installSize());
+    }
+    else {
+        entry.oldVersion = QString::fromStdString(item.edition().asString());
+        entry.oldVendor  = QString::fromStdString(item.vendor().asString());
+        entry.oldArch    = QString::fromStdString(item.arch().asString());
+        entry.risk.remove = true;
+        tally.installedSizeChange -= static_cast<qlonglong>(item.installSize());
+    }
+    // 共通のChangeEntry集計処理へ1件分を追加する
+    accumulateChange(tally, entry);
 }
 
 /**
@@ -157,6 +207,24 @@ QVariantMap ZyppManager::computeTransactionSummaryLocked() const
             const zypp::ui::Selectable::Ptr &sel = *it;
             if (!sel)
                 continue;
+
+            // 複数版同時インストール可能な場合は、実際にトランザクション対象となる
+            // プールアイテム単位で集計する (旧版削除と新版導入の併存に対応)
+            if (sel->multiversionInstall()) {
+                const QString name = QString::fromStdString(sel->name());
+
+                // picklistは同一の利用可能版を持つインストール済みアイテムを除外するため使わない
+                // 同一版の削除を取りこぼさないよう、インストール済みアイテムを走査する
+                for (auto inst = sel->installedBegin(); inst != sel->installedEnd(); ++inst) {
+                    accumulateTransactingItem(tally, name, *inst);
+                }
+
+                // 導入対象となる利用可能アイテムを走査する
+                for (auto avail = sel->availableBegin(); avail != sel->availableEnd(); ++avail) {
+                    accumulateTransactingItem(tally, name, *avail);
+                }
+                continue;
+            }
 
             const zypp::ui::Status status = sel->status();
             const bool wantInstall = status == zypp::ui::S_Install

@@ -37,18 +37,21 @@ bool hasSubpackageSuffix(const std::string& name)
  *
  * @param name パッケージ名
  * @param status 新しいステータス (PackageStatus)
- * @return 変更成功時true
+ * @return 変更に成功した場合はtrue
  */
 bool ZyppManager::setPackageStatus(const std::string& name, int status)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    // 初期化前はプールを参照できないため失敗を返す
     if (!m_initialized) {
         m_lastError = "Backend not initialized";
         return false;
     }
 
     zypp::ui::Status target;
+
+    // 数値からzyppの状態へ変換できない場合は不正な状態値として拒否する
     if (!toZyppStatus(status, target)) {
         m_lastError = "Invalid package status: " + std::to_string(status);
         return false;
@@ -91,11 +94,11 @@ bool ZyppManager::applyStatusLocked(const zypp::ui::Selectable::Ptr& sel, zypp::
         return sel->setStatus(zypp::ui::S_Taboo);
     }
     if (cur == zypp::ui::S_AutoDel && target == zypp::ui::S_KeepInstalled) {
-        // AutoDel → KeepInstalled (自動削除キャンセル)
+        // AutoDel → KeepInstalled (自動削除の取り消し)
         return sel->setStatus(zypp::ui::S_KeepInstalled);
     }
     if (cur == zypp::ui::S_AutoUpdate && target == zypp::ui::S_KeepInstalled) {
-        // AutoUpdate → KeepInstalled (自動更新キャンセル)
+        // AutoUpdate → KeepInstalled (自動更新の取り消し)
         return sel->setStatus(zypp::ui::S_KeepInstalled);
     }
     if (cur == zypp::ui::S_Taboo && target == zypp::ui::S_Install) {
@@ -119,7 +122,7 @@ bool ZyppManager::applyStatusLocked(const zypp::ui::Selectable::Ptr& sel, zypp::
 /**
  * @brief 複数パッケージへ同じ操作を一括適用する
  *
- * 名前は重複除去して処理し、Protected/Tabooはkeep以外の操作では変更しない
+ * 名前は重複を除いて処理し、Protected/Tabooはkeep以外の操作では変更しない
  *
  * @param names 対象パッケージ名
  * @param action install/remove/update/updateForce/keep/taboo/protect
@@ -269,9 +272,9 @@ ZyppManager::BatchResult ZyppManager::setPackagesAction(const std::vector<std::s
 }
 
 /**
- * @brief インストール済みパッケージの対応するサブパッケージを選択する
+ * @brief インストール済みパッケージに対応するサブパッケージを選択する
  *
- * 対象接尾辞は-devel/-debuginfo/-debugsourceのみ
+ * 対象の接尾辞は-devel/-debuginfo/-debugsourceのみ
  *
  * @param suffix サブパッケージの接尾辞
  * @return 変更・スキップ・失敗の集計結果
@@ -328,7 +331,7 @@ ZyppManager::BatchResult ZyppManager::selectSubpackages(const std::string& suffi
 }
 
 /**
- * @brief パッケージのバージョンを変更する
+ * @brief パッケージの選択バージョンを変更する
  *
  * 指定されたバージョン・アーキテクチャ・リポジトリに一致するPoolItemを候補として設定し、
  * インストール済みパッケージの場合はステータスをS_Update (またはS_KeepInstalled) に変更する
@@ -341,7 +344,7 @@ ZyppManager::BatchResult ZyppManager::selectSubpackages(const std::string& suffi
  * @param version 選択バージョン (edition文字列)
  * @param arch アーキテクチャ
  * @param repoAlias リポジトリエイリアス
- * @return 変更成功時true
+ * @return 変更に成功した場合はtrue
  */
 bool ZyppManager::setPackageVersion(const std::string& name, const std::string& version,
                                     const std::string& arch, const std::string& repoAlias)
@@ -412,7 +415,7 @@ bool ZyppManager::setPackageVersion(const std::string& name, const std::string& 
             }
             else if (!sel->setStatus(zypp::ui::S_Update)) {
                 // 異なるバージョンを選択 → 更新
-                // フォールバック : AutoUpdate/AutoDel → KeepInstalled → Update
+                // フォールバックはAutoUpdate/AutoDel → KeepInstalled → Updateの順に試す
                 auto cur = sel->status();
                 const bool viaKeep = (cur == zypp::ui::S_AutoUpdate || cur == zypp::ui::S_AutoDel)
                                      && sel->setStatus(zypp::ui::S_KeepInstalled)
@@ -430,10 +433,108 @@ bool ZyppManager::setPackageVersion(const std::string& name, const std::string& 
 }
 
 /**
+ * @brief 複数版同時インストール可能なパッケージの特定版の選択状態を変更する
+ *
+ * Selectable単位のsetStatusではなくプールアイテム単位のsetPickStatusを使うことで、
+ * kernel等の複数版を個別にインストール/削除できる
+ *
+ * @param name パッケージ名
+ * @param version バージョン
+ * @param arch アーキテクチャ
+ * @param repoAlias リポジトリエイリアス
+ * @param status 新しいステータス (Install/NoInst/KeepInstalled/Delのみ)
+ * @return 変更に成功した場合はtrue
+ * @note エラー時はm_lastErrorに理由を設定してfalseを返す
+ */
+bool ZyppManager::setPackageVersionStatus(const std::string& name,
+                                          const std::string& version,
+                                          const std::string& arch,
+                                          const std::string& repoAlias,
+                                          int status)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+
+    if (!m_initialized) {
+        m_lastError = "Backend not initialized";
+        return false;
+    }
+
+    zypp::ui::Status target;
+    if (!toZyppStatus(status, target)) {
+        m_lastError = "Invalid package status: " + std::to_string(status);
+        return false;
+    }
+
+    // 版単位の変更で許可するのは「インストール」「インストール取消し」「削除取消し」「削除」のみ
+    if (target != zypp::ui::S_Install && target != zypp::ui::S_NoInst
+        && target != zypp::ui::S_KeepInstalled && target != zypp::ui::S_Del) {
+        m_lastError = "Status not allowed for a package version: " + std::to_string(status);
+        return false;
+    }
+
+    // libzyppのプールプロキシから同名のSelectableを探す
+    zypp::ui::Selectable::Ptr matchedSel;
+    auto pool = m_zypp->poolProxy();
+    for (auto it = pool.byKindBegin<zypp::Package>();
+         it != pool.byKindEnd<zypp::Package>(); ++it) {
+        if ((*it)->name() == name) {
+            matchedSel = *it;
+            break;
+        }
+    }
+
+    // 該当するSelectableが無い場合は名前の誤りとして拒否する
+    if (!matchedSel) {
+        m_lastError = "Package not found: " + name;
+        return false;
+    }
+
+    zypp::PoolItem matchedItem;
+    int matches = 0;
+    for (auto pick = matchedSel->picklistBegin(); pick != matchedSel->picklistEnd(); ++pick) {
+        if (pick->edition().asString() == version
+            && pick->arch().asString() == arch
+            && pick->repoInfo().alias() == repoAlias) {
+            matchedItem = *pick;
+            ++matches;
+        }
+    }
+
+    // 版・arch・リポジトリの組合せが一致しない場合は版指定の誤りとして拒否する
+    if (matches == 0) {
+        m_lastError = "Matching version not found: " + version + "-" + arch;
+        return false;
+    }
+
+    // 同じ版が複数リポジトリにある場合は対象を特定できないため拒否する
+    if (matches > 1) {
+        m_lastError = "Ambiguous version match: " + version + "-" + arch;
+        return false;
+    }
+
+    // multiversion非対応の版はSelectable単位の操作と競合するため拒否する
+    if (!matchedItem.multiversionInstall()) {
+        m_lastError = "Package version is not multiversion-capable: " + version + "-" + arch;
+        return false;
+    }
+
+    // 選択が変わると前回のソルバー問題リストは無効になる
+    m_problems.clear();
+
+    // Selectable::setPickStatusを呼び出して、プールアイテム単位で選択を変更する
+    if (!matchedSel->setPickStatus(matchedItem, target)) {
+        m_lastError = "Status transition not allowed for version: " + version + "-" + arch;
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * @brief パターンのステータスを変更する
  * @param name パターン名
  * @param status 新しいステータス (PackageStatus)
- * @return 変更成功時true
+ * @return 変更に成功した場合はtrue
  */
 bool ZyppManager::setPatternStatus(const std::string& name, int status)
 {

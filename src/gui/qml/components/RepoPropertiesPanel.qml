@@ -21,10 +21,9 @@ Pane {
 
     signal applyRequested(var changes)  // 親へ送る変更後のリポジトリ属性
 
-    // 現在の編集値を取得
     /**
      * @brief 入力欄からPackageControllerへ渡すリポジトリ変更値を組み立てる
-     * @return 変更後の属性を持つオブジェクト、repo未設定では空オブジェクト
+     * @return 変更後の属性を持つオブジェクト (repoが未設定の場合は空オブジェクト)
      */
     function getChanges() {
         // リポジトリが未選択の場合は変更値が無い
@@ -66,7 +65,7 @@ Pane {
 
     padding: 12  // パネル内側の余白
 
-    // リポ選択変更時にフィールドをリセット
+    // 選択中リポジトリが変わったら、入力欄をその値で埋め直す
     onRepoChanged: {
         if (repo) {
             nameField.text = repo.name || ""
@@ -111,7 +110,7 @@ Pane {
 
                 Layout.fillWidth: true                         // 残りの幅をすべて使う
                 Layout.columnSpan: 3                           // 3列分にまたがる
-                enabled: !(root.repo && root.repo.service)     // サービス管理リポジトリの名前を手編集させない
+                enabled: !(root.repo && root.repo.service)     // サービス管理下の名前は手編集させない
                 text: root.repo ? (root.repo.name || "") : ""  // 選択中リポジトリの名前
 
                 // 入力内容が変わったので未保存変更の有無を更新する
@@ -131,12 +130,30 @@ Pane {
 
                 Layout.fillWidth: true                                            // 残りの幅をすべて使う
                 Layout.columnSpan: 3                                              // 3列分にまたがる
-                enabled: !(root.repo && root.repo.service)                        // サービス更新で上書きされるURLを手編集させない
+                enabled: !(root.repo && root.repo.service)                        // サービス管理のURLは編集不可
                 text: root.repo ? (root.repo.rawUrl || root.repo.url || "") : ""  // 選択中リポジトリのURL (未展開の値を優先する)
 
                 // 入力内容が変わったので未保存変更の有無を更新する
                 onTextChanged: {
                     root.checkChanges()
+                }
+            }
+
+            // URL展開プレビューの枠 (プレビュー非表示でもグリッドのセル配置が崩れないよう常に表示する)
+            Item {
+                Layout.fillWidth: true    // 残りの幅をすべて使う
+                Layout.columnSpan: 4      // 全列にまたがる
+
+                // プレビュー表示中だけプレビューの高さに合わせる
+                implicitHeight: urlPreview.visible ? urlPreview.implicitHeight : 0
+
+                // URLの変数を展開した結果のプレビュー (保存されるのは展開前のURL)
+                UrlExpansionPreview {
+                    id: urlPreview  // プレビューの参照名
+
+                    rawUrl: urlField.text  // 展開前のURL
+
+                    width: parent.width  // 枠の幅に合わせる
                 }
             }
 
@@ -231,7 +248,7 @@ Pane {
 
     }
 
-    // リポ未選択時のプレースホルダー
+    // リポジトリ未選択時のプレースホルダー
     Label {
         anchors.centerIn: parent           // パネルの中央に表示する
         visible: root.repo === null        // リポジトリ未選択時だけ選択を促す

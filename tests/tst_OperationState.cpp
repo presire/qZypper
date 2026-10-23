@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <thread>
 #include "OperationState.h"
 
 using namespace qZypper;
@@ -8,29 +9,30 @@ using namespace std::chrono_literals;
  * @class OperationStateTest
  * @brief 操作の状態遷移・排他・取消し・ウォッチドッグを検証する
  *
- * アイドルからの認可、認可完了後の取消し保持、同時ジョブの拒否、実行中のビジー維持、段階ごとの取消し可否、遅延コールバックの防御、
+ * アイドルからの認証、認証完了後の取消し保持、同時ジョブの拒否、
+ * 実行中のビジー維持、段階ごとの取消し可否、遅延コールバックの防御、
  * ウォッチドッグの期限切れ動作、新規操作開始時の取消し初期化を対象にする
  */
 class OperationStateTest : public QObject {
     Q_OBJECT
 private slots:
-    /** @brief アイドル状態で認可を開始できることを検証する */
+    /** @brief アイドル状態で認証を開始できることを検証する */
     void authorizesWhenIdle()
     {
         // 準備 : 新しい操作状態を用意する
         OperationState state;
-        // 実行 : 認可を要求する
+        // 実行 : 認証を要求する
         QVERIFY(state.authorize());
-        // 確認 : 認可中になりビジーになることを確認する
+        // 確認 : 認証中の状態になり、ビジーになることを確認する
         QCOMPARE(state.snapshot().value("state").toString(), "authorizing");
         QVERIFY(state.snapshot().value("busy").toBool());
     }
-    /** @brief 認可完了後も取消し要求が保持されることを検証する */
+    /** @brief 認証完了後も取消し要求が保持されることを検証する */
     void preservesCancelWhenAuthorizationCompletes()
     {
-        // 準備 : 認可中に取消しを要求する
+        // 準備 : 認証中に取消しを要求する
         OperationState state; state.authorize(); state.requestCancel();
-        // 実行 : 更新段階へ進める
+        // 実行 : リフレッシュ段階へ進める
         QVERIFY(state.run(OperationStage::Refreshing));
         // 確認 : 取消しフラグが立ったままであることを確認する
         QVERIFY(state.cancelFlag().load());
@@ -42,7 +44,7 @@ private slots:
         OperationState state; state.run(OperationStage::Resolving);
         // 実行 : 読み込み段階の実行を要求する
         const bool accepted = state.run(OperationStage::Reading);
-        // 確認 : 拒否され段階が解決のままであることを確認する
+        // 確認 : 拒否され段階が解決段階のままであることを確認する
         QVERIFY(!accepted);
         QCOMPARE(state.snapshot().value("stage").toString(), "resolving");
     }
@@ -109,10 +111,10 @@ private slots:
         // 確認 : 警告のみで取消しフラグが立たないことを確認する
         QCOMPARE(action, WatchdogAction::Warn); QVERIFY(!state.cancelFlag().load());
     }
-    /** @brief 直近のheartbeatがある間は実行を続けることを検証する */
+    /** @brief 直近のハートビートがある間は実行を続けることを検証する */
     void staysRunningWhenHeartbeatIsFresh()
     {
-        // 準備 : 更新段階でheartbeatを記録する
+        // 準備 : リフレッシュ段階でハートビートを記録する
         OperationState state; state.run(OperationStage::Refreshing); state.heartbeat();
         // 実行 : 長めの経過時間でウォッチドッグを確認する
         const auto action = state.watchdog(10min);
@@ -128,6 +130,39 @@ private slots:
         QVERIFY(state.run(OperationStage::Initializing));
         // 確認 : 取消しフラグが消えていることを確認する
         QVERIFY(!state.cancelFlag().load());
+    }
+
+    /** @brief プロンプト応答待ちの間はウォッチドッグが発火しないことを検証する */
+    void watchdogSuspendedWhileWaitingForPrompt()
+    {
+        // 準備 : ダウンロード中にプロンプト応答待ちを開始する
+        OperationState state;
+        QVERIFY(state.run(OperationStage::Downloading));
+        state.beginPromptWait(5000ms);
+        std::this_thread::sleep_for(20ms);
+
+        // 確認 : 通常なら期限切れの短いタイムアウトでも発火しない
+        QCOMPARE(state.watchdog(1ms), WatchdogAction::None);
+
+        // 実行 : 応答待ちを終了する
+        state.endPromptWait();
+        std::this_thread::sleep_for(5ms);
+
+        // 確認 : 通常の監視へ戻り、取消し可能な段階では取消し要求になる
+        QCOMPARE(state.watchdog(1ms), WatchdogAction::Cancel);
+    }
+
+    /** @brief 応答待ちの上限を超えたら通常のウォッチドッグ判定へ戻ることを検証する */
+    void watchdogResumesAfterPromptWaitBound()
+    {
+        // 準備 : 短い上限でプロンプト応答待ちを開始する
+        OperationState state;
+        QVERIFY(state.run(OperationStage::Downloading));
+        state.beginPromptWait(10ms);
+        std::this_thread::sleep_for(30ms);
+
+        // 確認 : 上限超過後は無応答として取消し要求になる
+        QCOMPARE(state.watchdog(1ms), WatchdogAction::Cancel);
     }
 };
 

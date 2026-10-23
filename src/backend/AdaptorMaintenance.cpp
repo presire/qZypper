@@ -70,9 +70,9 @@ QVariantList PackageManagerAdaptor::GetLocks()
 }
 
 /**
- * @brief 検証済みロックを認可後に追加する
+ * @brief ロックを検証し、認可を得たうえで追加する
  * @param lock 追加するロックの属性マップ
- * @return 追加要求を開始できた場合はtrue
+ * @return 常にfalse (処理はワーカーへ送り、実際の結果はD-Busの遅延応答で返す)
  */
 bool PackageManagerAdaptor::AddLock(const QVariantMap &lock)
 {
@@ -91,9 +91,9 @@ bool PackageManagerAdaptor::AddLock(const QVariantMap &lock)
 }
 
 /**
- * @brief 検証済みロックを認可後に削除する
+ * @brief ロックを検証し、認可を得たうえで削除する
  * @param lock 削除するロックの属性マップ
- * @return 削除要求を開始できた場合はtrue
+ * @return 常にfalse (処理はワーカーへ送り、実際の結果はD-Busの遅延応答で返す)
  */
 bool PackageManagerAdaptor::RemoveLock(const QVariantMap &lock)
 {
@@ -154,8 +154,9 @@ QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
         }
         return {};
     }
-    // 上限超過などの失敗を空の履歴と区別できるよう、D-Busエラーとして返す
+    // 所有者確認や実行中判定に失敗した場合は、checkReadがエラー応答を返し済みのため何もしない
     if (!checkRead()) return {};
+    // 上限超過などの失敗は、空の履歴と区別できるようD-Busエラーとして返す
     startWorker(message(), [parsed] {
         AsyncOutcome result;
         std::vector<HistoryEntry> entries;
@@ -173,6 +174,55 @@ QVariantList PackageManagerAdaptor::GetHistory(const QVariantMap &options)
             list.append(entry.toVariantMap());
         }
         result.value = list;
+        return result;
+    });
+    return {};
+}
+
+/**
+ * @brief command単位にグループ化した操作履歴を取得する (読み取り専用)
+ * @param options 絞込み条件 (since/untilはエポックミリ秒、actionsとtext)
+ *                とグループ単位のページング条件 (offset/limit)
+ * @return groups (a{sv}のリスト)、totalGroups、hasMore、truncated、hiddenEventsを持つマップ
+ * @note 取得はワーカースレッドで行い、応答はstartWorkerが遅延して返す (戻り値は常に空マップ)
+ *       不正なオプションはInvalidArgsエラー、上限超過や取消しはD-Busエラーとして返す
+ */
+QVariantMap PackageManagerAdaptor::GetHistoryGroups(const QVariantMap &options)
+{
+    HistoryGroupOptions parsed;
+    std::string error;
+
+    // 範囲外のoffset/limitや未対応のactionを、履歴ファイルを読む前に拒否する
+    // 所有者以外の呼び出しには入力検証の詳細を返さない
+    if (!parseHistoryGroupOptions(options, parsed, error)) {
+        if (checkRead()) {
+            sendErrorReply(QDBusError::InvalidArgs, QString::fromStdString(error));
+        }
+        return {};
+    }
+
+    // 所有者確認・ビジー確認に失敗した場合は、checkReadがエラー応答を返し済みのため何もしない
+    if (!checkRead()) {
+        return {};
+    }
+
+    // 履歴ファイルの走査はGUIとD-Busのイベントループを止めないよう、ワーカースレッドで実行する
+    // ZyppManager::getHistoryGroupsを呼び出し、結果は遅延応答としてD-Bus呼び出し元へ返す
+    // 上限超過・取消しなどの失敗は、空の履歴と区別できるようD-Busエラーとして返す
+    startWorker(message(), [parsed] {
+        AsyncOutcome result;
+        HistoryGroupResult groups;
+        std::string historyError;
+
+        if (!ZyppManager::instance().getHistoryGroups(parsed, groups, historyError)) {
+            const bool cancelled = historyError == "Operation cancelled";
+            result.errorName = cancelled ? QStringLiteral("org.presire.qzypper.Error.Cancelled")
+                                         : QStringLiteral("org.freedesktop.DBus.Error.Failed");
+            result.errorText = QString::fromStdString(historyError);
+            return result;
+        }
+
+        result.value = groups.toVariantMap();
         return result;
     });
     return {};

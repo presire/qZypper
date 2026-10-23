@@ -125,7 +125,7 @@ Pane {
                     Layout.fillHeight: true         // 残りの高さをすべて使う
                     model: PackageController.repos  // PackageControllerのリポジトリ一覧
 
-                    // [有効]チェックの切り替えをバックエンドへ反映する
+                    // [Enabled]チェックの切り替えをバックエンドへ反映する
                     onEnabledToggled: function(alias, enabled) {
                         PackageController.setRepoEnabled(alias, enabled)
                     }
@@ -155,7 +155,7 @@ Pane {
 
                     // [Import .repo File...]ボタン
                     Button {
-                        // バックエンドがビジーの間は取り込みを開始できない
+                        // 処理中は取り込みを開始できない
                         enabled: !PackageController.busy                                // 処理中でない場合のみ押せる
                         text: qsTr("Import .repo File...")                              // ボタンの文字列
                         icon.name: "document-import"                                    // 取り込みアイコン
@@ -180,14 +180,14 @@ Pane {
                         }
                     }
 
-                    // [Refresh]ボタンを右寄せにするための余白
+                    // [Refresh]ボタンを右寄せにするためのスペーサー
                     Item {
                         Layout.fillWidth: true  // 残りの幅をすべて使う
                     }
 
                     // [Refresh]ボタン (押すと更新対象を選ぶメニューを開く)
                     Button {
-                        // バックエンドがビジーの間は更新を開始できない
+                        // 処理中は更新を開始できない
                         enabled: !PackageController.busy  // 処理中でない場合のみ押せる
                         text: qsTr("Refresh")             // ボタンの文字列
                         icon.name: "view-refresh"         // 更新アイコン
@@ -286,7 +286,7 @@ Pane {
                             anchors.fill: parent  // 見出し行全体を使う
                             spacing: 0            // 列の間隔は空けない
 
-                            // Enabled
+                            // [Enabled]列
                             Item {
                                 width: serviceListView.colEnabled  // [Enabled]列の幅
                                 height: parent.height              // 見出し行の高さに合わせる
@@ -359,7 +359,7 @@ Pane {
                                 color: palette.mid     // 線の色
                             }
 
-                            // Name
+                            // [Name]列
                             Item {
                                 width: serviceListView.colName  // [Name]列の幅
                                 height: parent.height           // 見出し行の高さに合わせる
@@ -432,7 +432,7 @@ Pane {
                                 color: palette.mid     // 線の色
                             }
 
-                            // URL
+                            // [URL]列
                             Item {
                                 // 他の列を除いた残りの幅 (最小150px)
                                 width: Math.max(150, serviceListView.width - serviceListView.colEnabled - serviceListView.colName - serviceListView.colType - 3)
@@ -450,7 +450,7 @@ Pane {
                                     elide: Text.ElideRight                            // 収まらない場合は末尾を省略する
                                 }
 
-                                // 列幅をドラッグで変更するハンドル (ホバーで強調表示)  ([Type]列の幅を逆向きに変更する)
+                                // 列幅をドラッグで変更するハンドル (ホバーで強調表示、[Type]列の幅を逆向きに変更する)
                                 Rectangle {
                                     anchors.right: parent.right  // 列の右端に配置する
                                     width: 4                     // ハンドルの幅
@@ -506,7 +506,7 @@ Pane {
                                 color: palette.mid     // 線の色
                             }
 
-                            // Type
+                            // [Type]列
                             Item {
                                 width: serviceListView.colType  // [Type]列の幅
                                 height: parent.height           // 見出し行の高さに合わせる
@@ -610,10 +610,17 @@ Pane {
 
                                 // サービスの有効/無効を切り替えるチェックボックス
                                 CheckBox {
-                                    anchors.centerIn: parent                    // セルの中央に表示する
+                                    anchors.centerIn: parent  // セルの中央に表示する
+
+                                    // プラグインサービスはインストール済みパッケージが提供するため変更しない
+                                    enabled: svcDel.modelData.type !== "plugin"
                                     checked: svcDel.modelData.enabled || false  // サービスが有効かどうか
 
-                                    // 有効/無効の切り替えをバックエンドへ反映する (他の設定値はそのまま送る)
+                                    // 変更できない理由をツールチップで示す
+                                    ToolTip.visible: hovered && !enabled
+                                    ToolTip.text: qsTr("Plugin services are provided by installed packages")
+
+                                    // 有効/無効の切り替えをPackageController::modifyServiceでバックエンドへ反映する
                                     onToggled: {
                                         PackageController.modifyService(svcDel.modelData.alias, {
                                             "alias": svcDel.modelData.alias,
@@ -713,10 +720,28 @@ Pane {
 
                     // [Remove]ボタン
                     Button {
-                        // サービスを選択しているときだけ削除できる
-                        enabled: serviceListView.currentIndex >= 0  // サービス選択中のみ押せる
-                        text: qsTr("Remove")                        // ボタンの文字列
-                        icon.name: "list-remove"                    // 削除アイコン
+                        id: removeServiceButton  // サービス削除ボタンの参照名
+
+                        // 選択中のサービスがプラグインサービスの場合は削除できない
+                        readonly property bool pluginSelected: {
+                            if (serviceListView.currentIndex < 0
+                                    || serviceListView.currentIndex >= PackageController.services.length) {
+                                return false
+                            }
+
+                            // PackageController::servicesから選択中のサービスを取り出す
+                            var svc = PackageController.services[serviceListView.currentIndex]
+                            return !!svc && svc.type === "plugin"
+                        }
+
+                        // プラグインサービス以外を選択しているときだけ削除できる
+                        enabled: serviceListView.currentIndex >= 0 && !pluginSelected
+                        text: qsTr("Remove")      // ボタンの文字列
+                        icon.name: "list-remove"  // 削除アイコン
+
+                        // 削除できない理由をツールチップで示す
+                        ToolTip.visible: hovered && pluginSelected
+                        ToolTip.text: qsTr("Plugin services are provided by installed packages")
 
                         // 削除の確認ダイアログを開く
                         onClicked: {
@@ -726,7 +751,7 @@ Pane {
 
                     // [Refresh]ボタン
                     Button {
-                        // サービス選択中かつビジーでないときだけ更新できる
+                        // サービス選択中かつ処理中でないときだけ更新できる
                         enabled: serviceListView.currentIndex >= 0
                                  && serviceListView.currentIndex < PackageController.services.length
                                  && !PackageController.busy
@@ -773,7 +798,7 @@ Pane {
                 }
             }
 
-            // [OK]・[Close]ボタンを右寄せにするための余白
+            // [OK]・[Close]ボタンを右寄せにするためのスペーサー
             Item {
                 Layout.fillWidth: true  // 残りの幅をすべて使う
             }
@@ -822,7 +847,7 @@ Pane {
         id: repoImportDialog  // 取り込み確認ダイアログの参照名
 
         property var repos: []         // プレビューしたリポジトリ一覧
-        property string content: ""    // 取り込み時に送る.repoファイルの内容
+        property string content: ""    // 取り込み時に送る .repo ファイルの内容
         property string errorText: ""  // プレビュー失敗時のエラー文言
         property bool awaiting: false  // 取り込み応答待ちか
 
@@ -882,7 +907,7 @@ Pane {
                         // リポジトリ名と別名
                         Label {
                             Layout.fillWidth: true      // 親の幅いっぱいに広げる
-                            // "名前  (別名)"形式の文字列 (名前が無ければ別名を使う)
+                            // "名前 (別名)"形式の文字列 (名前が無ければ別名を使う)
                             text: (modelData.name || modelData.alias || "") + "  (" + (modelData.alias || "") + ")"
                             textFormat: Text.PlainText  // 外部由来の文字列をHTMLとして解釈させない
                             font.bold: true             // 太字で表示する

@@ -4,7 +4,7 @@
 
 namespace qZypper {
 namespace {
-/** @brief ソルバーを実行する分類検索かを判定する (ZyppManager::getPackagesByClassificationと同じ分類) */
+/** @brief ソルバーの実行が必要な分類検索かを判定する(ZyppManager::getPackagesByClassificationと同じ分類) */
 bool classificationNeedsSolver(const QDBusMessage &msg)
 {
     const QList<QVariant> args = msg.arguments();
@@ -45,7 +45,11 @@ bool changesSelection(const QString &member)
 }
 }
 
-/** @brief 所有者の読取も遅延返信で同じ常駐ワーカーへ送る、途中の取消しはエラーで返す */
+/**
+ * @brief 所有者の読み取りも遅延返信で常駐ワーカーへ送る
+ *
+ * 実行中に取り消された場合はエラー応答で返す
+ */
 QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
 {
     if (!checkRead()) return {};
@@ -63,7 +67,11 @@ QVariant PackageManagerAdaptor::runRead(const std::function<QVariant()> &job)
     return {};
 }
 
-/** @brief 所有者による選択操作をワーカーへ送る。旧同期APIの返信型は維持する */
+/**
+ * @brief 所有者による選択操作をワーカーへ送る
+ *
+ * 旧同期APIの返信型は維持する
+ */
 QVariant PackageManagerAdaptor::runOwnerSync(const std::function<QVariant()> &job, bool bump, bool solver)
 {
     Q_UNUSED(bump)
@@ -73,7 +81,7 @@ QVariant PackageManagerAdaptor::runOwnerSync(const std::function<QVariant()> &jo
     return {};
 }
 
-/** @brief 主スレッドに複製した初期化状態で認可前の検査を行う */
+/** @brief 認証前にメインスレッド上で初期化状態と所有者を検査する */
 bool PackageManagerAdaptor::preparePrivileged()
 {
     if (!checkNotBusy() || !checkOwner() || !checkArguments()) return false;
@@ -82,23 +90,24 @@ bool PackageManagerAdaptor::preparePrivileged()
     return false;
 }
 
-/** @brief 実行中フラグを維持したまま処理をキュー投入する */
+/** @brief 実行中フラグを立てたまま処理をキューへ投入する */
 void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::function<AsyncOutcome()> &job)
 {
     if (calledFromDBus()) setDelayedReply(true);
     // アイドルタイマーは止めない
-    // 期限が来ても実行中なら再設定され、終了時は所有者の要求だけが延長する
+    // 実行中に期限が来ても、終了時に改めて設定する
     m_busy = true;
     m_executor.control().run(initialStage(msg));
     m_executor.prompts().open();
     publishState();
+    // Executorへワーカーを投入し、ConfirmLicensesとCommitでは所有者対話を直列化する
     m_executor.submit(job, [this, msg](const AsyncOutcome &result) {
         m_initialized = result.initialized;
         finishPrivileged(msg, result);
-    }, msg.member() == "Commit");
+    }, msg.member() == "Commit" || msg.member() == "ConfirmLicenses");
 }
 
-/** @brief Polkit待機中も主イベントループを止めない */
+/** @brief Polkit認証の待機中もメインイベントループを止めない */
 void PackageManagerAdaptor::startPrivileged(const QString &actionId, const std::function<AsyncOutcome()> &job)
 {
     const auto msg = message();
@@ -140,8 +149,10 @@ bool PackageManagerAdaptor::runPrivilegedBool(const QString &actionId, const std
     return false;
 }
 
-/** @brief ワーカー終了通知の後にだけbusyを解除する。
- *         void返信は引数なしにする
+/**
+ * @brief ワーカー終了通知の後にだけbusyを解除する
+ *
+ * void返信は引数なしで返す
  */
 void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const AsyncOutcome &outcome)
 {
@@ -151,7 +162,15 @@ void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const Asyn
     m_executor.prompts().interrupt();
     publishState();
 
-    if (changesSelection(msg.member()) || outcome.poolReloaded) bumpRevision();
+    // 承認だけなら解決済みリビジョンを保つ
+    // 拒否で選択が変わった場合だけ確認済みリビジョンを無効化する
+    const bool licenseConfirmation = msg.member() == "ConfirmLicenses";
+    const bool selectionChanged = licenseConfirmation
+        ? outcome.value.toMap().value(QStringLiteral("changed")).toBool()
+        : changesSelection(msg.member());
+    if (selectionChanged || outcome.poolReloaded) {
+        bumpRevision();
+    }
 
     if ((msg.member() == "ResolveDependencies" || msg.member() == "UpdateAllPackages"
          || msg.member() == "DistUpgrade" || msg.member() == "SelectAllNeededPatches"

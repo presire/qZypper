@@ -6,7 +6,7 @@ namespace qZypper {
 namespace {
 /**
  * @class ProgressReceiver
- * @brief 全操作のlibzypp進捗を心拍と取消し判定へ接続する
+ * @brief 全操作のlibzypp進捗をハートビートと取消し判定へつなぐ
  */
 class ProgressReceiver : public zypp::callback::ReceiveReport<zypp::ProgressReport> {
 public:
@@ -37,7 +37,7 @@ private:
 };
 }
 
-/** @brief ワーカーを1度だけ作り、初回のマネージャ生成もその上で行う */
+/** @brief ワーカーを1度だけ生成し、初回のマネージャ生成もワーカースレッド上で行う */
 ZyppExecutor::ZyppExecutor(QObject *parent) : QObject(parent), m_worker(new QObject)
 {
     m_thread.setObjectName(QStringLiteral("zypp-executor"));
@@ -61,7 +61,7 @@ ZyppExecutor::ZyppExecutor(QObject *parent) : QObject(parent), m_worker(new QObj
     }, Qt::BlockingQueuedConnection);
 }
 
-/** @brief 実行中処理を待機して、libzyppを同じワーカー上で破棄してから終了する */
+/** @brief 実行中処理を待機して、libzyppをワーカースレッド上で破棄してから終了する */
 ZyppExecutor::~ZyppExecutor()
 {
     m_prompts.interrupt();
@@ -79,7 +79,7 @@ ZyppExecutor::~ZyppExecutor()
     m_thread.wait();
 }
 
-/** @brief libzypp処理をキュー投入し、主スレッドで結果を渡す */
+/** @brief libzypp処理をキューへ投入し、メインスレッドへ結果を返す */
 void ZyppExecutor::submit(const Job &job, const Completion &completion, bool commit)
 {
     QMetaObject::invokeMethod(m_worker, [this, job, completion, commit] {
@@ -131,11 +131,18 @@ void ZyppExecutor::submit(const Job &job, const Completion &completion, bool com
     }, Qt::QueuedConnection);
 }
 
-/** @brief ワーカーから安全な既定値付きの対話要求を発行する */
+/** @brief ワーカーから利用者への対話要求を発行する */
 QVariantMap ZyppExecutor::ask(const PromptRequest &request)
 {
     Q_ASSERT(QThread::currentThread() == &m_thread);
     quint32 askedId = 0;
+
+    // 利用者がプロンプトを読んでいる間はウォッチドッグに無応答判定させない
+    // タイムアウトに余裕を加えた時間を上限とし、回答後はheartbeatを更新する
+    if (m_control) {
+        m_control->beginPromptWait(request.timeout + std::chrono::seconds(30));
+    }
+
     const QVariantMap result = m_prompts.ask(request,
         [this, &askedId](quint32 id, const QString &type, const QVariantMap &data) {
             askedId = id;
@@ -143,8 +150,14 @@ QVariantMap ZyppExecutor::ask(const PromptRequest &request)
         });
 
     // 回答・期限切れ・中断のいずれでも、UI側に残ったダイアログを閉じさせる
-    if (askedId != 0)
+    if (askedId != 0) {
         emit promptClosed(askedId);
+    }
+
+    // 回答後はheartbeatを更新して通常の監視へ戻す
+    if (m_control) {
+        m_control->endPromptWait();
+    }
 
     return result;
 }

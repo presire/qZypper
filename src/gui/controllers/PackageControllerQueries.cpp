@@ -1,3 +1,15 @@
+/**
+ * @file PackageControllerQueries.cpp
+ * @brief パッケージ一覧、詳細、変更予定、履歴などの読み取り処理の実装
+ *
+ * 検索、リポジトリ別・パターン別・分類別の一覧取得、変更予定とディスク使用量、
+ * 履歴、ソルバー設定、RPMグループ、言語サポートを非同期で取得する
+ * 取得結果はキャッシュとQMLプロパティへ反映する
+ *
+ * 入力 : QMLからの読み取り要求、DBusClientの完了コールバック
+ * 出力 : 一覧キャッシュの更新と対応する変更シグナル
+ * 依存 : Qt Core、DBusClient、PackageListModel、PackageFilterProxyModel、SearchModeDetect
+ */
 #include <utility>
 #include <QDebug>
 #include "PackageController.h"
@@ -110,7 +122,7 @@ void PackageController::setSearchError(const QString &err)
  * リクエストシリアルを進め、後続要求がある場合は最新の応答のみを適用する
  * 置き換えられた要求の完了通知は、最新の取得結果でまとめて行う
  *
- * @param newGeneration 取得後に世代カウンタを進める場合true
+ * @param newGeneration 取得後に世代カウンタを進める場合はtrue
  * @param onDone 完了コールバック (成功可否と取得済みリスト)
  */
 void PackageController::requestPackageList(bool newGeneration,
@@ -347,6 +359,37 @@ void PackageController::loadPatterns()
 }
 
 /**
+ * @brief 製品一覧を読み込む (非同期、読み取り専用)
+ *
+ * Productsタブを初めて表示したときに呼ばれ、以降はプール再読込時にのみ更新する
+ *
+ * @note 応答はシグナル経由で反映し、この関数は待機しない
+ */
+void PackageController::loadProducts()
+{
+    // 未接続時はD-Busを呼べないため何もしない
+    if (!m_connected) {
+        return;
+    }
+
+    // 応答前に再呼び出しされても二重取得しないよう読み込み済みとして記録する
+    m_productsLoaded = true;
+
+    // DBusClient::getProductsでバックエンドへ非同期に問い合わせる
+    m_dbus->getProducts([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+        // 失敗時は直前のキャッシュを維持する
+        if (!ok) {
+            return;
+        }
+
+        m_products = args.isEmpty() ? QVariantList() : args.at(0).toList();
+
+        // 製品一覧が更新されたことをQMLへ通知する
+        emit productsChanged();
+    });
+}
+
+/**
  * @brief 指定パターンに属するパッケージ一覧を読み込む (非同期)
  * @param patternName パターン名
  */
@@ -383,7 +426,7 @@ void PackageController::loadPatches(int category)
     m_dbus->getPatches(category, [this, category](bool ok, const QString &, const QString &errorText,
                                                   const QVariantList &args) {
         if (category != m_patchCategory)
-            return;   // 古い応答は破棄
+            return;  // 古い応答は破棄
         if (!ok) {
             emit errorOccurred(errorText);
             return;
@@ -398,7 +441,7 @@ void PackageController::loadPatches(int category)
 /**
  * @brief 変更予定のパッケージ一覧を非同期で再取得する (キャッシュ更新)
  *
- * 実行中に再度呼ばれた場合は合体 (coalesce) し、2重要求を抑止する
+ * 実行中に再度呼ばれた場合は要求を合体し、二重要求を抑止する
  * hasPendingChangesは本処理でのみ更新され、ゲッターはI/Oを行わない
  */
 void PackageController::refreshPendingChanges()
@@ -472,7 +515,7 @@ void PackageController::refreshPendingChanges()
                 return;
             }
 
-            // 最新の要求まで反映済み — 待機者へ取得成否を通知
+            // 最新の要求まで反映したため、待機者へ取得成否を通知する
             auto waiters = std::move(m_pendingRefreshWaiters);
             m_pendingRefreshWaiters.clear();
             for (auto &waiter : waiters)
@@ -532,6 +575,34 @@ void PackageController::loadHistory(const QVariantMap &filter)
             return;
         }
         emit historyResultReady(args.isEmpty() ? QVariantList() : args.at(0).toList());
+    });
+}
+
+/**
+ * @brief zypp履歴をコマンド単位のグループで読み込む (非同期)
+ * @param options 絞り込みマップ (since/until: エポックミリ秒、limit、offset、actions、text)
+ * @param requestId 呼び出し側の世代番号 (結果シグナルへそのまま返す)
+ * @note 完了はhistoryGroupsReadyシグナルで通知する (失敗時は空マップ、errorOccurredも発行する)
+ */
+void PackageController::loadHistoryGroups(const QVariantMap &options, int requestId)
+{
+    // バックエンド未接続の間は呼び出せないため、失敗として即座に通知する
+    if (!m_connected) {
+        emit historyGroupsReady(requestId, QVariantMap());
+        return;
+    }
+
+    // DBusClient::getHistoryGroupsを呼び出し、完了は非同期コールバックで受け取ってhistoryGroupsReadyで通知する
+    m_dbus->getHistoryGroups(options, [this, requestId](bool ok, const QString &, const QString &errorText,
+                                                        const QVariantList &args) {
+        // 上限超過・取消し・通信失敗は、エラー通知と空マップで呼び出し側に失敗を知らせる
+        if (!ok) {
+            emit errorOccurred(errorText);
+            emit historyGroupsReady(requestId, QVariantMap());
+            return;
+        }
+
+        emit historyGroupsReady(requestId, args.isEmpty() ? QVariantMap() : args.at(0).toMap());
     });
 }
 

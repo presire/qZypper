@@ -8,10 +8,10 @@
 
 namespace qZypper {
 
-/** @brief 主スレッドとワーカーが共有する操作段階 */
+/** @brief メインスレッドとワーカーが共有する操作段階 */
 enum class OperationPhase {
     Idle,          // 操作待機中
-    Authorizing,   // Polkit認可待ち
+    Authorizing,   // Polkit認証待ち
     Running,       // libzypp操作を実行中
     Finishing      // 終了処理中
 };
@@ -21,7 +21,7 @@ enum class OperationStage {
     None,          // 未開始
     Initializing,  // libzypp初期化
     Reading,       // 読取専用処理
-    Resolving,     // 依存関係解決
+    Resolving,     // 依存関係の解決
     Refreshing,    // リポジトリ更新
     Downloading,   // RPM取得
     Installing,    // RPM適用中
@@ -31,7 +31,7 @@ enum class OperationStage {
 
 /** @brief ウォッチドッグが取るべき動作 */
 enum class WatchdogAction {
-    None,          // 監視処置なし
+    None,          // 監視による処置なし
     Cancel,        // 協調的取消要求
     Warn           // 警告状態を公開
 };
@@ -42,7 +42,7 @@ enum class WatchdogAction {
  */
 class OperationState {
 public:
-    /** @brief 認可待ち段階への遷移を試みる */
+    /** @brief 認証待ち段階への遷移を試みる */
     bool authorize();
 
     /** @brief 指定段階で実行中状態への遷移を試みる */
@@ -54,19 +54,32 @@ public:
     /** @brief ワーカーの進捗監視時刻を更新する */
     void heartbeat();
 
+    /**
+     * @brief プロンプト応答待ちの間はウォッチドッグを保留する
+     * @param bound 応答待ちを許容する上限時間
+     * @note m_mutexで保護しm_promptWaitingとm_promptDeadlineを更新する
+     */
+    void beginPromptWait(std::chrono::milliseconds bound);
+
+    /**
+     * @brief プロンプト応答待ちを終了し、進捗監視時刻を更新する
+     * @note m_mutexで保護しm_promptWaitingとm_heartbeatを更新する
+     */
+    void endPromptWait();
+
     /** @brief 現在の段階で取消可能なら取消要求を記録する */
     bool requestCancel();
 
     /** @brief 完了直前の終了処理段階へ遷移する */
     void finishing();
 
-    /** @brief 操作を待機状態へ完了遷移させる */
+    /** @brief 操作を完了させ、待機状態へ遷移させる */
     bool complete();
 
     /** @brief GUI公開用の操作状態をスナップショットとして返す */
     QVariantMap snapshot() const;
 
-    /** @brief 無応答時間に応じた監視処置を返す */
+    /** @brief 無応答時間に応じた監視による処置を返す */
     WatchdogAction watchdog(std::chrono::milliseconds timeout);
 
     /** @brief ワーカーが直接確認する取消フラグを返す */
@@ -81,6 +94,8 @@ private:
     OperationStage m_stage = OperationStage::None;                                         // 実行中操作の詳細段階
     std::atomic<bool> m_cancel{false};                                                     // ワーカーが参照する取消要求
     std::chrono::steady_clock::time_point m_heartbeat = std::chrono::steady_clock::now();  // 最終応答時刻
+    bool m_promptWaiting = false;                                                          // プロンプト応答待ち中か
+    std::chrono::steady_clock::time_point m_promptDeadline;                                // プロンプト応答待ちの上限時刻
     QString m_warning;                                                                     // GUI公開用の監視警告
 };
 

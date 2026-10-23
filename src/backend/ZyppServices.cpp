@@ -138,7 +138,16 @@ bool ZyppManager::removeService(const std::string& alias)
     }
 
     try {
+        // RepoManagerから削除対象のサービスを取得する
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
+
+        // プラグインサービスはインストール済みパッケージが提供するため削除しない
+        if (svc.type() == zypp::repo::ServiceType::PLUGIN) {
+            m_lastError = "Plugin service " + alias + " is provided by an installed package and cannot be removed";
+            return false;
+        }
+
+        // プラグイン以外のサービスだけをRepoManagerから削除する
         m_repoManager->removeService(svc);
         return true;
     }
@@ -166,7 +175,7 @@ bool ZyppManager::modifyService(const std::string& alias, const ServiceChanges& 
         return false;
     }
 
-    // 空文字のname / urlは従来どおり「現状維持」として扱う
+    // 空文字のname/urlは従来どおり「現状維持」として扱う
     const bool hasName = changes.name && !changes.name->isEmpty();
     const bool hasUrl = changes.url && !changes.url->isEmpty();
 
@@ -182,7 +191,15 @@ bool ZyppManager::modifyService(const std::string& alias, const ServiceChanges& 
     }
 
     try {
+        // RepoManagerから変更対象のサービスを取得する
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
+
+        // プラグインサービスはインストール済みパッケージが提供するため変更しない
+        // enabled/autorefreshを含む全属性の変更を拒否する
+        if (svc.type() == zypp::repo::ServiceType::PLUGIN) {
+            m_lastError = "Plugin service " + alias + " is provided by an installed package and cannot be modified";
+            return false;
+        }
 
         // 渡された項目だけを適用し、それ以外は現在値を維持する
         if (hasName)
@@ -224,10 +241,18 @@ bool ZyppManager::refreshService(const std::string& alias)
     }
 
     try {
+        // RepoManagerから更新対象のサービスを取得する
         zypp::ServiceInfo svc = m_repoManager->getService(alias);
+
+        // プラグインサービスかどうかを先に判定し、以降の検査を切り替える
+        const bool isPlugin = svc.type() == zypp::repo::ServiceType::PLUGIN;
+
         // libzyppリフレッシュ前にサービス自体のポリシー検査を行う
+        // プラグインサービスはrefresh経路のみ許容し、続けて出所を検査する
         std::string svcErr;
-        if (!RepoPolicy::checkServicePolicy(svc, svcErr)) {
+
+        // RepoPolicy::checkServicePolicyでURLやエイリアスなどの基本検査を行う
+        if (!RepoPolicy::checkServicePolicy(svc, svcErr, isPlugin)) {
             m_lastError = "Service violates policy: " + svcErr;
             qCWarning(lcZypp) << "refreshService refused for"
                               << QString::fromStdString(alias) << ":"
@@ -235,12 +260,34 @@ bool ZyppManager::refreshService(const std::string& alias)
             return false;
         }
 
-        // 隔離時の.service unlinkはファイルがこのサービス専有であることが前提
-        // 複数サービスを定義した共有ファイル (libzypp正式サポート) や 既に不一致のファイルは、他サービスの誤削除を避けるため更新前に非破壊で拒否する
-        if (!RepoPolicy::serviceFileMatches(svc.filepath(), svc)) {
-            m_lastError = "Service " + alias + " is defined in a shared or modified service file; refresh it with zypper";
-            qCWarning(lcZypp) << "refreshService refused (non-exclusive service file) for" << QString::fromStdString(alias);
-            return false;
+        if (isPlugin) {
+            // プラグインサービスはパッケージが配置したスクリプトをlibzyppが/bin/sh -cで実行する
+            // 実行スクリプトがroot所有・書き込み不可で、プラグインサービスディレクトリ内に正規化されることを要求する
+            // ZConfig::pluginsPath()からlibzyppのプラグインサービス配置先を取得する
+            const std::string pluginDir =
+                (zypp::ZConfig::instance().pluginsPath() / "services").asString();
+
+            // 出所検査の失敗理由を受け取る
+            std::string trustErr;
+
+            // RepoPolicy::checkPluginServiceTrustedでスクリプトの所有者と配置先を検査する
+            if (!RepoPolicy::checkPluginServiceTrusted(svc, pluginDir, trustErr)) {
+                m_lastError = "Plugin service is not trusted: " + trustErr;
+                qCWarning(lcZypp) << "refreshService refused (untrusted plugin service) for"
+                                  << QString::fromStdString(alias) << ":"
+                                  << QString::fromStdString(trustErr);
+                return false;
+            }
+        }
+        else {
+            // 隔離時の.service unlinkは、ファイルがこのサービス専用であることが前提
+            // 複数サービスを定義した共有ファイルはlibzyppの正式サポートであり
+            // 既に不一致のファイルと同様に、他サービスの誤削除を避けるため更新前に非破壊で拒否する
+            if (!RepoPolicy::serviceFileMatches(svc.filepath(), svc)) {
+                m_lastError = "Service " + alias + " is defined in a shared or modified service file; refresh it with zypper";
+                qCWarning(lcZypp) << "refreshService refused (non-exclusive service file) for" << QString::fromStdString(alias);
+                return false;
+            }
         }
 
         // unlinkガード用のスナップショットをlibzypp更新前に取得する
@@ -282,8 +329,8 @@ bool ZyppManager::refreshService(const std::string& alias)
  * (サービス生成.repoは単一リポジトリであり、残留内容はINI注入の可能性があるため)
  *
  * @param serviceAlias 対象サービスエイリアス
- * @param report 削除内容の報告 (エイリアスと理由のみ、URLなし)
- * @return 違反がなく全て健全時はtrue
+ * @param report 削除内容の報告 (エイリアスと理由のみで、URLは含まない)
+ * @return 違反がなくすべて健全な場合はtrue
  * @note 呼び出し側のm_mutex配下で呼ぶこと (非再帰mutexのため内部でロックしない)
  */
 bool ZyppManager::sanitizeServiceRepos(const std::string &serviceAlias, std::string &report,
@@ -366,7 +413,7 @@ bool ZyppManager::sanitizeServiceRepos(const std::string &serviceAlias, std::str
 }
 
 /**
- * @brief サービスの.serviceファイル汚染を検証し必要なら隔離する
+ * @brief サービスの.serviceファイルの汚染を検証し、必要なら隔離する
  */
 bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
 {
@@ -377,10 +424,17 @@ bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
 
     zypp::ServiceInfo info;
     try {
+        // RepoManagerから隔離判定対象のサービス情報を取得する
         info = m_repoManager->getService(serviceAlias);
     }
     catch (...) {
-        return true;  // 検証対象なし (既に削除済み等)
+        return true;  // 検証対象なし (既に削除済みなど)
+    }
+
+    // プラグインサービスはインストール済みパッケージが提供するスクリプトであり
+    // removeService/unlinkによる削除や隔離は行わない
+    if (info.type() == zypp::repo::ServiceType::PLUGIN) {
+        return true;
     }
 
     bool tainted = false;
@@ -412,7 +466,7 @@ bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
     if (!tainted)
         return true;
 
-    // 隔離 : サービス (配下リポジトリと.serviceファイル) を削除する
+    // 隔離: サービス (配下のリポジトリと.serviceファイル) を削除する
     zypp::Pathname fpath;
     try {
         fpath = info.filepath();
@@ -440,8 +494,9 @@ bool ZyppManager::quarantineServiceIfTainted(const std::string &serviceAlias)
         }
     }
 
-    // 削除が拒否された場合 (SELinux等) は汚染ファイルが残るため、成功と報告しない
-    // PathInfo::isExistはstatの失敗理由を区別せず (EACCES等も「存在しない」扱い)、シンボリックリンクも辿るため、lstatでENOENT/ENOTDIRの時のみ削除済みとみなす
+    // 削除が拒否された場合 (SELinuxなど) は汚染ファイルが残るため、成功として報告しない
+    // PathInfo::isExistはstatの失敗理由を区別せず (EACCESなども「存在しない」扱い)、シンボリックリンクも辿る
+    // lstatでENOENT/ENOTDIRのときのみ削除済みとみなす
     if (!fpath.empty()) {
         struct stat st {};
 

@@ -1,3 +1,15 @@
+/**
+ * @file DBusClient.h
+ * @brief D-Busバックエンドとの非同期通信を担うクライアントの宣言
+ *
+ * qzypper-backendのPackageManagerインターフェースをsystem bus経由で呼び出し、
+ * 結果をQML側へ渡せる形に正規化する
+ * 全呼び出しはQDBusPendingCallWatcherで行い、GUIスレッドをブロックしない
+ *
+ * 入力 : メソッド名と引数、完了コールバック
+ * 出力 : 正規化済みの戻り値、接続状態と進捗のシグナル
+ * 依存 : Qt D-Bus、qzypper-backend (org.presire.qzypper)
+ */
 #ifndef QZYPPER_GUI_CONTROLLERS_DBUSCLIENT_H
 #define QZYPPER_GUI_CONTROLLERS_DBUSCLIENT_H
 
@@ -36,8 +48,8 @@ public:
      * @param success D-Bus転送が成功し正常応答が得られた場合はtrue
      * @param errorName D-Busエラー名 (成功時は空)
      * @param errorMessage エラーメッセージ (成功時は空)
-     * @param args 正規化済みの戻り値、成功時のみ設定される、
-     *             読み取り系は {QVariantList} / {QVariantMap}、bool系は {bool}
+     * @param args 正規化済みの戻り値 (成功時のみ設定される)
+     *             読み取り系は{QVariantList}または{QVariantMap}、bool系は{bool}
      */
     using ReplyCallback = std::function<void(bool success,
                                              const QString &errorName,
@@ -88,6 +100,10 @@ public:
     void setPackageVersion(const QString &name, const QString &version,      // パッケージ版変更
                            const QString &arch, const QString &repoAlias,
                            ReplyCallback callback);
+    // 特定版の選択状態変更
+    void setPackageVersionStatus(const QString &name, const QString &version,
+                                 const QString &arch, const QString &repoAlias,
+                                 int status, ReplyCallback callback);
     void setPatternStatus(const QString &name, int status,                   // パターン状態変更
                           ReplyCallback callback);
 
@@ -119,6 +135,12 @@ public:
     // コミット
     void getSelectionRevision(ReplyCallback callback);                   // 選択リビジョン取得
     void commitAsync(quint64 expectedRevision, ReplyCallback callback);  // 非同期コミット
+    /**
+     * @brief コミット前のライセンス確認をD-Busへ非同期で依頼する
+     * @param callback 完了時に確認結果を受け取るコールバック
+     * @note PackageManagerAdaptor::ConfirmLicensesをタイムアウトなしで呼ぶ
+     */
+    void confirmLicenses(ReplyCallback callback);  // コミット前のライセンス確認
 
     // 署名鍵
     void trustKey(const QString &fingerprint, ReplyCallback callback);   // 署名鍵承認
@@ -134,6 +156,8 @@ public:
     void getPackageDetails(const QString &name, ReplyCallback callback); // パッケージ詳細
     void getPackagesByRepo(const QString &repoAlias,                     // リポジトリ別一覧
                            ReplyCallback callback);
+    /** @brief 製品一覧をバックエンドから取得する (読み取り専用) */
+    void getProducts(ReplyCallback callback);                            // 製品一覧 (読み取り専用)
     void getPatterns(ReplyCallback callback);                            // パターン一覧
     void getPackagesByPattern(const QString &patternName,                // パターン別一覧
                               ReplyCallback callback);
@@ -147,6 +171,11 @@ public:
     void addLock(const QVariantMap &lock, ReplyCallback callback);       // パッケージロック追加
     void removeLock(const QVariantMap &lock, ReplyCallback callback);    // パッケージロック削除
     void getHistory(const QVariantMap &filter, ReplyCallback callback);  // zypp履歴一覧
+
+    void getHistoryGroups(const QVariantMap &options, ReplyCallback callback);  // zypp履歴のコマンド単位グループ (args[0]にQVariantMap)
+    void getExpandedRepoUrl(const QString &rawUrl, ReplyCallback callback);     // リポジトリURLの変数展開プレビュー (args[0]にQString)
+    void getRepoPresets(ReplyCallback callback);                                // コミュニティリポジトリのプリセット一覧
+
     void createSolverTestcase(ReplyCallback callback);                   // ソルバーテストケース作成
 
     // 状態保存・復元
@@ -212,8 +241,13 @@ private slots:
     void onScriptOutput(const QVariantMap &line);
 
 private:
+    // D-Busのサービス名
     static constexpr const char* SERVICE_NAME = "org.presire.qzypper";
+
+    // D-Busのオブジェクトパス
     static constexpr const char* OBJECT_PATH  = "/org/presire/qzypper";
+
+    // D-Busのインターフェース名
     static constexpr const char* INTERFACE     = "org.presire.qzypper.PackageManager";
 
     QDBusInterface *m_iface = nullptr;                  // D-Busインターフェース
@@ -246,7 +280,7 @@ private:
     bool m_serialCallInFlight = false;    // 直列化対象の呼び出しが応答待ちか
 
     /**
-     * @brief 世代番号、バックエンド再接続/切断のたびに増加する
+     * @brief バックエンドの再接続/切断のたびに増加する世代番号
      *
      * 送信時点の世代と不一致になった応答は、バックエンド消滅後の古い応答とみなし破棄する
      */

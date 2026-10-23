@@ -18,15 +18,17 @@ import "../components" as Components
 Dialog {
     id: root  // ダイアログ自身の参照名
 
-    property int currentStep: 0       // StackLayoutに表示する入力ステップ
-    property bool awaiting: false     // 追加要求の応答待ち
-    property string errorMessage: ""  // 追加失敗時のエラー表示
+    property int currentStep: 0        // StackLayoutに表示する入力ステップ
+    property bool awaiting: false      // 追加要求の応答待ち
+    property string errorMessage: ""   // 追加失敗時のエラー表示
+    property var presets: []           // コミュニティリポジトリのプリセット一覧 (対象外のディストリビューションでは空)
+    property var selectedPreset: null  // 選択中のプリセット (カスタムURLの場合はnull)
 
     signal repoAdded()  // 追加成功後に親へリポジトリ再読込を依頼する
 
     anchors.centerIn: parent           // 親ウィンドウの中央に表示する
     width: 600                         // ダイアログの幅
-    height: 450                        // ダイアログの高さ
+    height: 540                        // ダイアログの高さ
     title: qsTr("Add Repository")      // ダイアログのタイトル
     standardButtons: Dialog.NoButton   // 標準ボタンは使わず、各ステップの独自ボタンを使う
     modal: true                        // 表示中は背後の画面を操作できないようにする
@@ -43,6 +45,37 @@ Dialog {
         prioritySpin.value = 99
         autoRefreshCheck.checked = true
         keepPkgCheck.checked = false
+        selectedPreset = null
+        presetCombo.currentIndex = 0
+
+        // プリセット一覧を取得する (PackageController::loadRepoPresetsを呼び出し、完了はrepoPresetsReadyシグナルで受け取る)
+        PackageController.loadRepoPresets()
+    }
+
+    /**
+     * @brief プリセットの内容を入力欄へ反映する (nullならカスタム入力の初期状態へ戻す)
+     * @param preset 選択したプリセットのマップ (url、name、alias、priority、autoRefresh)
+     * @note 戻り値は無く、selectedPresetと各入力欄の値を書き換える
+     *       URLは展開前の値 ($releasever等を含みうる) をそのまま設定する
+     */
+    function applyPreset(preset) {
+        root.selectedPreset = preset
+
+        // カスタム入力が選ばれたときは、プリセットで埋めた入力欄を初期状態へ戻す
+        if (preset === null) {
+            urlSelector.clear()
+            nameField.text = ""
+            aliasField.text = ""
+            prioritySpin.value = 99
+            autoRefreshCheck.checked = true
+            return
+        }
+
+        urlSelector.setUrl(preset.url)
+        nameField.text = preset.name
+        aliasField.text = preset.alias
+        prioritySpin.value = preset.priority
+        autoRefreshCheck.checked = preset.autoRefresh
     }
 
     // ダイアログ本体 (入力ステップを切り替えて表示する)
@@ -68,9 +101,71 @@ Dialog {
                 wrapMode: Text.WordWrap                                          // 幅に収まらない場合は単語単位で折り返す
             }
 
+            // コミュニティリポジトリの選択行 (対象ディストリビューションのプリセットがある場合だけ表示する)
+            RowLayout {
+                Layout.fillWidth: true            // 親の幅いっぱいに広げる
+                spacing: 8                        // 項目の間隔
+                visible: root.presets.length > 0  // プリセットがあるときだけ表示する
+
+                // [Source:]の項目名
+                Label {
+                    text: qsTr("Source:")  // 項目名の文字列
+                }
+
+                // カスタムURLかコミュニティリポジトリかの選択欄
+                ComboBox {
+                    id: presetCombo  // プリセット選択欄の参照名
+
+                    Layout.fillWidth: true  // 残りの幅をすべて使う
+
+                    // 先頭はカスタムURL、以降はプリセット名
+                    model: [qsTr("Custom URL")].concat(root.presets.map(function (preset) { return preset.name }))
+
+                    // 選択に応じて入力欄へ反映する (0はカスタム)
+                    onActivated: function (index) {
+                        root.applyPreset(index === 0 ? null : root.presets[index - 1])
+                    }
+                }
+            }
+
+            // 選択したプリセットの説明
+            Label {
+                Layout.fillWidth: true                 // 親の幅いっぱいに広げる
+                visible: root.selectedPreset !== null  // プリセット選択時だけ表示する
+                textFormat: Text.PlainText             // HTMLとして解釈させない
+                color: palette.placeholderText         // 補足情報として控えめな文字色
+                wrapMode: Text.WordWrap                // 幅に収まらない場合は単語単位で折り返す
+
+                // プリセットの説明の文字列
+                text: root.selectedPreset ? root.selectedPreset.description : ""
+            }
+
+            // サードパーティリポジトリの警告
+            Frame {
+                Layout.fillWidth: true                 // 親の幅いっぱいに広げる
+                visible: root.selectedPreset !== null  // プリセット選択時だけ表示する
+
+                // 警告の文字列
+                contentItem: Label {
+                    font.bold: true          // 太字で目立たせる
+                    wrapMode: Text.WordWrap  // 幅に収まらない場合は単語単位で折り返す
+
+                    // 警告の文字列
+                    text: qsTr("Third-party repository: its packages are not provided or reviewed by openSUSE. "
+                               + "Add it only if you trust the source. You will be asked to confirm its GPG key.")
+                }
+            }
+
             // URL種別の選択とURLの入力欄
             Components.UrlTypeSelector {
                 id: urlSelector  // URL入力部品の参照名
+
+                Layout.fillWidth: true  // 親の幅いっぱいに広げる
+            }
+
+            // URLの変数を展開した結果のプレビュー (保存されるのは展開前のURL)
+            Components.UrlExpansionPreview {
+                rawUrl: urlSelector.url  // 展開前のURL
 
                 Layout.fillWidth: true  // 親の幅いっぱいに広げる
             }
@@ -279,7 +374,7 @@ Dialog {
                             "autoRefresh":  autoRefreshCheck.checked,
                             "keepPackages": keepPkgCheck.checked,
                             "priority":     prioritySpin.value,
-                            // 型自動検出は未実装のため削除 (バックエンド側で決定)
+                            // 型の自動検出は未実装のため空にしておく (バックエンド側で決定する)
                             "type":         ""
                         }
 
@@ -318,9 +413,18 @@ Dialog {
         target: PackageController  // 追加完了を通知するPackageController
 
         /**
+         * @brief コミュニティリポジトリのプリセット一覧を受け取る
+         * @param list プリセットのマップ一覧 (対象外のディストリビューションでは空)
+         * @note presetsを書き換え、プリセット選択行の表示と選択肢を更新する
+         */
+        function onRepoPresetsReady(list) {
+            root.presets = list
+        }
+
+        /**
          * @brief リポジトリ追加完了のシグナルを受け取る
-         * @param success 追加に成功したかどうか
-         * @note 戻り値は無く、追加待ちでない通知は早期に戻る
+         * @param success 追加に成功したか
+         * @note 戻り値は無く、追加要求を出していない通知は無視する
          */
         function onAddRepoFinished(success) {
             // このダイアログからの追加要求でない場合は何もしない

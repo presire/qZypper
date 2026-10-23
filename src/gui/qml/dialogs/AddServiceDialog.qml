@@ -24,7 +24,7 @@ Dialog {
 
     anchors.centerIn: parent           // 親ウィンドウの中央に表示する
     width: 450                         // ダイアログの幅
-    height: 250                        // ダイアログの高さ
+    height: 285                        // プラグインサービスの注記を含む高さ
     title: qsTr("Add Service")         // ダイアログのタイトル
     standardButtons: Dialog.NoButton   // 標準ボタンは使わず、独自の[Cancel]・[Add]ボタンを使う
     modal: true                        // 表示中は背後の画面を操作できないようにする
@@ -39,7 +39,7 @@ Dialog {
         urlField.forceActiveFocus()
     }
 
-    // ダイアログ本体 (入力欄、操作ボタン、エラー表示)
+    // ダイアログ本体 (案内、入力欄、操作ボタン、エラー表示)
     contentItem: ColumnLayout {
         spacing: 12  // 項目の間隔
 
@@ -48,6 +48,15 @@ Dialog {
             text: qsTr("Enter the service URL and alias")  // 案内の文字列
             font.pixelSize: 14                             // 文字サイズ
             font.bold: true                                // 太字で表示する
+        }
+
+        // プラグインサービスはURL指定で追加できないことの注記
+        Label {
+            Layout.fillWidth: true  // 親の幅いっぱいに広げる
+            opacity: 0.8            // 注記を控えめに表示する
+            text: qsTr("Plugin services are provided by installed packages and cannot be added here; use zypper for those.")
+            font.pixelSize: 11
+            wrapMode: Text.WordWrap
         }
 
         // 項目名と入力欄を2列で並べる
@@ -143,8 +152,8 @@ Dialog {
 
         /**
          * @brief サービス追加完了のシグナルを受け取る
-         * @param success 追加に成功したかどうか
-         * @note 戻り値は無く、追加待ちでない通知は早期に戻る
+         * @param success 追加に成功したか
+         * @note 戻り値は無く、追加要求を出していない通知は無視する
          */
         function onAddServiceFinished(success) {
             // このダイアログからの追加要求でない場合は何もしない

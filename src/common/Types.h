@@ -35,7 +35,7 @@ enum class SearchFlag {
     Keywords    = 1 << 1,  // キーワードを対象にする
     Summary     = 1 << 2,  // 概要を対象にする
     Description = 1 << 3,  // 説明文を対象にする
-    Requires    = 1 << 4,  // 必要ケーパビリティを対象にする
+    Requires    = 1 << 4,  // 要求ケーパビリティを対象にする
     Provides    = 1 << 5,  // 提供ケーパビリティを対象にする
     FileList    = 1 << 6,  // インストールファイルを対象にする
     Recommends  = 1 << 7   // 推奨ケーパビリティを対象にする
@@ -52,9 +52,20 @@ enum class PatchCategory {
     Recommended,   // 推奨更新
     Optional,      // 任意更新
     Feature,       // 機能更新
-    All            // 全カテゴリ
+    All,           // 全カテゴリ
+    Document = 5,  // ドキュメント更新
+    YaST = 6       // YaST関連更新
 };
 Q_ENUM_NS(PatchCategory)
+
+/**
+ * @brief パッチカテゴリの指定値が有効かを判定する
+ * @param category -1 (すべて) または PatchCategory の値
+ * @return 有効ならtrue、無効ならfalse
+ */
+inline bool isValidPatchCategory(int category) {
+    return category >= -1 && category <= static_cast<int>(PatchCategory::YaST);
+}
 
 } // namespace qZypper
 

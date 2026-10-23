@@ -1,3 +1,10 @@
+2024-01-14 09:00:00|install|zlib|1.3-1.1|x86_64|root@host|repo-oss|def456|trans0
+2024-01-15 10:29:59|command|root@host|zypper install bash|trans1
 2024-01-15 10:30:00|install|bash|5.2.15-1.1|x86_64|user@host|repo-oss|abc123|trans1
+2024-01-16 10:59:59|command|root@host|zypper remove nano|trans2
 2024-01-16 11:00:00|remove|nano|7.2-1.1|x86_64|root@host|trans2
+2024-01-17 11:59:59|command|root@host|zypper addrepo my-repo|trans3
 2024-01-17 12:00:00|radd|my-repo|https://example.com/repo|userdata3
+2024-01-17 12:00:05|rurl|my-repo|https://example.org/repo|trans3
+2024-01-17 12:00:06|ralias|my-repo|my-repo2|trans3
+2024-01-18 08:00:00|command|root@host|zypper refresh|trans4

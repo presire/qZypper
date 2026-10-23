@@ -1,7 +1,8 @@
 find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
 
 foreach(test IN ITEMS CommitOutcome OperationState PromptRegistry Validation Locks History
-                     SearchOptions TransactionSummary CommitInteraction SnapshotInfo RebootCheck)
+                     SearchOptions TransactionSummary CommitInteraction SnapshotInfo RebootCheck
+                     LicenseConfirmation PackageDetails RepoPresets)
     add_executable(test-${test} tst_${test}.cpp)
     target_link_libraries(test-${test} PRIVATE qzypper-zypp Qt6::Test)
     add_test(NAME ${test} COMMAND test-${test})
@@ -60,6 +61,13 @@ add_test(NAME SelectionParity COMMAND test-SelectionParity)
 set_tests_properties(SelectionParity PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
     ENVIRONMENT "ZYPPTMPDIR=/tmp")
 
+# 複数版パッケージの版単位選択 (一時ルート、root / ネットワーク不要)
+add_executable(test-MultiversionSelection tst_MultiversionSelection.cpp)
+target_link_libraries(test-MultiversionSelection PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME MultiversionSelection COMMAND test-MultiversionSelection)
+set_tests_properties(MultiversionSelection PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
 # ソルバー設定のシャットダウン時リセット (一時ルート、root / ネットワーク不要)
 add_executable(test-SolverSettingsReset tst_SolverSettingsReset.cpp)
 target_link_libraries(test-SolverSettingsReset PRIVATE qzypper-zypp Qt6::Test)
@@ -80,3 +88,19 @@ target_include_directories(test-SearchModeDetect PRIVATE ../src/gui/controllers)
 target_link_libraries(test-SearchModeDetect PRIVATE Qt6::Test)
 add_test(NAME SearchModeDetect COMMAND test-SearchModeDetect)
 set_tests_properties(SearchModeDetect PROPERTIES TIMEOUT 30)
+
+# EULAを持つ一時プールでの承認・拒否 (root / ネットワーク不要)
+pkg_check_modules(LIBSOLV REQUIRED IMPORTED_TARGET libsolv)
+add_executable(test-LicenseSelection tst_LicenseSelection.cpp)
+target_link_libraries(test-LicenseSelection PRIVATE qzypper-zypp Qt6::Test PkgConfig::LIBSOLV)
+add_test(NAME LicenseSelection COMMAND test-LicenseSelection)
+set_tests_properties(LicenseSelection PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 製品情報・パッチカテゴリ・プラグインサービスの信頼検査 (root不要)
+foreach(test IN ITEMS ProductInfo PatchCategory PluginServiceTrust)
+    add_executable(test-${test} tst_${test}.cpp)
+    target_link_libraries(test-${test} PRIVATE qzypper-zypp Qt6::Test)
+    add_test(NAME ${test} COMMAND test-${test})
+    set_tests_properties(${test} PROPERTIES TIMEOUT 30)
+endforeach()

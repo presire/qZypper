@@ -33,7 +33,7 @@ Dialog {
     property bool currentRemoval: false  // 削除処理中かどうか
 
     // PackageStateChanged未対応の旧バックエンド用:
-    // CommitProgressChangedのstage/packageName変化から状態遷移を推定
+    // CommitProgressChangedのstageとpackageNameの変化から状態遷移を推定する
     property string _prevPkg: ""          // 直前のパッケージ名
     // 直前の処理段階 (状態遷移の推定用)
     property string _prevStage: ""        // 直前の処理段階
@@ -49,7 +49,7 @@ Dialog {
 
     /**
      * @brief スクリプト出力の1行を蓄積し、保持上限を超えた分は古い行から捨てる
-     * @param entry パッケージ名と行とエラー種別を持つ出力要素
+     * @param entry パッケージ名、行の内容、エラー種別を持つ出力要素
      */
     function appendScriptLine(entry) {
         var prefix = entry.package ? ("[" + entry.package + "] ") : ""
@@ -70,7 +70,7 @@ Dialog {
         scriptLines = lines
     }
 
-    // --- モデル操作ヘルパー (重複なし / 現在カードを持つ堅牢な検索・移動) ---
+    // モデル操作ヘルパー、重複を防ぎ現在カードを考慮した検索と移動を行う
 
     /**
      * @brief モデル内で名前が一致する行のインデックスを返す
@@ -146,12 +146,15 @@ Dialog {
      * @param name 対象のパッケージ名
      * @param isRemoval 削除対象かどうか
      * @param downloadDone ダウンロード完了かどうか
+     * @param version 同一名の複数版を識別する版文字列 (空なら未表示)
+     * @note 戻り値は無く、既に同じ名前がある場合は追加しない
      */
-    function appendPending(name, isRemoval, downloadDone) {
+    function appendPending(name, isRemoval, downloadDone, version) {
         // 重複を防ぐため、Pending一覧に無い場合のみ追加する
         if (indexOf(pendingModel, name) < 0) {
             pendingModel.append({
                 name: name,
+                version: version || "",    // 複数版パッケージを識別する版文字列
                 isRemoval: isRemoval,
                 downloadDone: downloadDone
             })
@@ -162,11 +165,15 @@ Dialog {
      * @brief パッケージをDone一覧へ追加する (既存なら何もしない)
      * @param name 対象のパッケージ名
      * @param isRemoval 削除対象かどうか
+     * @note Pending一覧に同じ名前がある場合はその版文字列を引き継ぐ
      */
     function appendDone(name, isRemoval) {
         // 重複を防ぐため、Done一覧に無い場合のみ追加する
         if (indexOf(doneModel, name) < 0) {
-            doneModel.append({ name: name, isRemoval: isRemoval })
+            // Pending側が版を持つ場合はDoneへ引き継ぐ (複数版パッケージの識別用)
+            var idx = indexOf(pendingModel, name)
+            var version = idx >= 0 ? (pendingModel.get(idx).version || "") : ""
+            doneModel.append({ name: name, version: version, isRemoval: isRemoval })
         }
     }
 
@@ -194,11 +201,11 @@ Dialog {
         }
 
         if (currentStage === "downloading") {
-            // ダウンロードのみ完了 → ダウンロード済みとしてPendingへ戻す
+            // ダウンロードのみ完了した場合は、ダウンロード済みとしてPendingへ戻す
             appendPending(currentPackage, false, true)
         }
         else {
-            // install / remove完了 → Doneへ
+            // installまたはremoveが完了した場合はDoneへ移す
             appendDone(currentPackage, currentRemoval)
         }
 
@@ -292,6 +299,7 @@ Dialog {
             var isRemoval = (statusVal === 6 || statusVal === 7)
             pendingModel.append({
                 name: sorted[i].name,
+                version: sorted[i].version || sorted[i].installedVersion || "",
                 isRemoval: isRemoval,
                 downloadDone: false
             })
@@ -407,7 +415,7 @@ Dialog {
                     }
                 }
 
-                // 現在パッケージの進捗バー (対象が無いときはインデターミネート表示)
+                // 現在パッケージの進捗バー、対象が無いときは進捗不明として表示する
                 ProgressBar {
                     id: packageProgressBar  // パッケージ進捗バーの参照名
 
@@ -431,7 +439,7 @@ Dialog {
 
                     // 現在パッケージの進捗率
                     Label {
-                        // 処理中の場合のみ"nn%"を表示する
+                        // 処理中の場合のみ進捗率を%付きで表示する
                         text: commitProgressDialog.currentPackage !== ""
                             ? (commitProgressDialog.currentPercent + "%")
                             : ""
@@ -501,7 +509,9 @@ Dialog {
                             // パッケージ名 (削除の場合は先頭に-を付ける)
                             Label {
                                 Layout.fillWidth: true                                    // 残りの幅をすべて使う
-                                text: model.isRemoval ? ("- " + model.name) : model.name  // パッケージ名
+                                // 複数版パッケージは同名の行が並ぶため版も併記する
+                                text: (model.isRemoval ? ("- " + model.name) : model.name)
+                                      + (model.version ? " " + model.version : "")
                                 textFormat: Text.PlainText                                // 外部由来の文字列をHTMLとして解釈させない
                                 color: palette.text                                       // 通常の文字色
                                 font.pixelSize: 12                                        // 文字サイズ
@@ -573,7 +583,9 @@ Dialog {
                             // パッケージ名 (削除の場合は先頭に-を付ける)
                             Label {
                                 Layout.fillWidth: true                                    // 残りの幅をすべて使う
-                                text: model.isRemoval ? ("- " + model.name) : model.name  // パッケージ名
+                                // 複数版パッケージは同名の行が並ぶため版も併記する
+                                text: (model.isRemoval ? ("- " + model.name) : model.name)
+                                      + (model.version ? " " + model.version : "")
                                 textFormat: Text.PlainText                                // 外部由来の文字列をHTMLとして解釈させない
                                 color: palette.placeholderText                            // 控えめな文字色
                                 font.pixelSize: 12                                        // 文字サイズ
@@ -593,7 +605,6 @@ Dialog {
         ColumnLayout {
             Layout.fillWidth: true                                // 親の幅いっぱいに広げる
             spacing: 4                                            // 項目の間隔
-            // スクリプト出力がある場合のみ表示する
             visible: commitProgressDialog.scriptLines.length > 0  // 出力がある場合のみ表示する
 
             // 開閉ボタンとエラー件数の行
@@ -614,7 +625,6 @@ Dialog {
 
                 // エラー行の件数バッジ
                 Label {
-                    // エラー行がある場合のみ件数バッジを表示する
                     visible: commitProgressDialog.scriptErrorCount > 0                       // エラー行がある場合のみ表示する
                     text: qsTr("%1 error lines").arg(commitProgressDialog.scriptErrorCount)  // エラー行の件数
                     color: "#F44336"                                                         // エラー色 (赤)
@@ -656,12 +666,12 @@ Dialog {
             }
         }
 
-        // コンパクトなフッター行 : 全体進捗+パーセント+キャンセル+サマリー表示
+        // 全体進捗、パーセント、キャンセル、サマリー表示をまとめたフッター行
         RowLayout {
             Layout.fillWidth: true  // 親の幅いっぱいに広げる
             spacing: 10             // 項目の間隔
 
-            // 全体の進捗バー (開始前はインデターミネート表示)
+            // 全体の進捗バー、開始前は進捗不明として表示する
             ProgressBar {
                 id: totalProgressBar  // 全体進捗バーの参照名
 
@@ -675,7 +685,7 @@ Dialog {
             // 全体の進捗率
             Label {
                 Layout.preferredWidth: 44                        // 列の幅
-                text: commitProgressDialog.overallPercent + "%"  // "nn%"形式の進捗率
+                text: commitProgressDialog.overallPercent + "%"  // 進捗率を%付きで表示する
                 font.pixelSize: 13                               // 文字サイズ
                 horizontalAlignment: Text.AlignRight             // 右寄せで表示する
             }
@@ -705,7 +715,7 @@ Dialog {
         }
     }
 
-    // コミット進捗と出力と完了をバックエンドから受け取る
+    // コミット進捗、スクリプト出力、完了通知をPackageControllerから受け取る
     Connections {
         target: PackageController  // コミット進捗を通知するPackageController
 
@@ -783,12 +793,10 @@ Dialog {
                 return
             }
 
-            // PackageStateChanged未対応バックエンド用フォールバック:
-            // stageとpackageNameの変化から状態遷移を推定
             var prev = commitProgressDialog._prevPkg
             var prevStage = commitProgressDialog._prevStage
 
-            // 段階に応じて現在カードを切り替える (インストール・削除では、別パッケージに移ったら直前のカードを完了させる)
+            // 段階に応じて現在カードを切り替える、別パッケージに移ったら直前のカードは完了させる
             if (stage === "downloading") {
                 commitProgressDialog.startCurrent(packageName, "downloading", false)
             }

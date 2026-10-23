@@ -25,7 +25,7 @@ QString capText(const QString &text, int maxBytes, bool *truncated)
         return text;
 
     QByteArray cut = utf8.left(maxBytes);
-    // 不完全な末尾バイト (継続バイト・不完全な先頭バイト) を除去する
+    // 不完全な末尾バイト(継続バイト・不完全な先頭バイト) を除去する
     while (!cut.isEmpty()
            && (static_cast<unsigned char>(cut.at(cut.size() - 1)) & 0xC0) == 0x80) {
         cut.chop(1);
@@ -45,7 +45,7 @@ QString capText(const QString &text, int maxBytes, bool *truncated)
 }
 
 /**
- * @brief スクリプト出力1行をD-Bus安全な形へ整える
+ * @brief スクリプト出力1行をD-Busで安全に送れる形へ整える
  * @param line 元の行
  * @return 制御文字を除去し長さを上限内に収めた行
  */
@@ -73,7 +73,7 @@ QString sanitizeScriptLine(const QString &line)
  * @param package パッケージ名
  * @param version バージョン
  * @param licenseText ライセンス本文
- * @return プロンプトdata
+ * @return プロンプトデータ
  */
 QVariantMap buildLicensePromptData(const QString &package, const QString &version, const QString &licenseText)
 {
@@ -95,7 +95,7 @@ QVariantMap buildLicensePromptData(const QString &package, const QString &versio
 }
 
 /**
- * @brief ライセンス回答が承認かどうかを判定する
+ * @brief ライセンス確認の回答が承認かどうかを判定する
  * @param answer 回答マップ
  * @return "accept"のときtrue
  */
@@ -111,7 +111,7 @@ bool licenseAnswerAccepted(const QVariantMap &answer)
  * @param mediaNr メディア番号
  * @param message 概要メッセージ
  * @param details 詳細メッセージ
- * @return プロンプトdata
+ * @return プロンプトデータ
  */
 QVariantMap buildMediaChangePromptData(const QString &url, const QString &label,
                                        unsigned int mediaNr, const QString &message,
@@ -151,10 +151,84 @@ QString mediaAnswerAction(const QVariantMap &answer)
 }
 
 /**
+ * @brief パッケージ操作エラープロンプトのデータを構築する
+ * @param operation 操作種別 [download]/[install]/[remove]
+ * @param package 対象パッケージ名
+ * @param errorKind エラー種別
+ * @param description エラー詳細
+ * @param actions 提示するアクション [abort]/[retry]/[ignore]
+ * @return [download-error]/[install-error]/[remove-error]用のプロンプトデータ
+ */
+QVariantMap buildProblemPromptData(const QString &operation, const QString &package,
+                                   const QString &errorKind, const QString &description,
+                                   const QStringList &actions)
+{
+    // 操作種別を表示用の見出しへ変換する
+    QString operationLabel = operation;
+    if (operation == QStringLiteral("download")) {
+        operationLabel = QStringLiteral("Download");
+    }
+    else if (operation == QStringLiteral("install")) {
+        operationLabel = QStringLiteral("Installation");
+    }
+    else if (operation == QStringLiteral("remove")) {
+        operationLabel = QStringLiteral("Removal");
+    }
+
+    const QString message = package.isEmpty()
+        ? QStringLiteral("%1 error (%2).").arg(operationLabel, errorKind)
+        : QStringLiteral("%1 error for %2 (%3).").arg(operationLabel, package, errorKind);
+
+    // 提示するアクションごとにボタン定義を作る
+    QVariantList buttons;
+    for (const QString &action : actions) {
+        QString label = QStringLiteral("Abort");
+        if (action == QStringLiteral("retry")) {
+            label = QStringLiteral("Retry");
+        }
+        else if (action == QStringLiteral("ignore")) {
+            label = QStringLiteral("Ignore");
+        }
+
+        buttons.append(QVariantMap{{QStringLiteral("action"), action},
+                                   {QStringLiteral("label"), label}});
+    }
+
+    QVariantMap data;
+    data.insert(QStringLiteral("message"), message);
+    data.insert(QStringLiteral("details"), capText(description, CommitLimits::kMaxProblemTextBytes));
+    data.insert(QStringLiteral("operation"), operation);
+    data.insert(QStringLiteral("package"), package);
+    data.insert(QStringLiteral("errorKind"), errorKind);
+    data.insert(QStringLiteral("actions"), actions);
+    data.insert(QStringLiteral("buttons"), buttons);
+    return data;
+}
+
+/**
+ * @brief エラープロンプトの回答を許可されたアクションへ正規化する
+ * @param answer 回答マップ
+ * @param allowed 許可されたアクション一覧
+ * @return 許可されたアクション
+ * @note 不正または不明なときは[abort]
+ */
+QString problemAnswerAction(const QVariantMap &answer, const QStringList &allowed)
+{
+    const QString action = answer.value(QStringLiteral("action")).toString();
+
+    // 許可されたアクションだけを採用する
+    if (allowed.contains(action)) {
+        return action;
+    }
+
+    return QStringLiteral("abort");
+}
+
+/**
  * @brief ファイル競合プロンプトのデータを構築する
  * @param conflicts 競合説明行
  * @param totalCount 競合総数
- * @return プロンプトdata
+ * @return プロンプトデータ
  */
 QVariantMap buildFileConflictPromptData(const QStringList &conflicts, int totalCount)
 {
@@ -179,7 +253,7 @@ QVariantMap buildFileConflictPromptData(const QStringList &conflicts, int totalC
 /**
  * @brief ファイル競合の回答が続行かどうかを判定する
  * @param answer 回答マップ
- * @return "continue"の時はtrue
+ * @return "continue"のときはtrue
  */
 bool fileConflictAnswerContinue(const QVariantMap &answer)
 {
@@ -190,7 +264,7 @@ bool fileConflictAnswerContinue(const QVariantMap &answer)
 
 /**
  * @brief 集約器を構築する
- * @param emit フラッシュ時に呼ぶコールバック
+ * @param sink フラッシュ時に呼ぶコールバック
  */
 ScriptOutputAggregator::ScriptOutputAggregator(ScriptOutputFn sink)
     : m_emit(std::move(sink))
@@ -249,7 +323,7 @@ void ScriptOutputAggregator::addRpmMessage(const QString &line, bool isError,
 }
 
 /**
- * @brief 閾値判定を行い必要ならフラッシュする
+ * @brief 閾値を判定し、必要ならフラッシュする
  * @param now 現在時刻
  */
 void ScriptOutputAggregator::maybeFlush(Clock::time_point now)
