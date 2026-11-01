@@ -768,7 +768,10 @@ allow qzypper_dbus_t ld_so_cache_t:file { getattr open read map };
 allow qzypper_dbus_t textrel_shlib_t:file { getattr open read execute map };
 
 # Filesystem metadata (statfs - needed for zypp::DiskUsageCounter::detectMountPoints)
-# Full mount/unmount defined in RPM scriptlet support section
+# mount/unmountは意図的に許可しない
+# libzyppは/usr/bin/mountを実行してメディアをマウントするが、
+# このモジュールはmount_exec_tの実行を許可しない
+# 上記のsys_adminとbtrfsに関する説明も参照
 allow qzypper_dbus_t fs_t:filesystem getattr;
 
 # /etc/passwd, /etc/group (NSS user/group lookups for uid/gid resolution)
@@ -1116,9 +1119,23 @@ allow qzypper_dbus_t system_dbusd_t:fd use;
 allow qzypper_dbus_t init_t:fd use;
 
 # Default type for unlabeled/custom-path files - RPM may install files to non-standard paths
-allow qzypper_dbus_t default_t:dir { getattr setattr open read search write add_name remove_name create rmdir relabelfrom relabelto };
-allow qzypper_dbus_t default_t:file { getattr setattr open read write create unlink rename link lock map relabelfrom relabelto };
-allow qzypper_dbus_t default_t:lnk_file { getattr read create unlink };
+# ローカルリポジトリやパッケージ内の非標準パスのファイルを読むため、読み取りは常に許可する
+# 既定のclassic_rpmtransでは/usr/bin/rpm (rpm_exec_t)がrpm_tに遷移し、
+# ベースポリシーに従ってファイルのインストールとラベル変更を行う
+# そのためqzypper_dbus_tにdefault_tへの書き込みは不要
+# 非既定のsingle_rpmtransヘルパーと、コミット後にlibzyppが/bin/shで直接実行する
+# 従来の更新スクリプトはqzypper_dbus_tで動作するため、書き込み権限が必要
+# 後者は一部のパッケージやパッチが/var/adm/update-scriptsに配置するスクリプトで、
+# RunUpdateScriptsが実行する
+# これらを使う場合に限り、既定で無効のqzypper_rpm_helper_writeを有効にする
+allow qzypper_dbus_t default_t:dir { getattr open read search };
+allow qzypper_dbus_t default_t:file { getattr open read map };
+allow qzypper_dbus_t default_t:lnk_file { getattr read };
+if (qzypper_rpm_helper_write) {
+    allow qzypper_dbus_t default_t:dir { setattr write add_name remove_name create rmdir relabelfrom relabelto };
+    allow qzypper_dbus_t default_t:file { setattr write create unlink rename link lock relabelfrom relabelto };
+    allow qzypper_dbus_t default_t:lnk_file { create unlink };
+}
 
 ########################################
 # Optional blocks (D-Bus service domain)
@@ -1793,13 +1810,27 @@ optional {
 }
 
 # Unlabeled files/directories (files with no matching file_contexts)
+# 外付けドライブなどラベルのないファイルシステム上のローカルリポジトリを読むため、
+# 読み取りは常に許可する
+# 既定のclassic_rpmtransでは/usr/bin/rpm (rpm_exec_t)がrpm_tに遷移し、
+# ベースポリシーに従ってファイルを書き込むため、qzypper_dbus_tに書き込みは不要
+# 非既定のsingle_rpmtransヘルパーと、コミット後にlibzyppが/bin/shで直接実行する
+# 従来の更新スクリプトはqzypper_dbus_tで動作するため、書き込み権限が必要
+# 後者は一部のパッケージやパッチが/var/adm/update-scriptsに配置するスクリプトで、
+# RunUpdateScriptsが実行する
+# これらを使う場合に限り、既定で無効のqzypper_rpm_helper_writeを有効にする
 optional {
     require {
         type unlabeled_t;
     }
-    allow qzypper_dbus_t unlabeled_t:dir { getattr setattr open read search write add_name remove_name create rmdir };
-    allow qzypper_dbus_t unlabeled_t:file { getattr setattr open read write create unlink rename link lock map };
-    allow qzypper_dbus_t unlabeled_t:lnk_file { getattr read create unlink };
+    allow qzypper_dbus_t unlabeled_t:dir { getattr open read search };
+    allow qzypper_dbus_t unlabeled_t:file { getattr open read map };
+    allow qzypper_dbus_t unlabeled_t:lnk_file { getattr read };
+    if (qzypper_rpm_helper_write) {
+        allow qzypper_dbus_t unlabeled_t:dir { setattr write add_name remove_name create rmdir };
+        allow qzypper_dbus_t unlabeled_t:file { setattr write create unlink rename link lock };
+        allow qzypper_dbus_t unlabeled_t:lnk_file { create unlink };
+    }
 }
 
 # D-Bus communication with unconfined_t (user session processes)
@@ -1813,9 +1844,6 @@ allow qzypper_dbus_t unconfined_t:lnk_file { getattr read };
 
 # Kernel keyring access (RPM signature verification may use kernel keyring)
 allow qzypper_dbus_t kernel_t:key { search read view };
-
-# Filesystem mount operations (some packages need filesystem info)
-allow qzypper_dbus_t fs_t:filesystem { getattr mount unmount };
 
 ########################################
 # Domain transitions

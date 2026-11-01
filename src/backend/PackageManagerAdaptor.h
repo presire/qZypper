@@ -16,8 +16,11 @@
 #include <functional>
 #include "ZyppExecutor.h"
 #include "PolkitAuthorization.h"
+#include "PackageRowDBus.h"
 
 namespace qZypper {
+
+struct SearchOptions;
 
 /**
  * @class PackageManagerAdaptor
@@ -82,12 +85,22 @@ public slots:
     // パッケージ検索・一覧
     /** @brief 指定フィールドを対象にパッケージを部分一致検索する */
     QVariantList SearchPackages(const QString &query, int searchFlags);  // パッケージ検索
+    /** @brief 検索結果をPackageListReply形式で返す (旧形式はav) */
+    PackageListReply SearchPackagesV2(const QString &query, int searchFlags);  // パッケージ検索 (構造化)
     /** @brief 検索オプションに従ってパッケージを検索する */
     QVariantList SearchPackagesEx(const QVariantMap &options);           // 拡張パッケージ検索 (PoolQuery)
+    /** @brief 拡張検索の結果を構造化した一覧で返す */
+    PackageListReply SearchPackagesExV2(const QVariantMap &options);     // 拡張検索 (構造化)
     /** @brief 指定したパッケージの詳細情報を返す */
     QVariantMap GetPackageDetails(const QString &name);                  // パッケージ詳細取得
     /** @brief リポジトリが提供するパッケージを返す */
     QVariantList GetPackagesByRepo(const QString &repoAlias);            // リポ別パッケージ
+    /** @brief リポジトリが提供するパッケージを構造化した一覧で返す */
+    PackageListReply GetPackagesByRepoV2(const QString &repoAlias);      // リポ別パッケージ (構造化)
+    /** @brief サービスに属するリポジトリが提供するパッケージを構造化した一覧で返す */
+    PackageListReply GetPackagesByService(const QString &alias);         // サービス別パッケージ (構造化)
+    /** @brief 指定した名前のパッケージを構造化した一覧で返す */
+    PackageListReply GetPackagesByNames(const QStringList &names);       // 名前指定パッケージ (構造化)
     /**
      * @brief 利用可能な製品を返す (読み取り専用)
      * @return 製品情報のQVariantMap一覧
@@ -97,6 +110,8 @@ public slots:
     QVariantList GetPatterns();                                          // パターン一覧取得
     /** @brief パターンに含まれるパッケージを返す */
     QVariantList GetPackagesByPattern(const QString &patternName);       // パターン別パッケージ
+    /** @brief パターンに含まれるパッケージを構造化した一覧で返す */
+    PackageListReply GetPackagesByPatternV2(const QString &patternName); // パターン別パッケージ (構造化)
     /** @brief カテゴリに該当するパッチを返す */
     QVariantList GetPatches(int category);                               // パッチ一覧取得
     /** @brief パッチの選択状態を変更する */
@@ -113,10 +128,14 @@ public slots:
     QVariantList GetRpmGroups();                                         // RPMグループツリー取得
     /** @brief 指定RPMグループ配下のパッケージ一覧を返す */
     QVariantList GetPackagesByRpmGroup(const QString &path);             // グループ別パッケージ取得
+    /** @brief 指定RPMグループ配下のパッケージ一覧を構造化して返す */
+    PackageListReply GetPackagesByRpmGroupV2(const QString &path);       // グループ別パッケージ取得 (構造化)
     /** @brief 利用可能なロケールと要求済みロケールの一覧を返す */
     QVariantList GetLocales();                                           // ロケール一覧取得
     /** @brief 指定ロケールに対応するパッケージ一覧を返す */
     QVariantList GetPackagesByLocale(const QString &code);               // ロケール別パッケージ取得
+    /** @brief 指定ロケールに対応するパッケージ一覧を構造化して返す */
+    PackageListReply GetPackagesByLocaleV2(const QString &code);         // ロケール別パッケージ取得 (構造化)
     /** @brief 保存済み状態との差分として未反映のロケール変更を返す */
     QVariantList GetPendingLocaleChanges();                              // 未反映ロケール変更取得
     /** @brief 指定ロケールの要求状態を変更する */
@@ -226,6 +245,10 @@ public slots:
     // パッケージ分類
     /** @brief 分類に一致するパッケージを返す */
     QVariantList GetPackagesByClassification(const QString &cls);  // 分類別パッケージ一覧
+    /** @brief 分類に一致するパッケージを構造化した一覧で返す */
+    PackageListReply GetPackagesByClassificationV2(const QString &cls);  // 分類別パッケージ一覧 (構造化)
+    /** @brief 更新可能なパッケージ数を返す */
+    uint GetUpdatableCount();                                      // 更新可能パッケージ数
 
     // zyppヒストリ
     /** @brief 検証済みの条件で操作履歴を新しい順に返す */
@@ -273,6 +296,8 @@ signals:
     void PoolReloaded();                                                                     // パッケージプール再読込
 
 private:
+    /** @brief 所有権を確認し、拡張検索オプションを検証する (旧形式とV2で共有) */
+    bool prepareExSearch(const QVariantMap &options, SearchOptions *parsed);
     /** @brief 現在のD-Bus呼出引数を境界条件に従って検査する */
     bool checkArguments();
     /**
@@ -284,6 +309,8 @@ private:
     bool checkNotBusy();                                                // libzypp呼出の並行実行を拒否
     /** @brief 読み取り呼出の所有者と初期化状態を検査する */
     bool checkRead();                                                   // 読み取り呼出の検査
+    /** @brief 読み取り権限を確認し、一覧系の不正な引数をInvalidArgsで返す */
+    void rejectListArguments(const QString &message);                   // 一覧系引数の拒否
     /** @brief 読み取りジョブを例外から保護して実行する */
     QVariant runRead(const std::function<QVariant()> &job);             // 読み取り処理を例外から保護して実行
     void emitToOwner(const QString &member, const QVariantList &args);  // 所有者宛てのシグナル送信

@@ -21,6 +21,7 @@
 #include <QVariantMap>
 #include <QStringList>
 #include <QUrl>
+#include "PackageRow.h"
 #include <functional>
 #include <utility>
 #include <vector>
@@ -46,7 +47,7 @@ class PackageController : public QObject
     Q_PROPERTY(bool initialized READ isInitialized NOTIFY initializedChanged)
     Q_PROPERTY(bool busy READ isBusy NOTIFY busyChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
-    Q_PROPERTY(QVariantList packages READ packages NOTIFY packagesChanged)
+    Q_PROPERTY(int packageCount READ packageCount NOTIFY packagesChanged)  // 取得済みパッケージ一覧の件数
     Q_PROPERTY(QVariantList repos READ repos NOTIFY reposChanged)
     Q_PROPERTY(QVariantList services READ services NOTIFY servicesChanged)
     Q_PROPERTY(QVariantList patterns READ patterns NOTIFY patternsChanged)
@@ -83,7 +84,7 @@ public:
     bool isInitialized() const { return m_initialized; }                     // 初期化完了状態
     bool isBusy() const { return m_busy; }                                   // 処理中フラグ
     QString statusMessage() const { return m_statusMessage; }                // ステータスメッセージ
-    QVariantList packages() const { return m_packages; }                     // パッケージ一覧
+    int packageCount() const { return m_packages.size(); }                   // パッケージ一覧の件数
     QVariantList repos() const { return m_repos; }                           // リポジトリ一覧
     QVariantList services() const { return m_services; }                     // サービス一覧
     QVariantList patterns() const { return m_patterns; }                     // パターン一覧
@@ -129,6 +130,7 @@ public:
     Q_INVOKABLE void searchPackages(const QString &query, int flags = 0x07);           // パッケージ検索
     Q_INVOKABLE void loadRepos();                                                      // リポジトリ一覧読込
     Q_INVOKABLE void loadPackagesByRepo(const QString &repoAlias);                     // リポ別パッケージ読込
+    Q_INVOKABLE void loadPackagesByService(const QString &serviceAlias);               // サービス別パッケージ読込
     Q_INVOKABLE void loadPackageDetails(const QString &name);                          // パッケージ詳細読込
     Q_INVOKABLE void clearPackageDetails();                                            // パッケージ詳細クリア
     Q_INVOKABLE void loadPatterns();                                                   // パターン一覧読込
@@ -288,7 +290,7 @@ signals:
     void noChangesLeftToApply();
     /** @brief ライセンス拒否による除外一覧の変更をQMLへ通知する */
     void rejectedLicensePackagesChanged();
-    void addRepoFinished(bool success);                     // リポジトリ追加完了
+    void addRepoFinished(bool success, const QString &errorMessage); // リポジトリ追加完了 (失敗時は理由、成功時は空)
     void addServiceFinished(bool success);                  // サービス追加完了
     void keyTrustFinished(bool success);                    // 署名鍵承認完了
 
@@ -333,7 +335,7 @@ signals:
     void startupTasksFinished();                                   // 起動時処理の完了 (成功/失敗/切断のいずれでも1回)
 
 private:
-    enum class PackageSource { None, Search, Repo, Pattern, Patches, Classification, RpmGroup, Locale }; /**< パッケージ一覧の取得元 */
+    enum class PackageSource { None, Search, Repo, Pattern, Patches, Classification, RpmGroup, Locale, Service }; /**< パッケージ一覧の取得元 */
 
     void setBusy(bool busy);                                  /* ビジー状態を更新して通知する */
     void setStatusMessage(const QString &msg);                /* ステータスメッセージを更新して通知する */
@@ -354,10 +356,9 @@ private:
      *
      * リクエストシリアルにより古い応答を破棄し、要求の連打を抑止する
      * @param newGeneration 取得後に世代カウンタを進める場合はtrue
-     * @param onDone 完了コールバック (成功可否と取得済みリスト)
+     * @param onDone 完了コールバック (成功可否)
      */
-    void requestPackageList(bool newGeneration,
-                            std::function<void(bool, const QVariantList &)> onDone);
+    void requestPackageList(bool newGeneration, std::function<void(bool)> onDone);
     void refreshPackageStatuses(bool newGeneration = false);            /* シリアル管理下でパッケージ一覧を再取得する */
     void refreshPendingChanges();                                       /* 合体と直列化を行って変更予定を再取得する */
     void refreshPendingChangesThen(std::function<void(bool)> onDone);   /* 選択状態反映後に完了通知する */
@@ -413,6 +414,11 @@ private:
      * バックエンドが未対応の場合は何も変更しない
      */
     void requestUpdateCount();
+    /**
+     * @brief 更新可能数を非同期に取得する
+     * @param done 取得完了時に1回呼ぶコールバック (省略可能)
+     */
+    void fetchUpdateCount(std::function<void()> done);
     void applyUpdateCountResult(bool ok, const QString &errorName,
                                 const QVariantList &args);             /* 更新可能数の応答を共通処理する */
     void setUpdateCount(int count);                                    /* 更新可能数を更新して通知する */
@@ -433,17 +439,37 @@ private:
      * @param done 再取得完了コールバック (一覧と変更予定の両方が成功した場合のみtrue)
      */
     void refreshAfterEdit(bool newGeneration, std::function<void(bool ok)> done);
+
+    /**
+     * @brief 単一パッケージの状態を変更し、状態が変わり得る行だけを取り直す
+     *
+     * 差分対象の取得元では変更前の変更予定を取得してからSetPackageStatusと依存解決を行い、
+     * クリックした名前と変更前後の変更予定の名前をGetPackagesByNamesで取得する
+     * 対象外の取得元やソルバーの失敗、プール再読込、キーの変化などでは全件取得へ戻す
+     *
+     * @param name パッケージ名
+     * @param status 新しいステータス (PackageStatus)
+     * @param done 完了コールバック (成功可否)
+     * @note 切断で編集世代が変わった場合はdoneを呼ばず、busy解除は切断処理に任せる
+     */
+    void refreshAfterStatusEdit(const QString &name, int status,
+                                std::function<void(bool ok)> done);
+
     void failBatchAction(quint64 token, const QVariantMap &result,     /* 一括操作の失敗を通知する */
                          const QString &errorText);
     void finishPackagesAction(quint64 token, const QVariantMap &result); /* 一括操作の結果を1回だけ通知する */
     void abortBatchAction();                                           /* 切断時に一括操作を完了させる */
     QVariantMap takeAbortedBatchResult();                              /* 切断時に一括操作の結果を収集する */
-    void finishListRequest(quint64 replySerial, bool ok,               /* 応答番号以前の待機者へ一覧完了を通知する */
-                           const QVariantList &list);
+    void finishListRequest(quint64 replySerial, bool ok);              /* 応答番号以前の待機者へ一覧完了を通知する */
     void abortListRequests();                                          /* 切断時に一覧の待機者を破棄する */
     void startStartupTasks();                                          /* 起動時処理の先頭段階を開始する */
     void runStartupSolverStage(quint64 generation);                    /* 起動時処理の設定/解決段階を実行する */
     void runStartupRefreshStage(quint64 generation);                   /* 起動時処理のリフレッシュ段階を実行する */
+    /**
+     * @brief 起動時の変更予定を取得して更新可能数の取得へ進む
+     * @param generation 起動時処理の世代
+     */
+    void runStartupPendingStage(quint64 generation);
     void finishStartupTasks(quint64 generation, bool refreshOk);       /* 起動時処理を1回だけ完了させる */
     bool takeStartupFinish(quint64 generation, bool &refreshRan);      /* 完了状態を収集して通知前準備をする */
     void finishStartupUpdatableStage(quint64 generation, bool refreshOk); /* 更新可能数を取得して終了する */
@@ -473,7 +499,7 @@ private:
     quint64 m_commitScriptLines = 0;                                 // コミット中のScriptOutputBatch行数
     quint64 m_commitStateSignals = 0;                                // コミット中のPackageStateChanged受信数
     QString m_statusMessage;                                         // ステータスメッセージ
-    QVariantList m_packages;                                         // パッケージ一覧キャッシュ
+    PackageRows m_packages;                                          // パッケージ一覧キャッシュ
     QVariantList m_repos;                                            // リポジトリ一覧キャッシュ
     QVariantList m_services;                                         // サービス一覧キャッシュ
     QVariantList m_patterns;                                         // パターン一覧キャッシュ
@@ -517,15 +543,17 @@ private:
     bool m_startupPending = false;                                   // 起動時処理の開始待ち
     bool m_startupRunning = false;                                   // 起動時処理の実行中
     bool m_startupRefreshStageRan = false;                           // 起動時処理でリフレッシュ段階を実行した
+    bool m_startupRefreshOk = false;                                 // 起動時処理のリフレッシュ成否 (完了時に渡す)
     int m_startupInstallRecommends = -1;                             // 起動時処理のinstallRecommends指定 (-1 = 変更しない)
     bool m_startupRefreshOnStartup = false;                          // 起動時処理のリフレッシュ指定
     quint64 m_startupGeneration = 0;                                 // 起動時処理の世代 (遅延応答破棄用)
     int m_startupPendingInstallRecommends = -1;                      // 次回起動時処理のinstallRecommends指定 (-1 = 変更しない)
     bool m_startupPendingRefreshOnStartup = false;                   // 次回起動時処理のリフレッシュ指定
-    std::vector<std::pair<quint64, std::function<void(bool, const QVariantList &)>>>
+    std::vector<std::pair<quint64, std::function<void(bool)>>>
         m_listWaiters;                                               // 一覧取得の完了待機者 (古い要求も最新結果で通知)
     quint64 m_batchGeneration = 0;                                   // 一括操作の世代 (遅延応答破棄用)
     quint64 m_editGeneration = 0;                                    // 編集完了処理の世代 (切断時の遅延応答破棄用)
+    quint64 m_poolGeneration = 0;                                    // プール再読込の世代 (差分適用の無効化用)
     bool m_batchInFlight = false;                                    // 一括操作が実行中
     QVariantMap m_batchResult;                                       // 一括操作のAPI結果 (切断時の通知用)
 };

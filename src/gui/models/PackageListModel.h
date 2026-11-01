@@ -2,13 +2,25 @@
 #define QZYPPER_GUI_MODELS_PACKAGELISTMODEL_H
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
 #include <QSet>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
+#include "PackageRow.h"
 
 namespace qZypper {
+
+/**
+ * @brief updateRows()による行の置き換え結果
+ *
+ * NeedsFullReloadの場合、モデルは変更されていない
+ */
+enum class RowUpdateResult {
+    Applied,         // 内容の変化を適用した (dataChangedで通知済み)
+    NeedsFullReload  // 置き換える行を特定できないため一覧全体の取り直しが必要
+};
 
 /**
  * @class PackageListModel
@@ -28,7 +40,10 @@ class PackageListModel : public QAbstractListModel
 
 public:
     /**
-     * @brief QMLへ公開するロール (QVariantMapのキーと1:1)
+     * @brief 一覧が公開するロール
+     *
+     * SelectedRoleとSortKeyRole以外のロール名は、PackageRow::toVariantMap()のキーと同じ
+     * SortKeyRoleはroleNames()に含めないため、QMLからは参照できずC++側 (PackageFilterProxyModel) だけが使う
      */
     enum Roles {
         NameRole = Qt::UserRole + 1,  // パッケージ名
@@ -41,7 +56,8 @@ public:
         SizeRole,                     // インストールサイズ (bytes)
         StatusRole,                   // パッケージ状態 (PackageStatus)
         SelectedRole,                 // 選択状態 (bool)
-        UpdatableRole                 // 導入済みより新しい更新候補があるか (bool)
+        UpdatableRole,                // 導入済みより新しい更新候補があるか (bool)
+        SortKeyRole                   // 小文字化したパッケージ名 (ソート・前方一致用)
     };
     Q_ENUM(Roles)
 
@@ -76,17 +92,39 @@ public:
      * 既存行と安定キーで突き合わせ、可能な限りリセットせずに
      * 行の挿入・削除・値の更新のみを通知する
      * 並び順の変化時、および挿入・削除行数が多い場合はモデルリセットする
-     * @param packages PackageInfo::toVariantMap()形式のQVariantList
+     *
+     * 各行のソートキー (小文字化したパッケージ名) もここで算出する
+     * 行の挿入・削除・リセットでは、通知シグナルを発行する前にキー索引を再構築する
+     * 一覧から消えた行の選択は解除する
+     * @param rows 表示するパッケージ行
      */
-    Q_INVOKABLE void applyPackages(const QVariantList &packages);
+    void applyPackages(const PackageRows &rows);
+
+    /**
+     * @brief 一覧の構造を変えずに、行の内容だけを取り直した結果で置き換える
+     *
+     * 安定キーで対応する行が見つかり、内容 (PackageRow::operator==) が変化した行だけを
+     * 1行ごとのdataChangedで通知する
+     * 行の挿入・削除・並び順の変更と、選択状態の変更は行わない
+     *
+     * 次のいずれかに該当する場合は、どの行を置き換えるべきか決められないため
+     * モデルを一切変更せずにNeedsFullReloadを返す
+     *  - 同じ名前でアーキテクチャが異なる行がある (候補バージョンの変更でアーキが変わる等)
+     *  - モデル内で名前が重複している行がある
+     *  - 引数の中に、同じ行を指す要素が2つ以上ある
+     * モデルに存在しない名前の行は無視する
+     * @param rows 取り直したパッケージ行
+     * @return 適用結果 (Applied : 通知済み、NeedsFullReload : 呼び出し元で一覧全体を取り直す)
+     */
+    RowUpdateResult updateRows(const PackageRows &rows);
 
     /** @brief 保持している全行を削除する */
     Q_INVOKABLE void clear();
 
     /**
-     * @brief 指定行の生のQVariantMapを返す (コンテキストメニュー等で使用)
+     * @brief 指定行の内容をQVariantMapへ変換して返す (コンテキストメニュー等で使用)
      * @param row 行番号
-     * @return 行データ (範囲外は空マップ)
+     * @return PackageRow::toVariantMap()の形式の行データ (範囲外は空マップ)
      */
     Q_INVOKABLE QVariantMap get(int row) const;
 
@@ -133,6 +171,8 @@ public:
 
     /**
      * @brief 安定キーに対応する現在の行番号を返す
+     *
+     * キー索引 (m_rowByKey) を引くため、行数に依存せず一定時間で求まる
      * @param key 安定キー
      * @return 行番号、存在しなければ-1
      */
@@ -166,13 +206,29 @@ private:
      */
     void purgeMissingSelection();
 
-    /** @brief 安定キーと表示データをまとめた内部行 */
+    /**
+     * @brief 行番号引き当て用のキー索引と名前索引を現在の行から再構築する
+     *
+     * m_entriesを変更するたびに呼び出す
+     * 名前が2行以上に現れる場合は、行を特定できないため名前索引から除外し、重複名として記録する
+     */
+    void rebuildRowIndex();
+
+    /**
+     * @brief 安定キー・行データ・ソートキーをまとめた内部行
+     *
+     * sortKeyは行データのnameから導出する値で、行データと同時に作成する
+     */
     struct Entry {
-        QString key;       // 安定キー
-        QVariantMap data;  // 行データ
+        QString key;      // 安定キー
+        PackageRow row;   // 行データ
+        QString sortKey;  // 小文字化したパッケージ名 (ソート・前方一致用)
     };
 
     QVector<Entry> m_entries;         // 現在の行
+    QHash<QString, int> m_rowByKey;   // 安定キーから行番号への索引 (rowForKey・updateRowsで使用)
+    QHash<QString, int> m_rowByName;  // パッケージ名から行番号への索引 (重複名は含めない)
+    QSet<QString> m_duplicateNames;   // モデル内で2行以上に現れるパッケージ名
     QSet<QString> m_selectedKeys;     // 選択中の行の安定キー
 };
 

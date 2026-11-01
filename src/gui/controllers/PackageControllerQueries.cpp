@@ -13,6 +13,8 @@
 #include <utility>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QHash>
+#include <QSet>
 #include "PackageController.h"
 #include "PerfLog.h"
 #include "DBusClient.h"
@@ -48,7 +50,7 @@ void PackageController::searchPackages(const QString &query, int flags)
     m_lastSearchInstalledOnly = false;
     setSearchError(QString());
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -94,7 +96,7 @@ void PackageController::searchPackagesEx(const QString &query, int flags,
     m_useExSearch = true;
     setSearchError(QString());
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -125,10 +127,10 @@ void PackageController::setSearchError(const QString &err)
  * 置き換えられた要求の完了通知は、最新の取得結果でまとめて行う
  *
  * @param newGeneration 取得後に世代カウンタを進める場合はtrue
- * @param onDone 完了コールバック (成功可否と取得済みリスト)
+ * @param onDone 完了コールバック (成功可否)
  */
 void PackageController::requestPackageList(bool newGeneration,
-                                           std::function<void(bool, const QVariantList &)> onDone)
+                                           std::function<void(bool)> onDone)
 {
     ++m_listRequestSerial;
     const quint64 serial = m_listRequestSerial;
@@ -138,7 +140,7 @@ void PackageController::requestPackageList(bool newGeneration,
 
     // 取得元が未確定の場合は再取得する一覧が無いため、待機者へ現状を通知して終える
     if (m_lastSource == PackageSource::None) {
-        finishListRequest(serial, true, m_packages);
+        finishListRequest(serial, true);
         return;
     }
 
@@ -158,11 +160,11 @@ void PackageController::requestPackageList(bool newGeneration,
                 && errorName.contains(QStringLiteral("InvalidArgs"))) {
                 setSearchError(errorText);
             }
-            finishListRequest(serial, false, QVariantList());
+            finishListRequest(serial, false);
             return;
         }
         setSearchError(QString());
-        m_packages = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        m_packages = args.isEmpty() ? PackageRows() : args.at(0).value<PackageRows>();
         const bool measurePerf = qZypper::lcPerf().isDebugEnabled();
         QElapsedTimer applyTimer;
         if (measurePerf)
@@ -180,6 +182,7 @@ void PackageController::requestPackageList(bool newGeneration,
             case PackageSource::Classification: sourceName = "Classification"; break;
             case PackageSource::RpmGroup: sourceName = "RpmGroup"; break;
             case PackageSource::Locale: sourceName = "Locale"; break;
+            case PackageSource::Service: sourceName = "Service"; break;
             }
             // 検索文字列は利用者入力のため、改行や制御文字によるログ行の偽装を避けて長さだけを出力する
             qCDebug(qZypper::lcPerf).noquote()
@@ -197,7 +200,7 @@ void PackageController::requestPackageList(bool newGeneration,
             && m_lastSourceParam == QStringLiteral("updatable")) {
             setUpdateCount(m_packages.size());
         }
-        finishListRequest(serial, true, m_packages);
+        finishListRequest(serial, true);
     };
 
     switch (m_lastSource) {
@@ -217,6 +220,9 @@ void PackageController::requestPackageList(bool newGeneration,
         break;
     case PackageSource::Repo:
         m_dbus->getPackagesByRepo(m_lastSourceParam, apply);
+        break;
+    case PackageSource::Service:
+        m_dbus->getPackagesByService(m_lastSourceParam, apply);
         break;
     case PackageSource::Pattern:
         m_dbus->getPackagesByPattern(m_lastSourceParam, apply);
@@ -242,15 +248,14 @@ void PackageController::requestPackageList(bool newGeneration,
  * @brief 応答番号以前の待機者へ一覧取得の完了を通知する
  * @param replySerial 応答に対応する要求番号
  * @param ok 取得に成功した場合はtrue
- * @param list 取得したパッケージ一覧
  *
  * 通知中に発生した新しい要求の待機者は、その応答が届くまで残す
  * 通知後に最新の要求番号を確認し、追い越された待機者だけを解放する
  */
-void PackageController::finishListRequest(quint64 replySerial, bool ok, const QVariantList &list)
+void PackageController::finishListRequest(quint64 replySerial, bool ok)
 {
     // 通知中に追加される可能性があるため、対象の待機者を先に取り出す
-    std::vector<std::pair<quint64, std::function<void(bool, const QVariantList &)>>> ready;
+    std::vector<std::pair<quint64, std::function<void(bool)>>> ready;
     auto it = m_listWaiters.begin();
     while (it != m_listWaiters.end()) {
         if (it->first <= replySerial) {
@@ -262,7 +267,7 @@ void PackageController::finishListRequest(quint64 replySerial, bool ok, const QV
     }
     for (auto &waiter : ready) {
         if (waiter.second) {
-            waiter.second(ok, list);
+            waiter.second(ok);
         }
     }
 }
@@ -303,7 +308,33 @@ void PackageController::loadPackagesByRepo(const QString &repoAlias)
     m_lastSource = PackageSource::Repo;
     m_lastSourceParam = repoAlias;
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
+        setBusy(false);
+        if (ok) {
+            // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
+            setStatusMessage(tr("%1 packages loaded").arg(m_packageProxy->rowCount()));
+        }
+    });
+}
+
+/**
+ * @brief 指定サービスのパッケージ一覧を読み込む (非同期)
+ * @param serviceAlias サービスエイリアス
+ * @note 一覧と表示件数を更新し、処理中状態とステータスメッセージを通知する
+ */
+void PackageController::loadPackagesByService(const QString &serviceAlias)
+{
+    // 未接続時や別の操作中は一覧取得を開始しない
+    if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
+    setStatusMessage(tr("Loading packages..."));
+
+    m_lastSource = PackageSource::Service;
+    m_lastSourceParam = serviceAlias;
+
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -386,7 +417,7 @@ void PackageController::loadClassification(const QString &classification)
     m_lastSourceParam = classification;
     m_useExSearch = false;
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -479,7 +510,7 @@ void PackageController::loadPackagesByPattern(const QString &patternName)
     m_lastSource = PackageSource::Pattern;
     m_lastSourceParam = patternName;
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -653,7 +684,7 @@ void PackageController::refreshPendingChangesThen(std::function<void(bool)> onDo
 void PackageController::refreshAfterEdit(bool newGeneration, std::function<void(bool ok)> done)
 {
     const quint64 generation = m_editGeneration;
-    requestPackageList(newGeneration, [this, generation, done](bool listOk, const QVariantList &) {
+    requestPackageList(newGeneration, [this, generation, done](bool listOk) {
         if (generation != m_editGeneration)
             return;
         refreshPendingChangesThen([this, generation, done, listOk](bool pendingOk) {
@@ -663,6 +694,203 @@ void PackageController::refreshAfterEdit(bool newGeneration, std::function<void(
             if (done)
                 done(listOk && pendingOk);
         });
+    });
+}
+
+/**
+ * @brief 単一パッケージの状態を変更し、状態が変わり得る行だけを取り直す
+ *
+ * 差分の対象となる取得元では変更前の変更予定を取り直してからSetPackageStatusと
+ * 解決を実行し、クリックした名前と変更前後の変更予定の名前をGetPackagesByNamesで取得する
+ * それ以外の取得元では変更前の変更予定を取り直さず、従来どおり全件を取り直す
+ * ソルバーの失敗・プール再読込・キーの変化などでも全件取得へ戻す
+ *
+ * @param name パッケージ名
+ * @param status 新しいステータス (PackageStatus)
+ * @param done 完了コールバック (成功可否)
+ * @note 切断で編集世代が変わった場合はdoneを呼ばず、busy解除は切断処理に任せる
+ */
+void PackageController::refreshAfterStatusEdit(const QString &name, int status,
+                                               std::function<void(bool ok)> done)
+{
+    const quint64 generation = m_editGeneration;
+    const quint64 poolGeneration = m_poolGeneration;
+    const bool partialSource = m_lastSource == PackageSource::Search
+                            || m_lastSource == PackageSource::Repo
+                            || m_lastSource == PackageSource::Locale
+                            || m_lastSource == PackageSource::Service;
+
+    // 差分を使えない場合は従来どおり一覧と変更予定を全件取り直す
+    auto fallback = [this, generation, done](const char *reason) {
+        if (generation != m_editGeneration)
+            return;
+        if (qZypper::lcPerf().isDebugEnabled()) {
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf list partial fallback reason=%1")
+                       .arg(QLatin1String(reason));
+        }
+        requestPackageList(false, [this, generation, done](bool listOk) {
+            if (generation != m_editGeneration)
+                return;
+            refreshPendingChangesThen([this, generation, done, listOk](bool pendingOk) {
+                // 切断で世代が変わった場合はbusy解除も通知も切断処理が行う
+                if (generation != m_editGeneration)
+                    return;
+                if (done)
+                    done(listOk && pendingOk);
+            });
+        });
+    };
+
+    auto pendingNames = [this]() {
+        QStringList names;
+        names.reserve(m_pendingChanges.size());
+        for (const QVariant &entry : std::as_const(m_pendingChanges)) {
+            const QString pendingName = entry.toMap().value(QStringLiteral("name")).toString();
+            if (!pendingName.isEmpty())
+                names.append(pendingName);
+        }
+        return names;
+    };
+
+    // DBusClientで状態変更と依存解決を順に行い、取得元に応じて更新方法を選ぶ
+    auto sendStatusChange = [this, name, status, generation, poolGeneration, partialSource,
+                             fallback, pendingNames, done](bool beforeOk,
+                                                           const QStringList &beforeNames) {
+        m_dbus->setPackageStatus(name, status, [this, name, generation, poolGeneration,
+                                                partialSource, beforeOk, beforeNames, pendingNames,
+                                                fallback, done](
+                                                   bool ok, const QString &, const QString &,
+                                                   const QVariantList &) {
+            // 切断後の古い応答で新しい表示や処理状態を変更しない
+            if (generation != m_editGeneration)
+                return;
+            if (!ok) {
+                emit errorOccurred(m_dbus->lastError());
+                if (done)
+                    done(false);
+                return;
+            }
+
+            m_dbus->resolveDependencies([this, name, generation, poolGeneration, partialSource,
+                                         beforeOk, beforeNames, pendingNames, fallback, done](
+                                            bool rok, const QString &, const QString &,
+                                            const QVariantList &args) {
+                if (generation != m_editGeneration)
+                    return;
+                if (!rok)
+                    emit errorOccurred(m_dbus->lastError());
+
+                // 差分の対象外では変更前後の変更予定を必要としない (従来どおり全件を取り直す)
+                if (!partialSource) {
+                    fallback("source");
+                    return;
+                }
+
+                const bool solverOk = rok && !args.isEmpty()
+                    && args.at(0).toMap().value(QStringLiteral("success")).toBool();
+
+                refreshPendingChangesThen([this, name, solverOk, generation, poolGeneration,
+                                           beforeOk, beforeNames, pendingNames, fallback, done](
+                                              bool afterOk) {
+                    if (generation != m_editGeneration)
+                        return;
+
+                    // クリックした名前 ∪ 変更前の変更予定 ∪ 変更後の変更予定
+                    QSet<QString> seen;
+                    QStringList names;
+                    auto addName = [&seen, &names](const QString &value) {
+                        if (!value.isEmpty() && !seen.contains(value)) {
+                            seen.insert(value);
+                            names.append(value);
+                        }
+                    };
+                    addName(name);
+                    for (const QString &beforeName : beforeNames)
+                        addName(beforeName);
+                    for (const QString &afterName : pendingNames())
+                        addName(afterName);
+
+                    constexpr int kMaxPartialNames = 1000;  // 名前指定で取得する件数の上限
+                    if (!solverOk) {
+                        fallback("solver");
+                    } else if (!beforeOk || !afterOk) {
+                        fallback("pending");
+                    } else if (poolGeneration != m_poolGeneration) {
+                        fallback("poolReloaded");
+                    } else if (names.size() > kMaxPartialNames) {
+                        fallback("tooMany");
+                    } else {
+                        m_dbus->getPackagesByNames(names,
+                                                   [this, names, generation, poolGeneration,
+                                                    fallback, done](
+                                                       bool fetched, const QString &errorName,
+                                                       const QString &,
+                                                       const QVariantList &rowsArgs) {
+                            if (generation != m_editGeneration)
+                                return;
+                            // 取得中にプールが再読込された行は現行プールと対応しない可能性がある
+                            if (poolGeneration != m_poolGeneration) {
+                                fallback("poolReloaded");
+                                return;
+                            }
+                            if (!fetched) {
+                                fallback(errorName == QLatin1String(
+                                             "org.freedesktop.DBus.Error.UnknownMethod")
+                                            ? "unknownMethod" : "error");
+                                return;
+                            }
+
+                            const PackageRows rows = rowsArgs.isEmpty()
+                                ? PackageRows() : rowsArgs.at(0).value<PackageRows>();
+                            const bool measurePerf = qZypper::lcPerf().isDebugEnabled();
+                            QElapsedTimer applyTimer;
+                            if (measurePerf)
+                                applyTimer.start();
+                            if (m_packageModel->updateRows(rows) == RowUpdateResult::NeedsFullReload) {
+                                fallback("keyChanged");
+                                return;
+                            }
+                            // m_packagesを一覧の写しとして保つため同じキーの行も置き換える
+                            QHash<QString, int> indexByKey;
+                            indexByKey.reserve(m_packages.size());
+                            for (int i = 0; i < m_packages.size(); ++i) {
+                                indexByKey.insert(m_packages.at(i).name + QLatin1Char('\n')
+                                                    + m_packages.at(i).arch, i);
+                            }
+                            for (const PackageRow &row : std::as_const(rows)) {
+                                const auto it = indexByKey.constFind(row.name + QLatin1Char('\n')
+                                                                     + row.arch);
+                                if (it != indexByKey.constEnd())
+                                    m_packages[it.value()] = row;
+                            }
+                            if (measurePerf) {
+                                qCDebug(qZypper::lcPerf).noquote()
+                                    << QStringLiteral("perf list partial names=%1 rows=%2 applyMs=%3")
+                                           .arg(names.size()).arg(rows.size())
+                                           .arg(applyTimer.elapsed());
+                            }
+                            if (done)
+                                done(true);
+                        });
+                    }
+                });
+            });
+        });
+    };
+
+    // 所属が状態や候補で変わらない取得元だけ差分の対象にする
+    // それ以外は変更前の変更予定を取り直さずに状態を変更し、全件取得へ戻す
+    if (!partialSource) {
+        sendStatusChange(false, QStringList());
+        return;
+    }
+
+    // 手元のキャッシュは古くなり得るため、変更予定を取り直してから変更する
+    refreshPendingChangesThen([this, generation, sendStatusChange, pendingNames](bool beforeOk) {
+        if (generation != m_editGeneration)
+            return;
+        sendStatusChange(beforeOk, beforeOk ? pendingNames() : QStringList());
     });
 }
 
@@ -835,7 +1063,7 @@ void PackageController::loadPackagesByRpmGroup(const QString &path)
     m_lastSourceParam = path;
     m_useExSearch = false;
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -917,7 +1145,7 @@ void PackageController::loadPackagesByLocale(const QString &code)
     m_lastSourceParam = code;
     m_useExSearch = false;
 
-    requestPackageList(true, [this](bool ok, const QVariantList &) {
+    requestPackageList(true, [this](bool ok) {
         setBusy(false);
         if (ok) {
             // 表に表示中の行数を反映する (-devel/-debuginfo等の非表示行は除外される)
@@ -952,18 +1180,49 @@ void PackageController::refreshUpdateCount()
  * @brief 更新可能パッケージ数を取得する (非同期)
  *
  * ビジーガードを持たない内部処理でbusy解除後に直接呼び出す
- * D-BusのGetPackagesByClassification("updatable")を呼び出し
- * 結果件数のみをupdateCountへ反映する
+ * 件数の取得はfetchUpdateCountへ委譲し、updateCountのみを更新する
  */
 void PackageController::requestUpdateCount()
 {
     m_updateCountPending = false;
+    fetchUpdateCount(nullptr);
+}
 
-    m_dbus->getPackagesByClassification(QStringLiteral("updatable"),
-                                        [this](bool ok, const QString &errorName,
-                                               const QString &, const QVariantList &args) {
-        applyUpdateCountResult(ok, errorName, args);
-    });
+/**
+ * @brief 更新可能パッケージ数を取得しdoneを1回呼ぶ (非同期)
+ * @param done 取得完了コールバック (成功・代替取得・失敗のいずれでも1回だけ呼ぶ)
+ *
+ * GetUpdatableCountを使い、UnknownMethodが返った場合に限って
+ * GetPackagesByClassification("updatable")の件数へ代替する
+ */
+void PackageController::fetchUpdateCount(std::function<void()> done)
+{
+    m_dbus->getUpdatableCount(
+        [this, done](bool ok, const QString &errorName, const QString &, const QVariantList &args) {
+            if (ok) {
+                setUpdateCount(args.isEmpty() ? 0 : static_cast<int>(args.at(0).toUInt()));
+                if (done) {
+                    done();
+                }
+                return;
+            }
+            // 旧バックエンドの未対応時だけ一覧取得に切り替え、他のエラーはそのまま扱う
+            if (errorName == QLatin1String("org.freedesktop.DBus.Error.UnknownMethod")) {
+                m_dbus->getPackagesByClassification(QStringLiteral("updatable"),
+                                                    [this, done](bool legacyOk, const QString &legacyErrorName,
+                                                                 const QString &, const QVariantList &legacyArgs) {
+                    applyUpdateCountResult(legacyOk, legacyErrorName, legacyArgs);
+                    if (done) {
+                        done();
+                    }
+                });
+                return;
+            }
+            applyUpdateCountResult(false, errorName, args);
+            if (done) {
+                done();
+            }
+        });
 }
 
 /**
@@ -985,7 +1244,7 @@ void PackageController::applyUpdateCountResult(bool ok, const QString &errorName
         emit errorOccurred(m_dbus->lastError());
         return;
     }
-    setUpdateCount(args.isEmpty() ? 0 : args.at(0).toList().size());
+    setUpdateCount(args.isEmpty() ? 0 : args.at(0).value<PackageRows>().size());
 }
 
 /**

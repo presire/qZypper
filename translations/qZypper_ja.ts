@@ -60,17 +60,28 @@
 <context>
     <name>AddRepoDialog</name>
     <message>
-        <location filename="../src/gui/qml/dialogs/AddRepoDialog.qml" line="+32"/>
+        <location filename="../src/gui/qml/dialogs/AddRepoDialog.qml" line="+34"/>
         <source>Add Repository</source>
         <translation>リポジトリの追加</translation>
     </message>
     <message>
-        <location line="+411"/>
+        <location line="+449"/>
+        <location line="+26"/>
+        <source>Failed to add repository: %1</source>
+        <translation>リポジトリの追加に失敗しました: %1</translation>
+    </message>
+    <message>
+        <location line="-26"/>
+        <source>Not connected to the backend.</source>
+        <translation>バックエンドに接続していません。</translation>
+    </message>
+    <message>
+        <location line="+27"/>
         <source>Failed to add repository.</source>
         <translation>リポジトリの追加に失敗しました。</translation>
     </message>
     <message>
-        <location line="-352"/>
+        <location line="-374"/>
         <source>Enter the repository URL</source>
         <translation>リポジトリのURLを入力してください</translation>
     </message>
@@ -95,18 +106,18 @@
         <translation>サードパーティのリポジトリです。パッケージはopenSUSEが提供・審査したものではありません。提供元を信頼できる場合のみ追加してください。GPG鍵の確認を求められます。</translation>
     </message>
     <message>
-        <location line="+35"/>
-        <location line="+200"/>
+        <location line="+45"/>
+        <location line="+197"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location line="-188"/>
+        <location line="-185"/>
         <source>Next</source>
         <translation>次へ</translation>
     </message>
     <message>
-        <location line="+34"/>
+        <location line="+24"/>
         <source>Configure repository properties</source>
         <translation>リポジトリのプロパティを設定してください</translation>
     </message>
@@ -126,7 +137,7 @@
         <translation>リポジトリ名</translation>
     </message>
     <message>
-        <location line="+5"/>
+        <location line="+10"/>
         <source>Alias:</source>
         <translation>エイリアス:</translation>
     </message>
@@ -156,7 +167,7 @@
         <translation>パッケージ保持</translation>
     </message>
     <message>
-        <location line="+21"/>
+        <location line="+22"/>
         <source>Back</source>
         <translation>戻る</translation>
     </message>
@@ -782,7 +793,7 @@
         <translation>変更を適用できませんでした。</translation>
     </message>
     <message>
-        <location line="+155"/>
+        <location line="+166"/>
         <source>Completed steps: %1, errors: %2, skipped: %3</source>
         <translation>完了ステップ: %1、エラー: %2、スキップ: %3</translation>
     </message>
@@ -1156,17 +1167,17 @@
 <context>
     <name>Main</name>
     <message>
-        <location filename="../src/gui/qml/Main.qml" line="+401"/>
+        <location filename="../src/gui/qml/Main.qml" line="+402"/>
         <source>qZypper - Software Management</source>
         <translation>qZypper - ソフトウェア管理</translation>
     </message>
     <message>
-        <location line="+764"/>
+        <location line="+781"/>
         <source>Cancel</source>
         <translation>キャンセル</translation>
     </message>
     <message>
-        <location line="-427"/>
+        <location line="-444"/>
         <source>Menu</source>
         <translation>メニュー</translation>
     </message>
@@ -1197,18 +1208,18 @@
     </message>
     <message>
         <location line="+6"/>
-        <location line="+1114"/>
+        <location line="+1135"/>
         <location line="+4"/>
         <source>Patches</source>
         <translation>パッチ</translation>
     </message>
     <message>
-        <location line="-1117"/>
+        <location line="-1138"/>
         <source>Patches view</source>
         <translation>パッチ表示</translation>
     </message>
     <message>
-        <location line="+35"/>
+        <location line="+41"/>
         <source>Dark Mode</source>
         <translation>ダークモード</translation>
     </message>
@@ -1243,12 +1254,12 @@
         <translation>再起動を推奨する必要なパッチ: %1</translation>
     </message>
     <message>
-        <location line="+412"/>
+        <location line="+423"/>
         <source>Error</source>
         <translation>エラー</translation>
     </message>
     <message>
-        <location line="-1378"/>
+        <location line="-1395"/>
         <source>Refreshing repositories...</source>
         <translation>リポジトリをリフレッシュ中...</translation>
     </message>
@@ -1343,7 +1354,12 @@ Wait until it finishes or cancel it, then try again.</source>
         <translation>製品</translation>
     </message>
     <message>
-        <location line="+465"/>
+        <location line="+6"/>
+        <source>Services</source>
+        <translation>サービス</translation>
+    </message>
+    <message>
+        <location line="+476"/>
         <source>Discard Changes</source>
         <translation>変更の破棄</translation>
     </message>
@@ -1422,7 +1438,7 @@ Really abandon all changes and exit?</source>
         <translation>バックエンドが処理中のため、編集セッションを終了できませんでした。しばらくしてから再度実行してください。</translation>
     </message>
     <message>
-        <location line="+146"/>
+        <location line="+150"/>
         <source>Backend disconnected</source>
         <translation>バックエンドから切断されました</translation>
     </message>
@@ -1472,12 +1488,12 @@ Really abandon all changes and exit?</source>
         <translation>システムは整合しています。変更は不要です。</translation>
     </message>
     <message>
-        <location line="-775"/>
+        <location line="-779"/>
         <source>Apply</source>
         <translation>適用</translation>
     </message>
     <message>
-        <location line="-1111"/>
+        <location line="-1128"/>
         <source>Initializing...</source>
         <translation>初期化しています...</translation>
     </message>
@@ -1492,7 +1508,7 @@ Really abandon all changes and exit?</source>
         <translation>依存関係を解決中...</translation>
     </message>
     <message>
-        <location line="+1760"/>
+        <location line="+1781"/>
         <source>All packages are up to date.</source>
         <translation>すべてのパッケージは最新です。</translation>
     </message>
@@ -1988,7 +2004,7 @@ Click &quot;Apply Changes&quot; to proceed.</source>
         </translation>
     </message>
     <message>
-        <location line="+63"/>
+        <location line="+64"/>
         <source>No packages to display</source>
         <translation>表示するパッケージがありません</translation>
     </message>
@@ -2659,7 +2675,7 @@ Expires: %5</source>
 <context>
     <name>RepositoryView</name>
     <message>
-        <location filename="../src/gui/qml/views/RepositoryView.qml" line="+102"/>
+        <location filename="../src/gui/qml/views/RepositoryView.qml" line="+124"/>
         <source>Switch system packages to the versions in this repository</source>
         <translation>このリポジトリの版へシステムのパッケージを切り替える</translation>
     </message>
@@ -2901,6 +2917,19 @@ Expires: %5</source>
     </message>
 </context>
 <context>
+    <name>ServiceView</name>
+    <message>
+        <location filename="../src/gui/qml/views/ServiceView.qml" line="+83"/>
+        <source>%1 (disabled)</source>
+        <translation>%1 (無効)</translation>
+    </message>
+    <message>
+        <location line="+39"/>
+        <source>No repository index services are configured.</source>
+        <translation>リポジトリインデックスサービスが設定されていません。</translation>
+    </message>
+</context>
+<context>
     <name>SessionEndedDialog</name>
     <message>
         <location filename="../src/gui/qml/dialogs/SessionEndedDialog.qml" line="+24"/>
@@ -3116,6 +3145,11 @@ Please wait.</source>
         <source>Local Directory</source>
         <translation>ローカルディレクトリ</translation>
     </message>
+    <message>
+        <location line="+49"/>
+        <source>A %1 URL cannot contain a host name (&quot;%2&quot;). Use three slashes for a local path: %3</source>
+        <translation>%1 の URL にはホスト名 (&quot;%2&quot;) を指定できません。ローカルのパスはスラッシュを 3 本にしてください: %3</translation>
+    </message>
 </context>
 <context>
     <name>Util</name>
@@ -3217,18 +3251,26 @@ Please wait.</source>
     </message>
 </context>
 <context>
+    <name>qZypper::DBusClient</name>
+    <message>
+        <location filename="../src/gui/controllers/DBusClient.cpp" line="+512"/>
+        <source>Unexpected package list reply</source>
+        <translation>パッケージ一覧の応答が不正です</translation>
+    </message>
+</context>
+<context>
     <name>qZypper::PackageController</name>
     <message>
         <location filename="../src/gui/controllers/PackageController.cpp" line="+51"/>
-        <location line="+871"/>
-        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="+229"/>
+        <location line="+920"/>
+        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="+238"/>
         <location line="+38"/>
         <location line="+41"/>
         <source>Repository refresh completed</source>
         <translation>リポジトリのリフレッシュが完了しました</translation>
     </message>
     <message>
-        <location line="-869"/>
+        <location line="-918"/>
         <source>Refreshing: %1 (%2%)</source>
         <translation>リフレッシュ中: %1 (%2%)</translation>
     </message>
@@ -3240,12 +3282,12 @@ Please wait.</source>
         <translation>リフレッシュがキャンセルされました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageController.cpp" line="+73"/>
+        <location filename="../src/gui/controllers/PackageController.cpp" line="+76"/>
         <source>Backend reconnected</source>
         <translation>バックエンドに再接続しました</translation>
     </message>
     <message>
-        <location line="+34"/>
+        <location line="+35"/>
         <source>Backend disconnected</source>
         <translation>バックエンドから切断されました</translation>
     </message>
@@ -3255,17 +3297,17 @@ Please wait.</source>
         <translation>パッケージマネージャを初期化中...</translation>
     </message>
     <message>
-        <location line="+8"/>
+        <location line="+10"/>
         <source>Failed to connect to backend: %1</source>
         <translation>バックエンドへの接続に失敗しました: %1</translation>
     </message>
     <message>
-        <location line="+27"/>
+        <location line="+28"/>
         <source>Failed to initialize backend: %1</source>
         <translation>バックエンドの初期化に失敗しました: %1</translation>
     </message>
     <message>
-        <location line="+88"/>
+        <location line="+112"/>
         <source>Failed to change the repository switch setting</source>
         <translation>リポジトリの切り替え設定を変更できませんでした</translation>
     </message>
@@ -3276,20 +3318,20 @@ Please wait.</source>
         <translation>編集セッションを終了できません: %1</translation>
     </message>
     <message>
-        <location line="+141"/>
-        <location line="+199"/>
+        <location line="+142"/>
+        <location line="+241"/>
         <source>Loading package manager settings...</source>
         <translation>パッケージマネージャーの設定を読み込み中...</translation>
     </message>
     <message>
-        <location line="-179"/>
-        <location line="+59"/>
+        <location line="-215"/>
+        <location line="+64"/>
         <source>Failed to load solver settings</source>
         <translation>ソルバー設定の読み込みに失敗しました</translation>
     </message>
     <message>
         <location line="-36"/>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+713"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+729"/>
         <source>Failed to update solver settings</source>
         <translation>ソルバー設定の更新に失敗しました</translation>
     </message>
@@ -3297,30 +3339,30 @@ Please wait.</source>
         <location line="+14"/>
         <location line="+5"/>
         <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+19"/>
-        <location line="+49"/>
-        <location line="+73"/>
+        <location line="+54"/>
+        <location line="+78"/>
         <source>Dependency resolution failed</source>
         <translation>依存関係の解決に失敗しました</translation>
     </message>
     <message>
-        <location line="+51"/>
+        <location line="+57"/>
         <source>Repository refresh failed</source>
         <translation>リポジトリのリフレッシュに失敗しました</translation>
     </message>
     <message>
-        <location line="-624"/>
-        <location line="+711"/>
+        <location line="-667"/>
+        <location line="+779"/>
         <source>Ready</source>
         <translation>準備完了</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerQueries.cpp" line="+35"/>
+        <location filename="../src/gui/controllers/PackageControllerQueries.cpp" line="+37"/>
         <location line="+45"/>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="-299"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="-309"/>
         <location line="+46"/>
         <location line="+46"/>
         <location line="+50"/>
-        <location line="+59"/>
+        <location line="+64"/>
         <source>Package manager is not initialized</source>
         <translation>パッケージマネージャが初期化されていません</translation>
     </message>
@@ -3343,29 +3385,31 @@ Please wait.</source>
         <translation>検索に失敗しました</translation>
     </message>
     <message>
-        <location line="+197"/>
-        <location line="+59"/>
-        <location line="+382"/>
-        <location line="+61"/>
+        <location line="+200"/>
+        <location line="+26"/>
+        <location line="+82"/>
+        <location line="+646"/>
+        <location line="+82"/>
         <source>Loading packages...</source>
         <translation>パッケージを読み込み中...</translation>
     </message>
     <message>
-        <location line="-493"/>
-        <location line="+60"/>
-        <location line="+72"/>
-        <location line="+310"/>
-        <location line="+61"/>
+        <location line="-827"/>
+        <location line="+26"/>
+        <location line="+83"/>
+        <location line="+93"/>
+        <location line="+553"/>
+        <location line="+82"/>
         <source>%1 packages loaded</source>
         <translation>%1 件のパッケージを読み込みました</translation>
     </message>
     <message>
-        <location line="-380"/>
+        <location line="-644"/>
         <source>Loading pattern packages...</source>
         <translation>パターンのパッケージを読み込み中...</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+268"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+273"/>
         <source>Resolving dependencies...</source>
         <translation>依存関係を解決中...</translation>
     </message>
@@ -3375,47 +3419,47 @@ Please wait.</source>
         <translation>依存関係を解決しました</translation>
     </message>
     <message>
-        <location line="-616"/>
+        <location line="-626"/>
         <location line="+52"/>
-        <location line="+305"/>
+        <location line="+315"/>
         <location line="+261"/>
-        <location line="+392"/>
+        <location line="+406"/>
         <source>Dependency problems found</source>
         <translation>依存関係の問題が見つかりました</translation>
     </message>
     <message>
-        <location line="-1055"/>
+        <location line="-1079"/>
         <source>Updating all packages...</source>
         <translation>すべてのパッケージを更新中...</translation>
     </message>
     <message>
         <location line="+7"/>
         <location line="+70"/>
-        <location line="+550"/>
+        <location line="+560"/>
         <source>Disconnected from backend. Reconnecting...</source>
         <translation>バックエンドとの接続が切断されました。再接続中...</translation>
     </message>
     <message>
-        <location line="-559"/>
+        <location line="-569"/>
         <source>Preparing distribution upgrade...</source>
         <translation>ディストリビューションアップグレードを準備中...</translation>
     </message>
     <message>
         <location line="-58"/>
         <location line="+70"/>
-        <location line="+550"/>
+        <location line="+560"/>
         <source>Reconnected. Please try again</source>
         <translation>再接続しました。もう一度お試しください</translation>
     </message>
     <message>
-        <location line="-618"/>
+        <location line="-628"/>
         <location line="+70"/>
-        <location line="+550"/>
+        <location line="+560"/>
         <source>Failed to reconnect to backend</source>
         <translation>バックエンドへの再接続に失敗しました</translation>
     </message>
     <message>
-        <location line="-537"/>
+        <location line="-547"/>
         <source>Distribution upgrade check completed</source>
         <translation>ディストリビューションアップグレードの確認が完了しました</translation>
     </message>
@@ -3435,12 +3479,12 @@ Please wait.</source>
         <translation>システムの検証が完了しました</translation>
     </message>
     <message>
-        <location line="-219"/>
+        <location line="-226"/>
         <source>Selecting needed patches...</source>
         <translation>必要なパッチを選択中...</translation>
     </message>
     <message>
-        <location line="+115"/>
+        <location line="+122"/>
         <source>Update packages failed</source>
         <translation>パッケージの更新に失敗しました</translation>
     </message>
@@ -3475,7 +3519,7 @@ Please wait.</source>
         <translation>ソルバー設定を更新中...</translation>
     </message>
     <message>
-        <location line="+62"/>
+        <location line="+67"/>
         <source>Updating locale selection...</source>
         <translation>ロケール選択を更新中...</translation>
     </message>
@@ -3485,7 +3529,7 @@ Please wait.</source>
         <translation>ロケール選択の更新に失敗しました</translation>
     </message>
     <message>
-        <location line="+95"/>
+        <location line="+100"/>
         <source>Package changes applied</source>
         <translation>パッケージの変更を適用しました</translation>
     </message>
@@ -3550,17 +3594,17 @@ Please wait.</source>
         <translation>一部の操作でエラーが発生しました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageController.cpp" line="-592"/>
+        <location filename="../src/gui/controllers/PackageController.cpp" line="-635"/>
         <source>Cancelling...</source>
         <translation>キャンセル中...</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="-233"/>
+        <location filename="../src/gui/controllers/PackageControllerRepos.cpp" line="-237"/>
         <source>Adding repository...</source>
         <translation>リポジトリを追加中...</translation>
     </message>
     <message>
-        <location line="+9"/>
+        <location line="+14"/>
         <source>Repository added: %1</source>
         <translation>リポジトリを追加しました: %1</translation>
     </message>
@@ -3570,7 +3614,7 @@ Please wait.</source>
         <translation>リポジトリの追加に失敗しました</translation>
     </message>
     <message>
-        <location line="+133"/>
+        <location line="+132"/>
         <location line="+38"/>
         <source>Refreshing repositories...</source>
         <translation>リポジトリをリフレッシュ中...</translation>
@@ -3588,7 +3632,7 @@ Please wait.</source>
         <translation>編集セッションが終了しました</translation>
     </message>
     <message>
-        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+85"/>
+        <location filename="../src/gui/controllers/PackageControllerTransactions.cpp" line="+99"/>
         <source>Adding local RPM files...</source>
         <translation>ローカル RPM ファイルを追加中...</translation>
     </message>
@@ -3634,7 +3678,19 @@ Please wait.</source>
         <translation>署名鍵を承認しました。操作を再実行したときにインポートされます。</translation>
     </message>
     <message>
-        <location line="-56"/>
+        <location line="-312"/>
+        <location line="+33"/>
+        <source>Not connected to the backend.</source>
+        <translation>バックエンドに接続していません。</translation>
+    </message>
+    <message>
+        <location line="-29"/>
+        <location line="+33"/>
+        <source>Another operation is in progress.</source>
+        <translation>別の処理を実行中です。</translation>
+    </message>
+    <message>
+        <location line="+219"/>
         <source>Cancelling... Please wait</source>
         <translation>キャンセルしています... しばらくお待ちください</translation>
     </message>

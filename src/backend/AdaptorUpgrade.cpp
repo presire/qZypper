@@ -25,6 +25,16 @@ namespace qZypper {
         }
 
         /**
+        * @brief 検索オプションに従う検索を実行する
+        * @param options 検証済みの検索オプション
+        * @return 検索結果 (旧形式とV2で共有)
+        */
+        std::vector<PackageInfo> exSearchResults(const SearchOptions &options)
+        {
+            return ZyppManager::instance().searchPackagesEx(options);
+        }
+
+        /**
         * @brief SolverResultを既存のマップ形式へ変換する
         *
         * AdaptorSelectionと同じ形状 (success, problems, summary) を返す
@@ -88,23 +98,53 @@ namespace qZypper {
         }).toStringList();
     }
 
-    /** @brief 拡張検索オプションを厳格に検証し、PoolQuery検索を実行する */
+    /**
+     * @brief 拡張検索オプションを検証し、旧GUI互換の一覧を返す
+     * @param options 検索オプション
+     * @return パッケージ情報のQVariantMap一覧
+     */
     QVariantList PackageManagerAdaptor::SearchPackagesEx(const QVariantMap &options)
+    {
+        SearchOptions parsed;
+        if (!prepareExSearch(options, &parsed))
+            return {};
+        return runRead([parsed] {
+            return QVariant(maps(exSearchResults(parsed)));
+        }).toList();
+    }
+
+    /**
+     * @brief 拡張検索オプションを検証し、結果を構造化した一覧で返す
+     * @param options 検索オプション
+     * @return リポジトリ表とパッケージ行の一覧応答
+     */
+    PackageListReply PackageManagerAdaptor::SearchPackagesExV2(const QVariantMap &options)
+    {
+        SearchOptions parsed;
+        if (!prepareExSearch(options, &parsed))
+            return {};
+        return runRead([parsed] {
+            return QVariant::fromValue(PackageListReply{toPackageRows(exSearchResults(parsed))});
+        }).value<PackageListReply>();
+    }
+
+    /**
+     * @brief 所有権を確認し、拡張検索オプションを検証する (旧形式とV2で共有)
+     * @param options 呼び出し元が渡したオプションマップ
+     * @param parsed 検証済みオプションの格納先
+     * @return 検証を通った場合はtrue (失敗時は応答済み)
+     */
+    bool PackageManagerAdaptor::prepareExSearch(const QVariantMap &options, SearchOptions *parsed)
     {
         // 正規表現のコンパイル検証は主スレッドで行うため、所有者確認を先に済ませる
         if (!checkRead())
-            return {};
-
-        SearchOptions parsed;
+            return false;
         QString error;
-        if (!parseSearchOptions(options, parsed, error)) {
-            sendErrorReply(QDBusError::InvalidArgs, error);
-            return {};
-        }
-
-        return runRead([parsed] {
-            return QVariant(maps(ZyppManager::instance().searchPackagesEx(parsed)));
-        }).toList();
+        if (parseSearchOptions(options, *parsed, error))
+            return true;
+        // 不正な正規表現やオプションはワーカーに渡さず呼び出し元へ返す
+        sendErrorReply(QDBusError::InvalidArgs, error);
+        return false;
     }
 
     /** @brief ディストリビューションアップグレード (dup) を実行する */

@@ -23,6 +23,8 @@ Dialog {
     property string errorMessage: ""   // 追加失敗時のエラー表示
     property var presets: []           // コミュニティリポジトリのプリセット一覧 (対象外のディストリビューションでは空)
     property var selectedPreset: null  // 選択中のプリセット (カスタムURLの場合はnull)
+    property string autoName: ""       // 最後に自動生成した名前 (入力欄がこの値のままなら利用者は編集していない)
+    property string autoAlias: ""      // 最後に自動生成したエイリアス (入力欄がこの値のままなら利用者は編集していない)
 
     signal repoAdded()  // 追加成功後に親へリポジトリ再読込を依頼する
 
@@ -32,7 +34,9 @@ Dialog {
     title: qsTr("Add Repository")      // ダイアログのタイトル
     standardButtons: Dialog.NoButton   // 標準ボタンは使わず、各ステップの独自ボタンを使う
     modal: true                        // 表示中は背後の画面を操作できないようにする
-    closePolicy: Dialog.CloseOnEscape  // [Esc]キーでのみ閉じる (外側のクリックでは閉じない)
+    // [Esc]キーでのみ閉じる (外側のクリックでは閉じない)
+    // 応答待ちの間は閉じない (閉じると失敗理由の表示先が無くなるため)
+    closePolicy: awaiting ? Dialog.NoAutoClose : Dialog.CloseOnEscape
 
     // ダイアログを開くたびに入力状態を初期値へ戻す
     onOpened: {
@@ -46,6 +50,8 @@ Dialog {
         autoRefreshCheck.checked = true
         keepPkgCheck.checked = false
         selectedPreset = null
+        autoName = ""
+        autoAlias = ""
         presetCombo.currentIndex = 0
 
         // プリセット一覧を取得する (PackageController::loadRepoPresetsを呼び出し、完了はrepoPresetsReadyシグナルで受け取る)
@@ -60,6 +66,8 @@ Dialog {
      */
     function applyPreset(preset) {
         root.selectedPreset = preset
+        root.autoName = ""
+        root.autoAlias = ""
 
         // カスタム入力が選ばれたときは、プリセットで埋めた入力欄を初期状態へ戻す
         if (preset === null) {
@@ -76,6 +84,43 @@ Dialog {
         aliasField.text = preset.alias
         prioritySpin.value = preset.priority
         autoRefreshCheck.checked = preset.autoRefresh
+    }
+
+    /**
+     * @brief URLからリポジトリ名の既定値を生成する
+     * @param url 入力されたURL
+     * @return ホスト名、ホストが無いローカルURLはパスの最後の要素 (どちらも得られなければ"repository")
+     * @note "dir:///srv/localrepo"は"localrepo"、"https://download.opensuse.org/..."は"download.opensuse.org"になる
+     */
+    function defaultName(url) {
+        // スキーム区切りの後をホスト部 ("/"、"?"、"#"の手前まで) とパス部に分け、パス部からクエリとフラグメントを除く
+        var match = url.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^\/?#]*)([^?#]*)/)
+        if (!match) {
+            return "repository"
+        }
+
+        // ホスト部から利用者情報 (user@) とポート番号を除く
+        var host = match[1].replace(/^.*@/, "").replace(/:\d*$/, "")
+        if (host !== "") {
+            return host
+        }
+
+        var segments = match[2].split("/").filter(function (segment) { return segment !== "" })
+        return segments.length > 0 ? segments[segments.length - 1] : "repository"
+    }
+
+    /**
+     * @brief エイリアスが未入力または自動生成のままなら、名前から生成し直す
+     * @note 名前の英数字・_・-以外を_へ置き換えて生成する
+     *       利用者が編集したエイリアスは書き換えない
+     */
+    function syncAutoAlias() {
+        if (aliasField.text !== "" && aliasField.text !== root.autoAlias) {
+            return
+        }
+
+        aliasField.text = nameField.text.replace(/[^a-zA-Z0-9_-]/g, "_")
+        root.autoAlias = aliasField.text
     }
 
     // ダイアログ本体 (入力ステップを切り替えて表示する)
@@ -170,6 +215,16 @@ Dialog {
                 Layout.fillWidth: true  // 親の幅いっぱいに広げる
             }
 
+            // URLの誤りの説明 ([Next]を押せない理由を示す)
+            Label {
+                Layout.fillWidth: true                            // 親の幅いっぱいに広げる
+                visible: text.length > 0                          // 誤りがある場合のみ表示する
+                text: urlSelector.validationError()               // 誤りの説明
+                textFormat: Text.PlainText                        // HTMLとして解釈させない
+                color: palette.brightText                         // 目立つ文字色
+                wrapMode: Text.WrapAtWordBoundaryOrAnywhere       // URLのような長い語も幅に収める
+            }
+
             // 操作ボタンを下側へ寄せるための余白
             Item {
                 Layout.fillHeight: true  // 残りの高さをすべて使う
@@ -201,25 +256,15 @@ Dialog {
                     text: qsTr("Next")              // ボタンの文字列
                     highlighted: true               // 推奨操作として強調表示する
 
-                    // 名前とエイリアスが未入力なら既定値を生成し、ステップ2へ進む
+                    // 名前とエイリアスが未入力または自動生成のままなら、現在のURLから既定値を生成し直してステップ2へ進む
+                    // ([Back]でURLを直した場合に、誤ったURLから生成した値が残らないようにする)
                     onClicked: {
-                        // 名前のデフォルト生成
-                        if (nameField.text === "") {
-                            try {
-                                var url = urlSelector.url
-                                var parts = url.replace(/^[a-z]+:\/\//, "").split("/")
-                                nameField.text = parts[0] || "repository"
-                            }
-                            catch (e) {
-                                nameField.text = "repository"
-                            }
+                        if (nameField.text === "" || nameField.text === root.autoName) {
+                            nameField.text = root.defaultName(urlSelector.url)
+                            root.autoName = nameField.text
                         }
 
-                        // エイリアスが未入力なら、名前の英数字・_・-以外を_へ置き換えて生成する
-                        if (aliasField.text === "") {
-                            aliasField.text = nameField.text.replace(/[^a-zA-Z0-9_-]/g, "_")
-                        }
-
+                        root.syncAutoAlias()
                         root.currentStep = 1
                     }
                 }
@@ -269,6 +314,11 @@ Dialog {
 
                     Layout.fillWidth: true                    // 残りの幅をすべて使う
                     placeholderText: qsTr("Repository name")  // 未入力時に表示する案内
+
+                    // 利用者が名前を編集したら、自動生成のままのエイリアスを名前に追従させる
+                    onTextEdited: {
+                        root.syncAutoAlias()
+                    }
                 }
 
                 // [Alias:]の項目名
@@ -349,7 +399,8 @@ Dialog {
 
                 // [Back]ボタン
                 Button {
-                    text: qsTr("Back")  // ボタンの文字列
+                    enabled: !root.awaiting  // 応答待ちの間は戻れない (失敗理由はこのステップに表示するため)
+                    text: qsTr("Back")       // ボタンの文字列
 
                     // ステップ1へ戻る
                     onClicked: {
@@ -386,7 +437,8 @@ Dialog {
 
                 // [Cancel]ボタン
                 Button {
-                    text: qsTr("Cancel")  // ボタンの文字列
+                    enabled: !root.awaiting  // 応答待ちの間は閉じられない
+                    text: qsTr("Cancel")     // ボタンの文字列
 
                     // 追加せずにダイアログを閉じる
                     onClicked: {
@@ -422,11 +474,23 @@ Dialog {
         }
 
         /**
+         * @brief バックエンドとの接続状態の変化を受け取る
+         * @note 切断時は応答が破棄されてaddRepoFinishedが届かないため、応答待ちを解除して閉じられるようにする
+         */
+        function onConnectedChanged() {
+            if (root.awaiting && !PackageController.connected) {
+                root.awaiting = false
+                root.errorMessage = qsTr("Failed to add repository: %1").arg(qsTr("Not connected to the backend."))
+            }
+        }
+
+        /**
          * @brief リポジトリ追加完了のシグナルを受け取る
          * @param success 追加に成功したか
+         * @param errorMessage 失敗理由 (成功時や理由が得られない場合は空)
          * @note 戻り値は無く、追加要求を出していない通知は無視する
          */
-        function onAddRepoFinished(success) {
+        function onAddRepoFinished(success, errorMessage) {
             // このダイアログからの追加要求でない場合は何もしない
             if (!root.awaiting) {
                 return
@@ -440,7 +504,10 @@ Dialog {
                 root.close()
             }
             else {
-                root.errorMessage = qsTr("Failed to add repository.")
+                // 理由が得られた場合は汎用メッセージの後ろに付けて表示する
+                root.errorMessage = errorMessage
+                    ? qsTr("Failed to add repository: %1").arg(errorMessage)
+                    : qsTr("Failed to add repository.")
             }
         }
     }

@@ -47,6 +47,7 @@ ApplicationWindow {
     readonly property int rpmGroupsTabIndex: 6   // [RPM Groups]タブ
     readonly property int languagesTabIndex: 7   // [Languages]タブ
     readonly property int productsTabIndex: 8    // [Products]タブ
+    readonly property int servicesTabIndex: 9    // [Services]タブ
 
     // --- ヘルパー関数 ---
 
@@ -842,6 +843,12 @@ ApplicationWindow {
                     width: Math.max(80, implicitWidth)  // 最小80pxを確保したタブ幅
                     text: qsTr("Products")              // タブの表示名
                 }
+
+                // [Services]タブ (サービスの有無にかかわらず常に表示し、サービスがない場合はビュー側で案内文を表示する)
+                TabButton {
+                    width: Math.max(80, implicitWidth)  // 最小80pxを確保したタブ幅
+                    text: qsTr("Services")              // タブの表示名
+                }
             }
 
             // 残りの幅を埋めてテーマ切り替えを右寄せにするスペーサー
@@ -1066,6 +1073,17 @@ ApplicationWindow {
                     // 参照のみでインストール/削除操作は行わない
                     ProductView {
                         id: productView  // 製品ビューの参照名
+                    }
+
+                    // [Services]タブのビュー
+                    // サービスを選択すると、そのサービスのリポジトリのパッケージだけを右ペインの一覧へ読み込む
+                    ServiceView {
+                        id: serviceView  // サービスビューの参照名
+
+                        // サービス選択で読込を開始した: 一定時間を超えた場合だけウェイトポップアップを表示する
+                        onPackageLoadStarted: {
+                            packageLoadWaitDialog.start()
+                        }
                     }
                 }
 
@@ -1672,13 +1690,17 @@ ApplicationWindow {
         /**
          * @brief 初期化完了時に起動画面を閉じ、リポジトリ読込と現在状態の保存の後に起動時処理を開始する
          * @note startupDialogを閉じ、loadRepos、saveState、runStartupTasksを呼び出す
-         * @note 起動時にリフレッシュする設定で接続中の場合は、先にrefreshOverlayを開く
+         * @note 起動時にリフレッシュする設定で接続中の場合は、loadReposを呼ばずに起動時処理のリフレッシュ段階へ任せ、先にrefreshOverlayを開く
          */
         function onInitializedChanged() {
             if (PackageController.initialized) {
                 // 初期化完了 — 起動ウェイトを解除して一覧を読み込む
                 startupDialog.close()
-                PackageController.loadRepos()
+                // 起動時にリフレッシュする場合は、起動時処理のリフレッシュ段階が完了後にloadReposで一覧を読み込む
+                // ここでも読み込むと同じ一覧を二重に読み込むことになるため避ける
+                if (!(refreshStore.onStartup && PackageController.connected)) {
+                    PackageController.loadRepos()
+                }
                 PackageController.saveState()
 
                 // 未接続の場合はrefreshFinishedが届かないため開かない
@@ -1688,8 +1710,8 @@ ApplicationWindow {
                     refreshOverlay.open()
                 }
 
-                // PackageController::runStartupTasksを呼び出し、ソルバー設定の適用、期限切れリポジトリのリフレッシュ、
-                // 更新可能数の取得を順に行う (完了はstartupTasksFinishedで受け取る)
+                // PackageController::runStartupTasksを呼び出し、期限切れリポジトリのリフレッシュ (設定時)、
+                // ソルバー設定の適用、変更予定の反映、更新可能数の取得を順に行う (完了はstartupTasksFinishedで受け取る)
                 PackageController.runStartupTasks(solverStore.installRecommends, refreshStore.onStartup)
             }
         }

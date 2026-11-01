@@ -5,6 +5,8 @@ set(GUI_SOURCES
     controllers/PackageControllerTransactions.cpp
     controllers/PackageControllerRepos.cpp
     controllers/DBusClient.cpp
+    controllers/DBusDemarshal.cpp
+    controllers/PackageListDecode.cpp
     controllers/RepoFilePreview.cpp
     controllers/SearchModeDetect.cpp
     models/PackageListModel.cpp
@@ -14,6 +16,8 @@ set(GUI_SOURCES
 set(GUI_HEADERS
     controllers/PackageController.h
     controllers/DBusClient.h
+    controllers/DBusDemarshal.h
+    controllers/PackageListDecode.h
     controllers/RepoFilePreview.h
     controllers/SearchModeDetect.h
     models/PackageListModel.h
@@ -73,6 +77,7 @@ qt_add_qml_module(qzypper
         qml/views/SearchView.qml
         qml/views/SummaryView.qml
         qml/views/RepositoryView.qml
+        qml/views/ServiceView.qml
         qml/views/PatternView.qml
         qml/views/PatchView.qml
         qml/views/UpdatesView.qml

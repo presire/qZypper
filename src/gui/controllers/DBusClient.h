@@ -13,8 +13,8 @@
 #ifndef QZYPPER_GUI_CONTROLLERS_DBUSCLIENT_H
 #define QZYPPER_GUI_CONTROLLERS_DBUSCLIENT_H
 
+#include "ConnectAttemptGate.h"
 #include <QObject>
-#include <QDBusInterface>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusVariant>
@@ -58,9 +58,13 @@ public:
                                              const QVariantList &args)>;
 
     explicit DBusClient(QObject *parent = nullptr);                 /* D-Busサービス監視を開始する */
-    ~DBusClient() override;                                         /* 保持するD-Busインターフェースを解放する */
+    ~DBusClient() override;                                         /* サービス監視を終了する */
 
-    bool connectToBackend();                                        /* バックエンドへ接続する */
+    /**
+     * @brief バックエンドの起動を非同期で要求し、接続結果を通知する
+     * @param done 接続結果を受け取るコールバック
+     */
+    void connectToBackend(std::function<void(bool success)> done);  /* バックエンドへ非同期で接続する */
     bool isConnected() const;                                       /* 接続状態を返す */
     QString lastError() const { return m_lastError; }               /* 最新エラーメッセージを返す */
     quint64 dispatchedCallCount() const { return m_dispatchedCalls; } /* 送信済み呼び出し数を返す */
@@ -158,9 +162,25 @@ public:
                           ReplyCallback callback);
     void getPackagesByClassification(const QString &classification,      // 分類別パッケージ一覧
                                       ReplyCallback callback);
+    /** @brief 更新可能なパッケージ数を取得し、callbackへ応答を渡す */
+    void getUpdatableCount(ReplyCallback callback);                      // 更新可能パッケージ数
     void getPackageDetails(const QString &name, ReplyCallback callback); // パッケージ詳細
     void getPackagesByRepo(const QString &repoAlias,                     // リポジトリ別一覧
                            ReplyCallback callback);
+    /**
+     * @brief サービス別のパッケージ一覧を取得する
+     * @param serviceAlias サービスエイリアス
+     * @param callback 完了時のコールバック (成功時のargs[0]にPackageRows)
+     */
+    void getPackagesByService(const QString &serviceAlias,               // サービス別一覧
+                              ReplyCallback callback);
+    /**
+     * @brief 指定名のパッケージ一覧を取得する
+     * @param names パッケージ名の一覧 (要求順・重複はバックエンドで除去される)
+     * @param callback 完了時に呼ばれるコールバック (args[0]にPackageRows)
+     */
+    void getPackagesByNames(const QStringList &names,                    // 名前指定一覧
+                            ReplyCallback callback);
     /** @brief 製品一覧をバックエンドから取得する (読み取り専用) */
     void getProducts(ReplyCallback callback);                            // 製品一覧 (読み取り専用)
     void getPatterns(ReplyCallback callback);                            // パターン一覧
@@ -252,11 +272,12 @@ private:
     // D-Busのインターフェース名
     static constexpr const char* INTERFACE     = "org.presire.qzypper.PackageManager";
 
-    QDBusInterface *m_iface = nullptr;                  // D-Busインターフェース
+    ConnectAttemptGate m_connectGate;                   // 接続試行の世代管理
     QDBusServiceWatcher *m_watcher = nullptr;           // サービスウォッチャー
     bool m_connected = false;                           // 接続状態
     bool m_initializing = false;                        // 初期化呼び出し中 (再入防止)
     QString m_lastError;                                // 最新エラーメッセージ
+    bool m_listV2Unavailable = false;                   // V2一覧メソッド未対応 (旧メソッドへ固定)
 
     /**
      * @brief D-Busメソッドを非同期で呼び出し、完了時にコールバックへ結果を渡す
@@ -269,6 +290,18 @@ private:
      * @param callback 完了時に呼ばれるコールバック
      */
     void callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback); /* 非同期呼び出しを要求する */
+    /**
+     * @brief 一覧取得メソッドをV2で呼び、未対応なら旧メソッドへ1度だけ切り替える
+     * @param msg V2のメソッド呼び出しメッセージ (引数を含む)
+     * @param legacyMember 旧メソッド名 (空の場合は切り替えを行わない)
+     * @param callback 完了時に呼ばれるコールバック (args[0]にPackageRows)
+     */
+    void sendPackageList(const QDBusMessage &msg, const QString &legacyMember, ReplyCallback callback);
+    /**
+     * @brief バックエンドのシグナル中継を重複しないように張り直す
+     * @param bus 接続先のシステムバス
+     */
+    void subscribeBackendSignals(QDBusConnection bus);          /* シグナル中継を張り直す */
     void dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized,
                       qint64 queueWaitMs);                      /* 呼び出しを送信する */
     void dispatchNextQueuedCall();                              /* 次の直列化済み呼び出しを送信する */

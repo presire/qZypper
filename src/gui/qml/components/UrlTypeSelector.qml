@@ -109,12 +109,32 @@ RowLayout {
     }
 
     /**
+     * @brief 入力途中ではない誤りを検出し、利用者向けの説明を返す
+     * @return 誤りの説明 (誤りが無ければ空文字列)
+     * @note ローカルのスキーム (dir、iso、cd、dvd、hd) は、libzyppがホスト部を受け付けない
+     *       "dir://srv/repo" のように区切りの直後に文字が続くと、"srv"がホスト名と解釈されて追加に失敗するため、ここで止める
+     */
+    function validationError() {
+        var match = urlField.text.match(/^(dir|iso|cd|dvd|hd):\/\/([^\/?]+)/i)
+        if (match) {
+            // 区切りの直後をローカルパスの先頭とみなし、スラッシュ3本の形を提案する
+            var scheme = match[1].toLowerCase()
+            var args = [scheme, match[2], scheme + ":///" + urlField.text.substring(match[1].length + 3)]
+            // 入力値に"%2"等が含まれても再置換されないよう、.arg()を連鎖せず1回の走査で置き換える
+            return qsTr("A %1 URL cannot contain a host name (\"%2\"). Use three slashes for a local path: %3")
+                       .replace(/%([123])/g, function (whole, index) { return args[index - 1] })
+        }
+
+        return ""
+    }
+
+    /**
      * @brief URLとして成立しているかを簡易判定する
-     * @return スキーム区切りを含み、8文字より長ければtrue
-     * @note 実際の到達性は確認せず、入力途中の状態を弾くための判定にとどめる
+     * @return スキーム区切りを含み、8文字より長く、validationError()が誤りを返さなければtrue
+     * @note 実際の到達性は確認せず、入力途中の状態と明らかな誤りを弾くための判定にとどめる
      */
     function isValid() {
-        return urlField.text.length > 8 && urlField.text.indexOf("://") > 0
+        return urlField.text.length > 8 && urlField.text.indexOf("://") > 0 && validationError() === ""
     }
 
     spacing: 8  // 選択欄と入力欄の間隔

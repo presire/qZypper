@@ -30,7 +30,8 @@ OperationStage initialStage(const QDBusMessage &msg)
         || member == "SetLocaleRequested" || member == "SetRepoUpgrade"
         || member == "VerifySystem")
         return OperationStage::Resolving;
-    if (member == "GetPackagesByClassification" && classificationNeedsSolver(msg))
+    if ((member == "GetPackagesByClassification" || member == "GetPackagesByClassificationV2")
+        && classificationNeedsSolver(msg))
         return OperationStage::Resolving;
     if (member.startsWith("Add") || member.startsWith("Remove") || member.startsWith("Modify")
         || member == "SetRepoEnabled" || member == "TrustKey") return OperationStage::RepoChange;
@@ -41,9 +42,20 @@ OperationStage initialStage(const QDBusMessage &msg)
 bool changesSelection(const QString &member)
 {
     return !(member.startsWith("Get") || member == "SearchPackages"
-             || member == "SearchPackagesEx" || member == "SaveState"
+             || member == "SearchPackagesV2" || member == "SearchPackagesEx"
+             || member == "SearchPackagesExV2" || member == "SaveState"
              || member == "ParseRepoFile");
 }
+}
+
+/**
+ * @brief 読み取り権限を確認してから一覧系の不正な引数を拒否する
+ * @param message InvalidArgs応答に含める理由
+ * @note 権限確認に失敗した場合はその応答を優先する
+ */
+void PackageManagerAdaptor::rejectListArguments(const QString &message)
+{
+    if (checkRead()) sendErrorReply(QDBusError::InvalidArgs, message);
 }
 
 /**

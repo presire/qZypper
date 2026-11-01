@@ -70,8 +70,8 @@ QtObject {
      * @note 戻り値はSummaryViewのmodelへ直接バインドされるため、PackageControllerの変更通知のたびに再評価される
      */
     function buildSummaryModel() {
-        // PackageController.packagesを参照し、変更時のバインディング再評価を促す
-        var _trigger = PackageController.packages
+        // PackageController::packageCount (packagesChangedで通知) を参照し、パッケージ一覧の変更時にバインディングを再評価させる
+        var _trigger = PackageController.packageCount
         var installs = [], updates = [], deletes = []
 
         // 全プール横断で変更予定パッケージを取得 (キャッシュ済みプロパティ)

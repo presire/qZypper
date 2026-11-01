@@ -4,6 +4,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <string>
+#include <optional>
 #include "PackageManagerAdaptor.h"
 #include "ZyppHistory.h"
 #include "ZyppLocks.h"
@@ -30,6 +31,28 @@ const QSet<QString> &allowedClassifications()
         QStringLiteral("locked"), QStringLiteral("updatable")
     };
     return values;
+}
+
+/**
+ * @brief 分類名を正規化し、許可された分類か検証する
+ * @param cls 呼び出し元の分類名
+ * @return 正規化した分類名、未知の場合はstd::nullopt
+ */
+std::optional<std::string> validClassification(const QString &cls)
+{
+    const QString norm = cls.trimmed().toLower();
+    if (!allowedClassifications().contains(norm)) return std::nullopt;
+    return norm.toStdString();
+}
+
+/**
+ * @brief 旧形式とV2で共有する分類別の取得を実行する
+ * @param classification 検証済みの分類名
+ * @return 該当するパッケージ
+ */
+std::vector<PackageInfo> classificationResults(const std::string &classification)
+{
+    return ZyppManager::instance().getPackagesByClassification(classification);
 }
 
 /**
@@ -118,18 +141,14 @@ bool PackageManagerAdaptor::RemoveLock(const QVariantMap &lock)
  */
 QVariantList PackageManagerAdaptor::GetPackagesByClassification(const QString &cls)
 {
-    const QString norm = cls.trimmed().toLower();
-    if (!allowedClassifications().contains(norm)) {
-        if (checkRead()) {
-            sendErrorReply(QDBusError::InvalidArgs,
-                           QStringLiteral("unknown classification: %1").arg(cls));
-        }
+    const std::optional<std::string> classification = validClassification(cls);
+    if (!classification) {
+        // 未知の分類は読み取り権限を確認してから拒否する
+        rejectListArguments(QStringLiteral("unknown classification: %1").arg(cls));
         return {};
     }
-    const std::string classification = norm.toStdString();
     return runRead([classification]() -> QVariant {
-        const std::vector<PackageInfo> packages =
-            ZyppManager::instance().getPackagesByClassification(classification);
+        const std::vector<PackageInfo> packages = classificationResults(*classification);
         QVariantList list;
         list.reserve(static_cast<int>(packages.size()));
         for (const PackageInfo &info : packages) {
@@ -137,6 +156,37 @@ QVariantList PackageManagerAdaptor::GetPackagesByClassification(const QString &c
         }
         return list;
     }).toList();
+}
+
+/**
+ * @brief 許可済み分類に属するパッケージを構造化して取得する
+ * @param cls 問い合わせる分類名
+ * @return PackageListReply
+ * @note 未知の分類は読み取り権限を確認してからInvalidArgsを返す
+ */
+PackageListReply PackageManagerAdaptor::GetPackagesByClassificationV2(const QString &cls)
+{
+    const std::optional<std::string> classification = validClassification(cls);
+    if (!classification) {
+        // 旧形式と同じ分類だけを受け付ける
+        rejectListArguments(QStringLiteral("unknown classification: %1").arg(cls));
+        return {};
+    }
+    return runRead([classification] {
+        return QVariant::fromValue(PackageListReply{toPackageRows(classificationResults(*classification))});
+    }).value<PackageListReply>();
+}
+
+/**
+ * @brief 更新可能なパッケージ数を取得する
+ * @return 更新可能なパッケージ数
+ */
+uint PackageManagerAdaptor::GetUpdatableCount()
+{
+    return runRead([]() -> QVariant {
+        return QVariant::fromValue<uint>(
+            static_cast<uint>(ZyppManager::instance().countUpdatablePackages()));
+    }).toUInt();
 }
 
 /**

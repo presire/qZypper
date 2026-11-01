@@ -30,7 +30,7 @@ void PackageController::loadRepos()
 /**
  * @brief リポジトリを非同期で追加する
  *
- * 完了後、addRepoFinishedシグナルで成功可否を通知する
+ * 完了後、addRepoFinishedシグナルで成功可否と失敗理由を通知する
  *
  * @param url リポジトリURL
  * @param name リポジトリ名
@@ -38,39 +38,44 @@ void PackageController::loadRepos()
 void PackageController::addRepo(const QString &url, const QString &name)
 {
     if (!m_connected) {
-        emit addRepoFinished(false);
+        emit addRepoFinished(false, tr("Not connected to the backend."));
         return;
     }
     if (m_busy) {
-        emit addRepoFinished(false);
+        emit addRepoFinished(false, tr("Another operation is in progress."));
         return;
     }
 
-    m_dbus->addRepo(url, name, [this](bool ok, const QString &, const QString &, const QVariantList &args) {
-        const bool success = ok && !args.isEmpty() && args.at(0).toMap().value(QStringLiteral("success")).toBool();
+    m_dbus->addRepo(url, name, [this](bool ok, const QString &, const QString &message, const QVariantList &args) {
+        const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
+        const bool success = result.value(QStringLiteral("success")).toBool();
+        // D-Busエラー時はエラー本文、バックエンドが失敗を返した時はその理由を通知する
+        const QString error = success ? QString()
+                              : !ok   ? message
+                                      : result.value(QStringLiteral("errorMessage")).toString();
         if (success)
             loadRepos();
         else
-            emit errorOccurred(m_dbus->lastError());
-        emit addRepoFinished(success);
+            emit errorOccurred(error);
+        emit addRepoFinished(success, error);
     });
 }
 
 /**
  * @brief 全プロパティを指定してリポジトリを非同期で追加する
  *
- * 完了後、addRepoFinishedシグナルで成功可否を通知する
+ * 完了後、addRepoFinishedシグナルで成功可否と失敗理由を通知する
  *
  * @param properties リポジトリプロパティ
  */
 void PackageController::addRepoFull(const QVariantMap &properties)
 {
     if (!m_connected) {
-        emit addRepoFinished(false);
+        emit addRepoFinished(false, tr("Not connected to the backend."));
         return;
     }
     if (m_busy) {
-        emit addRepoFinished(false);
+        emit addRepoFinished(false, tr("Another operation is in progress."));
         return;
     }
 
@@ -78,20 +83,24 @@ void PackageController::addRepoFull(const QVariantMap &properties)
     setStatusMessage(tr("Adding repository..."));
 
     m_dbus->addRepoFull(properties,
-                        [this, properties](bool ok, const QString &, const QString &, const QVariantList &args) {
+                        [this, properties](bool ok, const QString &, const QString &message, const QVariantList &args) {
         const QVariantMap result = (ok && !args.isEmpty()) ? args.at(0).toMap() : QVariantMap();
         const bool success = result.value(QStringLiteral("success")).toBool();
+        // D-Busエラー時はエラー本文、バックエンドが失敗を返した時はその理由を通知する
+        // 理由は追加ダイアログ内に表示するため、errorOccurredでエラーダイアログを重ねて開かない
+        const QString error = success ? QString()
+                              : !ok   ? message
+                                      : result.value(QStringLiteral("errorMessage")).toString();
 
         if (success) {
             loadRepos();
             setStatusMessage(tr("Repository added: %1").arg(properties.value(QStringLiteral("name")).toString()));
         } else {
             setStatusMessage(tr("Failed to add repository"));
-            emit errorOccurred(m_dbus->lastError());
         }
 
         setBusy(false);
-        emit addRepoFinished(success);
+        emit addRepoFinished(success, error);
     });
 }
 

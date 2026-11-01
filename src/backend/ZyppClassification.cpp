@@ -5,6 +5,7 @@
 #include <zypp/ResStatus.h>
 #include <zypp/Resolver.h>
 #include <zypp/ui/Selectable.h>
+#include <cstddef>
 #include <string>
 #include <vector>
 #include "ZyppManager.h"
@@ -101,6 +102,31 @@ std::vector<PackageInfo> ZyppManager::getPackagesByClassification(const std::str
         }
     }
     return result;
+}
+
+/**
+ * @brief 更新可能なパッケージ数を取得する
+ *
+ * updatable分類と同じ判定で数えるが、PackageInfoは生成しない
+ *
+ * @return 更新可能なパッケージ数 (未初期化の場合は0)
+ */
+std::size_t ZyppManager::countUpdatablePackages() const
+{
+    std::lock_guard<std::mutex> guard(m_mutex);
+    std::size_t count = 0;
+    // 初期化前はプールを参照できないため0件とする
+    if (!m_initialized) {
+        return count;
+    }
+
+    const auto pool = m_zypp->poolProxy();
+    for (auto it = pool.byKindBegin<zypp::Package>(); it != pool.byKindEnd<zypp::Package>(); ++it) {
+        if (matchesClassification(*it, "updatable")) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 } // namespace qZypper

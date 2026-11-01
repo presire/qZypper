@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <map>
+#include <set>
 #include <QDateTime>
 #include <zypp/sat/Pool.h>
 #include <zypp/PoolQuery.h>
@@ -168,6 +170,104 @@ std::vector<PackageInfo> ZyppManager::getPackagesByRepo(const std::string& repoA
                 break;
             }
         }
+    }
+
+    return result;
+}
+
+/**
+ * @brief 指定サービスに属するリポジトリのパッケージ一覧を取得する
+ *
+ * プール上でrepo.info().service()が指定サービスと一致するリポジトリだけを対象にし、
+ * 利用可能なバージョンのいずれかがそれらのリポジトリにあるパッケージを返す
+ * サービスのリフレッシュやRepoManagerの再読込は行わない
+ *
+ * @param serviceAlias サービスエイリアス
+ * @return パッケージ情報のベクタ
+ */
+std::vector<PackageInfo> ZyppManager::getPackagesByService(const std::string& serviceAlias) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<PackageInfo> result;
+
+    // 初期化前または空のサービス名では対象を特定できない
+    if (!m_initialized || serviceAlias.empty())
+        return result;
+
+    std::set<std::string> repoAliases;
+    auto satPool = zypp::sat::Pool::instance();
+    for (auto it = satPool.reposBegin(); it != satPool.reposEnd(); ++it) {
+        if (it->info().service() == serviceAlias)
+            repoAliases.insert(it->info().alias());
+    }
+    // 対象リポジトリがなければパッケージプールを走査しない
+    if (repoAliases.empty())
+        return result;
+
+    auto pool = m_zypp->poolProxy();
+    for (auto it = pool.byKindBegin<zypp::Package>();
+         it != pool.byKindEnd<zypp::Package>(); ++it) {
+
+        const auto& sel = *it;
+        for (auto avail = sel->availableBegin(); avail != sel->availableEnd(); ++avail) {
+            if (repoAliases.count(avail->repoInfo().alias()) > 0) {
+                result.push_back(makePackageInfo(sel));
+                break;
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
+ * @brief 指定した名前のパッケージ一覧を取得する
+ *
+ * 部分取り直し用に、プールを1回だけ走査して名前が一致するSelectableを返す
+ * 空文字と存在しない名前は無視し、重複は最初の出現だけを残して入力順を保つ
+ *
+ * @param names パッケージ名の一覧
+ * @return パッケージ情報のベクタ (入力順)
+ */
+std::vector<PackageInfo> ZyppManager::getPackagesByNames(const std::vector<std::string>& names) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<PackageInfo> result;
+
+    // 初期化前はパッケージプールを参照できない
+    if (!m_initialized)
+        return result;
+
+    std::set<std::string> wanted;
+    for (const auto& name : names) {
+        if (!name.empty())
+            wanted.insert(name);
+    }
+    // 検索対象がなければパッケージプールを走査しない
+    if (wanted.empty())
+        return result;
+
+    std::map<std::string, PackageInfo> found;
+    auto pool = m_zypp->poolProxy();
+    for (auto it = pool.byKindBegin<zypp::Package>();
+         it != pool.byKindEnd<zypp::Package>(); ++it) {
+
+        const auto& sel = *it;
+        const std::string name = sel->name();
+        // 対象外と登録済みの名前は結果に加えない
+        if (wanted.count(name) == 0 || found.count(name) > 0)
+            continue;
+        found.emplace(name, makePackageInfo(sel));
+    }
+
+    // 入力順を保ち、同じ名前は最初の出現だけを返す
+    std::set<std::string> emitted;
+    for (const auto& name : names) {
+        if (name.empty() || !emitted.insert(name).second)
+            continue;
+        const auto entry = found.find(name);
+        if (entry != found.end())
+            result.push_back(entry->second);
     }
 
     return result;

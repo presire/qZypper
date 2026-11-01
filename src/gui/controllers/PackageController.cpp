@@ -86,8 +86,11 @@ PackageController::PackageController(QObject *parent)
     // タイムアウト・取消等でバックエンド側が終了したプロンプトは表示から外す
     connect(m_dbus, &DBusClient::promptClosed,
             this, &PackageController::removePrompt);
+    // DBusClient::poolReloadedを受け取り、プールに依存する表示と変更予定を再取得する
     connect(m_dbus, &DBusClient::poolReloaded,
              this, [this]() {
+        // プールが変わると所属や候補が変わり得るため、進行中の差分適用を無効にする
+        ++m_poolGeneration;
         resetCommitPreparation();
         refreshPackageStatuses(true);
         refreshPendingChanges();
@@ -127,6 +130,7 @@ PackageController::PackageController(QObject *parent)
         // 新しいバックエンドはprompt IDを1から再利用するため、旧プロンプトは破棄する
         clearPrompts();
         loadRepos();
+        loadServices();
         refreshPendingChanges();
         loadUpgradeRepos();
     });
@@ -274,44 +278,48 @@ void PackageController::initialize()
     setBusy(true);
     setStatusMessage(tr("Initializing package manager..."));
 
-    if (!m_dbus->connectToBackend()) {
-        m_connected = false;
-        m_initialized = false;
-        emit connectedChanged();
-        emit initializedChanged();
-        const QString err = m_dbus->lastError();
-        setStatusMessage(tr("Failed to connect to backend: %1").arg(err));
-        emit errorOccurred(err);
-        qWarning() << "D-Bus backend connection failed:" << err;
-        setBusy(false);
-        return;
-    }
-
-    m_dbus->initializeBackend([this](bool ok, const QString &, const QString &, const QVariantList &) {
-        if (ok) {
-            m_connected = true;
-            m_initialized = true;
-            emit connectedChanged();
-            emit initializedChanged();
-            setStatusMessage(tr("Ready"));
-            refreshPendingChanges();
-            loadUpgradeRepos();
-            m_dbus->getOperationState([this](bool ok, const QString &, const QString &, const QVariantList &args) {
-                if (ok && !args.isEmpty())
-                    setOperationState(args.at(0).toMap());
-            });
-            qDebug() << "D-Bus backend initialized successfully";
-        } else {
+    // DBusClientの接続完了を待ってから初期化し、失敗時は利用者へ通知する
+    m_dbus->connectToBackend([this](bool connected) {
+        if (!connected) {
             m_connected = false;
             m_initialized = false;
             emit connectedChanged();
             emit initializedChanged();
             const QString err = m_dbus->lastError();
-            setStatusMessage(tr("Failed to initialize backend: %1").arg(err));
+            setStatusMessage(tr("Failed to connect to backend: %1").arg(err));
             emit errorOccurred(err);
-            qWarning() << "D-Bus backend initialization failed:" << err;
+            qWarning() << "D-Bus backend connection failed:" << err;
+            setBusy(false);
+            return;
         }
-        setBusy(false);
+
+        m_dbus->initializeBackend([this](bool ok, const QString &, const QString &, const QVariantList &) {
+            if (ok) {
+                m_connected = true;
+                m_initialized = true;
+                emit connectedChanged();
+                emit initializedChanged();
+                setStatusMessage(tr("Ready"));
+                loadServices();
+                refreshPendingChanges();
+                loadUpgradeRepos();
+                m_dbus->getOperationState([this](bool ok, const QString &, const QString &, const QVariantList &args) {
+                    if (ok && !args.isEmpty())
+                        setOperationState(args.at(0).toMap());
+                });
+                qDebug() << "D-Bus backend initialized successfully";
+            } else {
+                m_connected = false;
+                m_initialized = false;
+                emit connectedChanged();
+                emit initializedChanged();
+                const QString err = m_dbus->lastError();
+                setStatusMessage(tr("Failed to initialize backend: %1").arg(err));
+                emit errorOccurred(err);
+                qWarning() << "D-Bus backend initialization failed:" << err;
+            }
+            setBusy(false);
+        });
     });
 }
 
@@ -322,23 +330,26 @@ void PackageController::initialize()
 void PackageController::reconnectBackend(std::function<void(bool)> onDone)
 {
     clearPrompts();  // 旧バックエンドのprompt IDは新プロセスで再利用されるため破棄
-    if (!m_dbus->connectToBackend()) {
-        m_connected = false;
-        m_initialized = false;
-        emit connectedChanged();
-        emit initializedChanged();
-        if (onDone) onDone(false);
-        return;
-    }
+    // 接続完了後に初期化し、再接続の成否を呼び出し元へ返す
+    m_dbus->connectToBackend([this, onDone](bool connected) {
+        if (!connected) {
+            m_connected = false;
+            m_initialized = false;
+            emit connectedChanged();
+            emit initializedChanged();
+            if (onDone) onDone(false);
+            return;
+        }
 
-    m_dbus->initializeBackend([this, onDone](bool ok, const QString &, const QString &, const QVariantList &) {
-        m_connected = ok;
-        m_initialized = ok;
-        emit connectedChanged();
-        emit initializedChanged();
-        if (ok)
-            refreshPendingChanges();
-        if (onDone) onDone(ok);
+        m_dbus->initializeBackend([this, onDone](bool ok, const QString &, const QString &, const QVariantList &) {
+            m_connected = ok;
+            m_initialized = ok;
+            emit connectedChanged();
+            emit initializedChanged();
+            if (ok)
+                refreshPendingChanges();
+            if (onDone) onDone(ok);
+        });
     });
 }
 
@@ -823,9 +834,15 @@ void PackageController::startStartupTasks()
     m_startupRunning = true;
     ++m_startupGeneration;
     m_startupRefreshStageRan = false;
+    m_startupRefreshOk = false;
     setBusy(true);
     setStatusMessage(tr("Loading package manager settings..."));
 
+    // リフレッシュ有効時はリフレッシュ完了後にソルバー設定段階へ進む
+    if (m_startupRefreshOnStartup) {
+        runStartupRefreshStage(m_startupGeneration);
+        return;
+    }
     runStartupSolverStage(m_startupGeneration);
 }
 
@@ -835,6 +852,7 @@ void PackageController::startStartupTasks()
  *
  * GetSolverSettingsで現行設定を取得しsolverSettingsへ反映する
  * installRecommendsの指定がある場合は設定変更と依存解決を行い設定を再取得する
+ * リフレッシュ有効時は先にリフレッシュを行い、設定完了後は変更予定の反映段階へ進む
  */
 void PackageController::runStartupSolverStage(quint64 generation)
 {
@@ -854,7 +872,12 @@ void PackageController::runStartupSolverStage(quint64 generation)
             return;
         }
         if (m_startupInstallRecommends < 0) {
-            runStartupRefreshStage(generation);
+            // リフレッシュが未実行で有効な場合だけリフレッシュへ進み、それ以外は変更予定の反映へ進む
+            if (m_startupRefreshOnStartup && !m_startupRefreshStageRan) {
+                runStartupRefreshStage(generation);
+                return;
+            }
+            runStartupPendingStage(generation);
             return;
         }
 
@@ -905,7 +928,12 @@ void PackageController::runStartupSolverStage(quint64 generation)
                     } else {
                         emit errorOccurred(getError.isEmpty() ? tr("Failed to load solver settings") : getError);
                     }
-                    runStartupRefreshStage(generation);
+                    // リフレッシュが未実行で有効な場合だけリフレッシュへ進み、それ以外は変更予定の反映へ進む
+                    if (m_startupRefreshOnStartup && !m_startupRefreshStageRan) {
+                        runStartupRefreshStage(generation);
+                        return;
+                    }
+                    runStartupPendingStage(generation);
                 });
             });
         });
@@ -916,8 +944,8 @@ void PackageController::runStartupSolverStage(quint64 generation)
  * @brief 起動時処理のリフレッシュ段階を実行する
  * @param generation 起動時処理の世代
  *
- * リフレッシュ指定がある場合のみRefreshReposIfNeededを呼び出し成功時にloadReposする
- * リフレッシュの成否は保持して完了時にrefreshFinishedへ渡す
+ * リフレッシュ指定がある場合のみRefreshReposIfNeededを呼び出し、成否にかかわらず接続中はloadReposする
+ * リフレッシュの成否は保持して完了時にrefreshFinishedへ渡し、完了後はソルバー設定段階へ進む
  */
 void PackageController::runStartupRefreshStage(quint64 generation)
 {
@@ -925,7 +953,7 @@ void PackageController::runStartupRefreshStage(quint64 generation)
         return;
     }
     if (!m_startupRefreshOnStartup) {
-        finishStartupUpdatableStage(generation, true);
+        runStartupSolverStage(generation);
         return;
     }
 
@@ -936,17 +964,46 @@ void PackageController::runStartupRefreshStage(quint64 generation)
             return;
         }
         const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        m_startupRefreshOk = success;
         if (!success) {
             emit errorOccurred(errorText.isEmpty() ? tr("Repository refresh failed") : errorText);
         } else {
             setStatusMessage(tr("Repository refresh completed"));
-            loadRepos();
         }
         if (!m_connected) {
             finishStartupTasks(generation, false);
             return;
         }
-        finishStartupUpdatableStage(generation, success);
+        // 失敗時にも現在のリポジトリ一覧を表示できるよう接続中なら読み直す
+        loadRepos();
+        runStartupSolverStage(generation);
+    });
+}
+
+/**
+ * @brief 起動時処理の変更予定反映段階を実行する
+ * @param generation 起動時処理の世代
+ *
+ * refreshPendingChangesThenで起動時の依存解決を反映した変更予定を取得する
+ * 取得の失敗は起動の失敗とせず、完了後にfinishStartupUpdatableStageへ進む
+ */
+void PackageController::runStartupPendingStage(quint64 generation)
+{
+    // 終了済みまたは古い起動処理の応答では次の段階を開始しない
+    if (!m_startupRunning || generation != m_startupGeneration) {
+        return;
+    }
+    if (!m_connected) {
+        finishStartupTasks(generation, false);
+        return;
+    }
+
+    // 変更予定の非同期取得後に件数を取得し、起動処理の完了順序を保つ
+    refreshPendingChangesThen([this, generation](bool) {
+        if (!m_startupRunning || generation != m_startupGeneration) {
+            return;
+        }
+        finishStartupUpdatableStage(generation, m_startupRefreshOk);
     });
 }
 
@@ -970,13 +1027,10 @@ void PackageController::finishStartupUpdatableStage(quint64 generation, bool ref
 
     // この取得が起動中に要求された更新可能数の取得を兼ねるため、保留をここで消費する
     m_updateCountPending = false;
-    m_dbus->getPackagesByClassification(QStringLiteral("updatable"),
-                                        [this, generation, refreshOk](bool ok, const QString &errorName,
-                                                                       const QString &, const QVariantList &args) {
+    fetchUpdateCount([this, generation, refreshOk]() {
         if (!m_startupRunning || generation != m_startupGeneration) {
             return;
         }
-        applyUpdateCountResult(ok, errorName, args);
         finishStartupTasks(generation, refreshOk);
     });
 }

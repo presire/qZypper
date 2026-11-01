@@ -33,7 +33,7 @@ set_tests_properties(ZyppExecutor PROPERTIES TIMEOUT 30)
 add_executable(test-PackageListModel tst_PackageListModel.cpp
     ../src/gui/models/PackageListModel.cpp
     ../src/gui/models/PackageFilterProxyModel.cpp)
-target_include_directories(test-PackageListModel PRIVATE ../src/gui/models)
+target_include_directories(test-PackageListModel PRIVATE ../src/gui/models ../src/common)
 target_link_libraries(test-PackageListModel PRIVATE Qt6::Test)
 add_test(NAME PackageListModel COMMAND test-PackageListModel)
 set_tests_properties(PackageListModel PROPERTIES TIMEOUT 30)
@@ -99,6 +99,27 @@ add_test(NAME RepoSwitch COMMAND test-RepoSwitch)
 set_tests_properties(RepoSwitch PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
     ENVIRONMENT "ZYPPTMPDIR=/tmp")
 
+# サービス別パッケージの絞り込み (一時ルート、root / ネットワーク不要)
+add_executable(test-ServiceFilter tst_ServiceFilter.cpp)
+target_link_libraries(test-ServiceFilter PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME ServiceFilter COMMAND test-ServiceFilter)
+set_tests_properties(ServiceFilter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 名前指定の部分取り直し (一時ルート、root / ネットワーク不要)
+add_executable(test-PackagesByNames tst_PackagesByNames.cpp)
+target_link_libraries(test-PackagesByNames PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME PackagesByNames COMMAND test-PackagesByNames)
+set_tests_properties(PackagesByNames PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 更新可能パッケージ数の専用取得 (一時ルート、root / ネットワーク不要)
+add_executable(test-UpdatableCount tst_UpdatableCount.cpp)
+target_link_libraries(test-UpdatableCount PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME UpdatableCount COMMAND test-UpdatableCount)
+set_tests_properties(UpdatableCount PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
 # 自動更新対象の必要時リフレッシュ (一時ルート、root / ネットワーク不要)
 add_executable(test-RefreshIfNeeded tst_RefreshIfNeeded.cpp)
 target_link_libraries(test-RefreshIfNeeded PRIVATE qzypper-zypp Qt6::Test)
@@ -112,6 +133,13 @@ target_include_directories(test-SearchModeDetect PRIVATE ../src/gui/controllers)
 target_link_libraries(test-SearchModeDetect PRIVATE Qt6::Test)
 add_test(NAME SearchModeDetect COMMAND test-SearchModeDetect)
 set_tests_properties(SearchModeDetect PROPERTIES TIMEOUT 30)
+
+# 接続試行の世代管理 (ヘッダーオンリー、root / D-Bus不要)
+add_executable(test-ConnectAttemptGate tst_ConnectAttemptGate.cpp)
+target_include_directories(test-ConnectAttemptGate PRIVATE ../src/gui/controllers)
+target_link_libraries(test-ConnectAttemptGate PRIVATE Qt6::Test)
+add_test(NAME ConnectAttemptGate COMMAND test-ConnectAttemptGate)
+set_tests_properties(ConnectAttemptGate PROPERTIES TIMEOUT 30)
 
 # EULAを持つ一時プールでの承認・拒否 (root / ネットワーク不要)
 pkg_check_modules(LIBSOLV REQUIRED IMPORTED_TARGET libsolv)
@@ -128,3 +156,12 @@ foreach(test IN ITEMS ProductInfo PatchCategory PluginServiceTrust)
     add_test(NAME ${test} COMMAND test-${test})
     set_tests_properties(${test} PROPERTIES TIMEOUT 30)
 endforeach()
+
+# PackageRowの変換とPackageListReplyのD-Busマーシャリング (peer-to-peer、root不要)
+add_executable(test-PackageRow tst_PackageRow.cpp
+    ../src/gui/controllers/PackageListDecode.cpp
+    ../src/gui/controllers/DBusDemarshal.cpp)
+target_include_directories(test-PackageRow PRIVATE ../src/gui/controllers)
+target_link_libraries(test-PackageRow PRIVATE qzypper-common Qt6::Test Qt6::DBus)
+add_test(NAME PackageRow COMMAND test-PackageRow)
+set_tests_properties(PackageRow PROPERTIES TIMEOUT 60)

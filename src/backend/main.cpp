@@ -23,6 +23,8 @@ int main(int argc, char *argv[])
 
     // InstallLocalRpms(ah, as)の記述子配列をデマーシャリングするため登録する
     qDBusRegisterMetaType<QList<QDBusUnixFileDescriptor>>();
+    // 一覧系V2メソッドのPackageListReplyをデマーシャリングできるようにする
+    qZypper::registerPackageListReplyType();
 
     // QDBusContextを持つオブジェクトを直接登録する
     qZypper::PackageManagerAdaptor adaptor;

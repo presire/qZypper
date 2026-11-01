@@ -31,17 +31,30 @@ PackageFilterProxyModel::PackageFilterProxyModel(QObject *parent)
     // ソースの値変化に追従して再フィルタ/再ソートする
     setDynamicSortFilter(true);
 
-    // プロキシ自身の行構成が変わったら選択表示の変化を通知する
+    // プロキシ自身の行構成が変わると、表示中の選択行数も変わりうる
+    // 以下の4つの接続は、いずれも選択行数のキャッシュを破棄してからselectionChangedを発行する
+
+    // 行が挿入されたとき (rowsInserted)
     connect(this, &QAbstractItemModel::rowsInserted, this, [this]() {
+        m_selectedVisibleCountCache = -1;
         emit selectionChanged();
     });
+
+    // 行が削除されたとき (rowsRemoved)
     connect(this, &QAbstractItemModel::rowsRemoved, this, [this]() {
+        m_selectedVisibleCountCache = -1;
         emit selectionChanged();
     });
+
+    // モデルがリセットされたとき (modelReset)
     connect(this, &QAbstractItemModel::modelReset, this, [this]() {
+        m_selectedVisibleCountCache = -1;
         emit selectionChanged();
     });
+
+    // 並べ替えで行の並びが変わったとき (layoutChanged)
     connect(this, &QAbstractItemModel::layoutChanged, this, [this]() {
+        m_selectedVisibleCountCache = -1;
         emit selectionChanged();
     });
 }
@@ -61,9 +74,10 @@ void PackageFilterProxyModel::setSourceModel(QAbstractItemModel *sourceModel)
     QSortFilterProxyModel::setSourceModel(sourceModel);
 
     if (PackageListModel *model = qobject_cast<PackageListModel *>(sourceModel)) {
-        // ソースの選択変更をプロキシの選択変更として通知する
+        // PackageListModel::selectionChangedを受け取り、選択行数のキャッシュを破棄してプロキシの選択変更として通知する
         m_selectionConnection = connect(model, &PackageListModel::selectionChanged,
                                         this, [this]() {
+            m_selectedVisibleCountCache = -1;
             emit selectionChanged();
         });
     }
@@ -86,6 +100,9 @@ void PackageFilterProxyModel::setStatusMask(int mask)
     m_statusMask = mask;
     invalidateFilter();
     emit statusMaskChanged();
+
+    // フィルタ条件の変更で表示中の行が変わるため、選択行数のキャッシュを破棄して選択表示の更新を通知する
+    m_selectedVisibleCountCache = -1;
     emit selectionChanged();
 }
 
@@ -142,6 +159,9 @@ void PackageFilterProxyModel::setHideDevel(bool hide)
     m_hideDevel = hide;
     invalidateFilter();
     emit hideDevelChanged();
+
+    // フィルタ条件の変更で表示中の行が変わるため、選択行数のキャッシュを破棄して選択表示の更新を通知する
+    m_selectedVisibleCountCache = -1;
     emit selectionChanged();
 }
 
@@ -158,6 +178,9 @@ void PackageFilterProxyModel::setHideDebug(bool hide)
     m_hideDebug = hide;
     invalidateFilter();
     emit hideDebugChanged();
+
+    // フィルタ条件の変更で表示中の行が変わるため、選択行数のキャッシュを破棄して選択表示の更新を通知する
+    m_selectedVisibleCountCache = -1;
     emit selectionChanged();
 }
 
@@ -365,11 +388,17 @@ QStringList PackageFilterProxyModel::visibleNames() const
 
 /**
  * @brief 選択かつ表示中の行数を返す
+ *
+ * 行数の算出は表示中の全行を走査するため、結果をキャッシュして繰り返しの呼び出しを避ける
+ * キャッシュはselectionChangedを発行するすべての箇所で破棄する
  * @return 重複を除いた選択行数
  */
 int PackageFilterProxyModel::selectedVisibleCount() const
 {
-    return selectedVisibleNames().size();
+    // キャッシュが無効 (-1) のときだけ再計算する
+    if (m_selectedVisibleCountCache < 0)
+        m_selectedVisibleCountCache = selectedVisibleNames().size();
+    return m_selectedVisibleCountCache;
 }
 
 /**
@@ -396,8 +425,8 @@ int PackageFilterProxyModel::indexOfNamePrefix(const QString &prefix) const
         return -1;
     const int rows = rowCount();
     for (int row = 0; row < rows; ++row) {
-        const QString name =
-            data(index(row, 0), PackageListModel::NameRole).toString().toLower();
+        // 小文字化済みのSortKeyRoleを使い、行ごとのtoLower()を避ける
+        const QString name = data(index(row, 0), PackageListModel::SortKeyRole).toString();
         if (name.startsWith(p))
             return row;
     }
@@ -463,8 +492,9 @@ bool PackageFilterProxyModel::lessThan(const QModelIndex &left,
         return a < b;
     }
 
-    const QString a = source->data(left, PackageListModel::NameRole).toString().toLower();
-    const QString b = source->data(right, PackageListModel::NameRole).toString().toLower();
+    // 小文字化済みのSortKeyRoleを比較し、比較のたびに発生するtoLower()を避ける (大文字小文字は区別しない)
+    const QString a = source->data(left, PackageListModel::SortKeyRole).toString();
+    const QString b = source->data(right, PackageListModel::SortKeyRole).toString();
     return a < b;
 }
 

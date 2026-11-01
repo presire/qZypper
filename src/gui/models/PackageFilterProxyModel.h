@@ -187,6 +187,8 @@ public:
 
     /**
      * @brief 選択かつ表示中の行数を返す
+     *
+     * 結果はキャッシュし、selectionChangedを発行するすべての箇所で破棄する
      * @return 重複を除いた選択行数
      */
     int selectedVisibleCount() const;
@@ -276,6 +278,7 @@ private:
     bool m_hideDebug = true;                        // 既定: debugパッケージを非表示
     QString m_anchorKey;                            // 選択範囲の起点となる安定キー
     QMetaObject::Connection m_selectionConnection;  // ソース選択変更の接続
+    mutable int m_selectedVisibleCountCache = -1;   // 表示中の選択行数のキャッシュ (-1で無効、const関数から更新するためmutable)
 };
 
 } // namespace qZypper

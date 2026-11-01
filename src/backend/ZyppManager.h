@@ -124,11 +124,13 @@ public:
     bool refreshService(const std::string& alias);                                // サービスのリフレッシュ
 
     // パッケージ検索・一覧
-    std::vector<PackageInfo> searchPackages(const std::string& query, int flags);    // パッケージの検索
-    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options);         // 拡張検索 (PoolQuery)
-    PackageDetails getPackageDetails(const std::string& name) const;                 // パッケージ詳細の取得
-    std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;  // リポジトリ別のパッケージ
-    std::vector<PackageInfo> getPendingChanges() const;                              // 変更予定一覧の取得 (全プール横断)
+    std::vector<PackageInfo> searchPackages(const std::string& query, int flags);              // パッケージの検索
+    std::vector<PackageInfo> searchPackagesEx(const SearchOptions& options);                   // 拡張検索 (PoolQuery)
+    PackageDetails getPackageDetails(const std::string& name) const;                           // パッケージ詳細の取得
+    std::vector<PackageInfo> getPackagesByRepo(const std::string& repoAlias) const;            // リポジトリ別のパッケージ
+    std::vector<PackageInfo> getPackagesByService(const std::string& serviceAlias) const;      // サービス別のパッケージ
+    std::vector<PackageInfo> getPackagesByNames(const std::vector<std::string>& names) const;  // 名前指定のパッケージ
+    std::vector<PackageInfo> getPendingChanges() const;                                        // 変更予定一覧の取得 (全プール横断)
 
     // RPMグループ・言語 (ロケール)
     /** @brief RPMグループのツリーを件数付きで取得する */
@@ -146,6 +148,7 @@ public:
 
     // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/retracted/retractedInstalled/ptf/locked)
     std::vector<PackageInfo> getPackagesByClassification(const std::string& cls);
+    std::size_t countUpdatablePackages() const;  // 更新可能なパッケージ数 (updatable分類と同じ判定)
 
     // パターン・パッチ
     std::vector<PatternInfo> getPatterns() const;                                         // パターン一覧の取得

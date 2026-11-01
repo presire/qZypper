@@ -3,49 +3,50 @@
 #include <initializer_list>
 #include "PackageListModel.h"
 #include "PackageFilterProxyModel.h"
+#include "PackageRow.h"
 
 using namespace qZypper;
 
 namespace {
 
 /**
- * @brief テスト用のパッケージ情報マップを生成する
+ * @brief テスト用のパッケージ行を生成する
  * @param name パッケージ名
  * @param status 状態を表す整数値
  * @param arch アーキテクチャ (既定はx86_64)
  * @param repo リポジトリ別名 (既定はoss)
  * @param version バージョン (既定は1.0)
- * @return PackageListModelが扱うキーを埋めたマップ
+ * @return 一覧表示に使う属性を埋めた行
  */
-QVariantMap pkg(const QString &name, int status,
-                const QString &arch = QStringLiteral("x86_64"),
-                const QString &repo = QStringLiteral("oss"),
-                const QString &version = QStringLiteral("1.0"))
+PackageRow pkg(const QString &name, int status,
+               const QString &arch = QStringLiteral("x86_64"),
+               const QString &repo = QStringLiteral("oss"),
+               const QString &version = QStringLiteral("1.0"))
 {
-    QVariantMap m;
-    m.insert(QStringLiteral("name"), name);
-    m.insert(QStringLiteral("arch"), arch);
-    m.insert(QStringLiteral("repoAlias"), repo);
-    m.insert(QStringLiteral("version"), version);
-    m.insert(QStringLiteral("installedVersion"), QString());
-    m.insert(QStringLiteral("summary"), QStringLiteral("summary of ") + name);
-    m.insert(QStringLiteral("repoName"), repo);
-    m.insert(QStringLiteral("size"), QVariant::fromValue<qulonglong>(1024));
-    m.insert(QStringLiteral("status"), status);
-    return m;
+    PackageRow row;
+    row.name = name;
+    row.arch = arch;
+    row.repoAlias = repo;
+    row.repoName = repo;
+    row.version = version;
+    row.installedVersion = QString();
+    row.summary = QStringLiteral("summary of ") + name;
+    row.size = 1024;
+    row.status = status;
+    return row;
 }
 
 /**
- * @brief 可変個のパッケージマップをQVariantListへまとめる
- * @param maps 変換するパッケージマップの一覧
- * @return 入力順を保ったQVariantList
+ * @brief 可変個のパッケージ行を一覧へまとめる
+ * @param rows 変換するパッケージ行の一覧
+ * @return 入力順を保ったPackageRows
  */
-QVariantList toList(std::initializer_list<QVariantMap> maps)
+PackageRows toList(std::initializer_list<PackageRow> rows)
 {
-    QVariantList out;
-    out.reserve(static_cast<int>(maps.size()));
-    for (const QVariantMap &m : maps)
-        out.append(m);
+    PackageRows out;
+    out.reserve(static_cast<int>(rows.size()));
+    for (const PackageRow &row : rows)
+        out.append(row);
     return out;
 }
 
@@ -190,8 +191,8 @@ private slots:
     /** @brief 一覧の入れ替え (リポジトリ切替等) では行単位の通知をせず、modelResetを1回だけ送信することを検証する */
     void largeReplacementResetsModel()
     {
-        QVariantList before;
-        QVariantList after;
+        PackageRows before;
+        PackageRows after;
         for (int i = 0; i < 200; ++i) {
             before.append(pkg(QStringLiteral("a%1").arg(i, 3, 10, QLatin1Char('0')), 1));
             after.append(pkg(QStringLiteral("b%1").arg(i, 3, 10, QLatin1Char('0')), 1));
@@ -231,14 +232,16 @@ private slots:
     /** @brief 安定キーがアーキテクチャで区別し、リポジトリでは区別しないことを検証する */
     void stableKeyDistinguishesArchButNotRepo()
     {
-        const QVariantMap a = pkg(QStringLiteral("x"), 0,
-                                  QStringLiteral("x86_64"), QStringLiteral("oss"));
-        const QVariantMap b = pkg(QStringLiteral("x"), 0,
-                                  QStringLiteral("i586"), QStringLiteral("oss"));
-        const QVariantMap c = pkg(QStringLiteral("x"), 0,
-                                  QStringLiteral("x86_64"), QStringLiteral("update"));
-        QVERIFY(PackageListModel::stableKey(a) != PackageListModel::stableKey(b));
-        QCOMPARE(PackageListModel::stableKey(a), PackageListModel::stableKey(c));
+        const PackageRow a = pkg(QStringLiteral("x"), 0,
+                                 QStringLiteral("x86_64"), QStringLiteral("oss"));
+        const PackageRow b = pkg(QStringLiteral("x"), 0,
+                                 QStringLiteral("i586"), QStringLiteral("oss"));
+        const PackageRow c = pkg(QStringLiteral("x"), 0,
+                                 QStringLiteral("x86_64"), QStringLiteral("update"));
+        QVERIFY(PackageListModel::stableKey(a.toVariantMap())
+                != PackageListModel::stableKey(b.toVariantMap()));
+        QCOMPARE(PackageListModel::stableKey(a.toVariantMap()),
+                 PackageListModel::stableKey(c.toVariantMap()));
     }
 
     /** @brief 対象リポジトリ変更で行を移動せず、dataChangedのみを出すことを検証する */
@@ -424,8 +427,8 @@ private slots:
     /** @brief リセットで消えた行の選択キーが除去されることを検証する */
     void staleSelectionKeysPurgedOnReset()
     {
-        QVariantList before;
-        QVariantList after;
+        PackageRows before;
+        PackageRows after;
         for (int i = 0; i < 200; ++i) {
             before.append(pkg(QStringLiteral("a%1").arg(i, 3, 10, QLatin1Char('0')), 3));
             after.append(pkg(QStringLiteral("b%1").arg(i, 3, 10, QLatin1Char('0')), 3));
@@ -711,33 +714,460 @@ private slots:
         QCOMPARE(model.countWithStatus(1), 0);
     }
 
-    /** @brief updatableロールがマップの値を返し、キーが無い場合 (旧版のバックエンド) はfalseになることを検証する */
-    void updatableRole()
+    /** @brief 旧形式のマップにupdatableキーが無い場合、行とロールがfalseになることを検証する */
+    void updatableDefaultsToFalseWhenKeyMissing()
     {
-        // 準備 : 更新候補ありの行、更新候補なしの行、キーを持たない行
-        QVariantMap withUpdate = pkg(QStringLiteral("a"), 3);
-        withUpdate.insert(QStringLiteral("updatable"), true);
-        QVariantMap withoutUpdate = pkg(QStringLiteral("b"), 3);
-        withoutUpdate.insert(QStringLiteral("updatable"), false);
+        // 準備 : 旧版のバックエンドが返すupdatableキーを持たないマップ
+        QVariantMap legacy;
+        legacy.insert(QStringLiteral("name"), QStringLiteral("a"));
+        legacy.insert(QStringLiteral("arch"), QStringLiteral("x86_64"));
+        legacy.insert(QStringLiteral("status"), 3);
 
+        // 確認 : fromVariantMapはキー無しをfalseとして扱う
+        const PackageRow row = PackageRow::fromVariantMap(legacy);
+        QVERIFY(!row.updatable);
+
+        // 確認 : モデルもupdatableロールとしてfalseを返す
         PackageListModel model;
-        model.applyPackages(toList({withUpdate, withoutUpdate, pkg(QStringLiteral("c"), 3)}));
-
-        // 確認 : ロール名と各行の値
+        model.applyPackages(PackageRows{row});
         QCOMPARE(model.roleNames().value(PackageListModel::UpdatableRole), QByteArray("updatable"));
-        QVERIFY(model.data(model.index(0, 0), PackageListModel::UpdatableRole).toBool());
-        QVERIFY(!model.data(model.index(1, 0), PackageListModel::UpdatableRole).toBool());
-        QVERIFY(!model.data(model.index(2, 0), PackageListModel::UpdatableRole).toBool());
-
-        // 実行 : 同じ行のupdatableだけをtrueからfalseへ変えて一覧を再適用する
-        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
-        withUpdate.insert(QStringLiteral("updatable"), false);
-        model.applyPackages(toList({withUpdate, withoutUpdate, pkg(QStringLiteral("c"), 3)}));
-
-        // 確認 : 変更行の通知が届き、新しい値を返す
-        QVERIFY(changed.count() >= 1);
-        QCOMPARE(changed.first().at(0).value<QModelIndex>().row(), 0);
         QVERIFY(!model.data(model.index(0, 0), PackageListModel::UpdatableRole).toBool());
+    }
+
+    /** @brief 大文字小文字の混在した名前が従来と同じ小文字比較の順で並ぶことを検証する */
+    void mixedCaseNamesSortLikeLowercase()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("Charlie"), 3),
+                                    pkg(QStringLiteral("alpha"), 3),
+                                    pkg(QStringLiteral("Bravo"), 3)}));
+
+        PackageFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+        proxy.setSortColumn(PackageFilterProxyModel::NameColumn);
+        proxy.setSortAscending(true);
+
+        // 確認 : 小文字へ揃えた比較と同じ順序になる
+        QCOMPARE(proxy.visibleNames(),
+                 QStringList({QStringLiteral("alpha"), QStringLiteral("Bravo"),
+                              QStringLiteral("Charlie")}));
+    }
+
+    /** @brief rowForKeyが挿入・削除・リセット後も現在の行番号を返すことを検証する */
+    void rowForKeyFollowsStructuralChanges()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("c"), 3)}));
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("a"))), 0);
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("c"))), 1);
+
+        // 中間への挿入
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("b"), 3),
+                                    pkg(QStringLiteral("c"), 3)}));
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("b"))), 1);
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("c"))), 2);
+
+        // 先頭の削除
+        model.applyPackages(toList({pkg(QStringLiteral("b"), 3),
+                                    pkg(QStringLiteral("c"), 3)}));
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("a"))), -1);
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("b"))), 0);
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("c"))), 1);
+
+        // 並び順の変更 (リセット)
+        model.applyPackages(toList({pkg(QStringLiteral("c"), 3),
+                                    pkg(QStringLiteral("b"), 3)}));
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("c"))), 0);
+        QCOMPARE(model.rowForKey(keyForName(QStringLiteral("b"))), 1);
+
+        // 不明キーと空モデル
+        QCOMPARE(model.rowForKey(QStringLiteral("missing")), -1);
+        PackageListModel empty;
+        QCOMPARE(empty.rowForKey(keyForName(QStringLiteral("a"))), -1);
+    }
+
+    /** @brief selectedVisibleCountが選択・フィルタ・行削除の後に正しくなることを検証する */
+    void selectedVisibleCountFollowsChanges()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("b"), 3),
+                                    pkg(QStringLiteral("c"), 6)}));
+
+        PackageFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+        QCOMPARE(proxy.selectedVisibleCount(), 0);
+
+        // 選択変更 : 2件を選択する
+        proxy.toggleSelected(0);
+        proxy.toggleSelected(1);
+        QCOMPARE(proxy.selectedVisibleCount(), 2);
+
+        // フィルタ変更 : 状態6の行だけを除外しても表示中の選択件数は変わらない
+        proxy.setStatusMask(1 << 3);
+        QCOMPARE(proxy.selectedVisibleCount(), 2);
+
+        // フィルタ変更 : 状態6の行だけを表示し、選択済みの行を隠す
+        proxy.setStatusMask(1 << 6);
+        QCOMPARE(proxy.selectedVisibleCount(), 0);
+
+        // 行削除 : 表示へ戻した後、選択済みの行を一覧から消す
+        proxy.setStatusMask(0x3FF);
+        QCOMPARE(proxy.selectedVisibleCount(), 2);
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("c"), 6)}));
+        QCOMPARE(proxy.selectedVisibleCount(), 1);
+    }
+
+    /** @brief indexOfNamePrefixが大文字の入力でも同じ行を返すことを検証する */
+    void indexOfNamePrefixIsCaseInsensitive()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("alpha"), 3),
+                                    pkg(QStringLiteral("Bravo"), 3),
+                                    pkg(QStringLiteral("charlie"), 3)}));
+
+        PackageFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+
+        const int lowercase = proxy.indexOfNamePrefix(QStringLiteral("bra"));
+        QCOMPARE(lowercase, 1);
+        QCOMPARE(proxy.indexOfNamePrefix(QStringLiteral("BRA")), lowercase);
+        QCOMPARE(proxy.indexOfNamePrefix(QStringLiteral("Zzz")), -1);
+    }
+
+    /**
+     * @brief 構造変更シグナルの送出時点でrowForKeyが現在の行番号を返すことを検証する
+     *
+     * rowsInserted/rowsRemoved/modelResetのスロットはend*()の内部で同期的に呼ばれるため、
+     * その時点の索引がm_entriesと一致していなければならない
+     */
+    void rowIndexIsCurrentInsideStructuralSignals()
+    {
+        // rowsInserted : [a,b] の先頭へ x を挿入し、シグナル送出中の索引を確認する
+        {
+            PackageListModel model;
+            int rowOfB = -2;
+            int rowOfX = -2;
+            // rowsInsertedの同期通知中に挿入後の索引を記録する
+            const QMetaObject::Connection connection = connect(
+                &model, &QAbstractItemModel::rowsInserted, &model,
+                [&model, &rowOfB, &rowOfX]() {
+                    rowOfB = model.rowForKey(keyForName(QStringLiteral("b")));
+                    rowOfX = model.rowForKey(keyForName(QStringLiteral("x")));
+                },
+                Qt::DirectConnection);
+            QVERIFY(connection);
+
+            model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                        pkg(QStringLiteral("b"), 3)}));
+            model.applyPackages(toList({pkg(QStringLiteral("x"), 3),
+                                        pkg(QStringLiteral("a"), 3),
+                                        pkg(QStringLiteral("b"), 3)}));
+            disconnect(connection);
+
+            QCOMPARE(rowOfB, 2);
+            QCOMPARE(rowOfX, 0);
+        }
+
+        // rowsRemoved : [a,b] から a を削除し、シグナル送出中の索引を確認する
+        {
+            PackageListModel model;
+            int rowOfB = -2;
+            int rowOfA = -2;
+            // rowsRemovedの同期通知中に削除後の索引を記録する
+            const QMetaObject::Connection connection = connect(
+                &model, &QAbstractItemModel::rowsRemoved, &model,
+                [&model, &rowOfB, &rowOfA]() {
+                    rowOfB = model.rowForKey(keyForName(QStringLiteral("b")));
+                    rowOfA = model.rowForKey(keyForName(QStringLiteral("a")));
+                },
+                Qt::DirectConnection);
+            QVERIFY(connection);
+
+            model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                        pkg(QStringLiteral("b"), 3)}));
+            model.applyPackages(toList({pkg(QStringLiteral("b"), 3)}));
+            disconnect(connection);
+
+            QCOMPARE(rowOfB, 0);
+            QCOMPARE(rowOfA, -1);
+        }
+
+        // modelReset : kMaxIncrementalRowChanges (64) を超える入れ替えでリセット経路を通る
+        {
+            PackageListModel model;
+            PackageRows before;
+            PackageRows after;
+            for (int i = 0; i < 100; ++i) {
+                before.append(pkg(QStringLiteral("old%1").arg(i), 3));
+                after.append(pkg(QStringLiteral("new%1").arg(i), 3));
+            }
+
+            int rowOfNew = -2;
+            int rowOfOld = -2;
+            // modelResetの同期通知中に置き換え後の索引を記録する
+            const QMetaObject::Connection connection = connect(
+                &model, &QAbstractItemModel::modelReset, &model,
+                [&model, &rowOfNew, &rowOfOld]() {
+                    rowOfNew = model.rowForKey(keyForName(QStringLiteral("new0")));
+                    rowOfOld = model.rowForKey(keyForName(QStringLiteral("old0")));
+                },
+                Qt::DirectConnection);
+            QVERIFY(connection);
+
+            model.applyPackages(before);
+            model.applyPackages(after);
+            disconnect(connection);
+
+            QCOMPARE(rowOfNew, 0);
+            QCOMPARE(rowOfOld, -1);
+        }
+    }
+
+    /**
+     * @brief 状態だけが変わった行の置き換えでdataChangedが1回だけ送られることを検証する
+     */
+    void updateRowsStatusChangeEmitsDataChanged()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 0),
+                                    pkg(QStringLiteral("b"), 0)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 3)}))
+                == RowUpdateResult::Applied);
+
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(changed.first().at(0).toModelIndex().row(), 0);
+        QCOMPARE(changed.first().at(1).toModelIndex().row(), 0);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(model.rowCount(), 2);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::StatusRole).toInt(), 3);
+    }
+
+    /**
+     * @brief 変化した行が複数ある場合に、行ごとに1回のdataChangedを送ることを検証する
+     */
+    void updateRowsNotifiesEachChangedRow()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 0),
+                                    pkg(QStringLiteral("b"), 0)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 3),
+                                         pkg(QStringLiteral("b"), 6)}))
+                == RowUpdateResult::Applied);
+
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(changed.at(0).at(0).toModelIndex().row(), 0);
+        QCOMPARE(changed.at(1).at(0).toModelIndex().row(), 1);
+    }
+
+    /**
+     * @brief モデルに無い名前の行を無視し、行数を変えないことを検証する
+     */
+    void updateRowsIgnoresUnknownNames()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("unknown"), 0)}))
+                == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(model.rowCount(), 1);
+
+        // 未知の名前と既知の名前が混在する場合は、既知の行だけを置き換える
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 0),
+                                         pkg(QStringLiteral("unknown"), 0)}))
+                == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(removed.count(), 0);
+        QCOMPARE(model.rowCount(), 1);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::StatusRole).toInt(), 0);
+    }
+
+    /**
+     * @brief 内容が同一の行ではdataChangedを送らないことを検証する
+     */
+    void updateRowsIgnoresIdenticalRows()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("b"), 3)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 3),
+                                         pkg(QStringLiteral("b"), 3)}))
+                == RowUpdateResult::Applied);
+
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(model.rowCount(), 2);
+    }
+
+    /**
+     * @brief 置き換え後も選択件数と状態別行数が現在の行と一致することを検証する
+     */
+    void updateRowsKeepsSelectionCounts()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("b"), 3)}));
+
+        PackageFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+
+        model.setRowSelected(0, true);
+        QCOMPARE(proxy.selectedVisibleCount(), 1);
+        QCOMPARE(model.countWithStatus(3), 2);
+        QCOMPARE(model.countWithStatus(0), 0);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 0)}))
+                == RowUpdateResult::Applied);
+
+        QCOMPARE(model.countWithStatus(3), 1);
+        QCOMPARE(model.countWithStatus(0), 1);
+        // 選択行は表示されたままなので表示中の選択件数は変わらない
+        QCOMPARE(proxy.selectedVisibleCount(), 1);
+        QCOMPARE(model.selectedCount(), 1);
+    }
+
+    /**
+     * @brief 同じ名前でアーキテクチャが変わった場合はNeedsFullReloadで何も変更しないことを検証する
+     */
+    void updateRowsRequiresFullReloadOnArchChange()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 3,
+                                             QStringLiteral("noarch"))}))
+                == RowUpdateResult::NeedsFullReload);
+
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(model.rowCount(), 1);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::ArchRole).toString(),
+                 QStringLiteral("x86_64"));
+    }
+
+    /**
+     * @brief モデル内で名前が重複している場合はNeedsFullReloadで何も変更しないことを検証する
+     */
+    void updateRowsRequiresFullReloadForDuplicateNames()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3,
+                                        QStringLiteral("x86_64")),
+                                    pkg(QStringLiteral("a"), 3,
+                                        QStringLiteral("noarch"))}));
+        QCOMPARE(model.rowCount(), 2);
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+
+        // 安定キーが一致する行があっても、名前が重複しているため特定できない
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 0,
+                                             QStringLiteral("x86_64"))}))
+                == RowUpdateResult::NeedsFullReload);
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(model.rowCount(), 2);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::StatusRole).toInt(), 3);
+
+        // 一覧を取り直して名前の重複が解消すれば、再び置き換えできる
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3)}));
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 0)}))
+                == RowUpdateResult::Applied);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::StatusRole).toInt(), 0);
+    }
+
+    /**
+     * @brief バージョン・リポジトリ・インストール済み版・更新可否だけの変化を置き換えることを検証する
+     */
+    void updateRowsReplacesAttributeChanges()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3)}));
+
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        QSignalSpy inserted(&model, &QAbstractItemModel::rowsInserted);
+        QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
+        int expectedChanges = 0;
+
+        PackageRow row = pkg(QStringLiteral("a"), 3);
+        row.version = QStringLiteral("2.0");
+        QVERIFY(model.updateRows(toList({row})) == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), ++expectedChanges);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::VersionRole).toString(),
+                 QStringLiteral("2.0"));
+
+        row.repoAlias = QStringLiteral("update");
+        QVERIFY(model.updateRows(toList({row})) == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), ++expectedChanges);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::RepoAliasRole).toString(),
+                 QStringLiteral("update"));
+
+        row.installedVersion = QStringLiteral("1.0");
+        QVERIFY(model.updateRows(toList({row})) == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), ++expectedChanges);
+        QCOMPARE(model.data(model.index(0, 0),
+                            PackageListModel::InstalledVersionRole).toString(),
+                 QStringLiteral("1.0"));
+
+        row.updatable = true;
+        QVERIFY(model.updateRows(toList({row})) == RowUpdateResult::Applied);
+        QCOMPARE(changed.count(), ++expectedChanges);
+        QCOMPARE(model.data(model.index(0, 0), PackageListModel::UpdatableRole).toBool(), true);
+
+        QCOMPARE(inserted.count(), 0);
+        QCOMPARE(removed.count(), 0);
+        QCOMPARE(model.rowCount(), 1);
+    }
+
+    /**
+     * @brief 状態フィルタ付きプロキシで、置き換えた行が表示から外れる/戻ることを検証する
+     */
+    void updateRowsFollowsStatusFilteredProxy()
+    {
+        PackageListModel model;
+        model.applyPackages(toList({pkg(QStringLiteral("a"), 3),
+                                    pkg(QStringLiteral("b"), 3)}));
+
+        PackageFilterProxyModel proxy;
+        proxy.setSourceModel(&model);
+        proxy.setStatusMask(1 << 3);
+        QCOMPARE(proxy.rowCount(), 2);
+
+        model.setRowSelected(0, true);
+        QCOMPARE(proxy.selectedVisibleCount(), 1);
+
+        // 状態3 -> 0 : フィルタから外れる
+        QSignalSpy removed(&proxy, &QAbstractItemModel::rowsRemoved);
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 0)}))
+                == RowUpdateResult::Applied);
+        QCOMPARE(removed.count(), 1);
+        QCOMPARE(proxy.rowCount(), 1);
+        QCOMPARE(proxy.selectedVisibleCount(), 0);
+
+        // 状態0 -> 3 : フィルタへ戻る (選択は維持されている)
+        QSignalSpy inserted(&proxy, &QAbstractItemModel::rowsInserted);
+        QVERIFY(model.updateRows(toList({pkg(QStringLiteral("a"), 3)}))
+                == RowUpdateResult::Applied);
+        QCOMPARE(inserted.count(), 1);
+        QCOMPARE(proxy.rowCount(), 2);
+        QCOMPARE(proxy.selectedVisibleCount(), 1);
     }
 };
 

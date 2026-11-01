@@ -33,6 +33,7 @@
     </method>
 
     <!-- 要素はa{sv}を格納したvariant (以下のav戻り値も同様) -->
+    <!-- V2の一覧系は構造体 (a(ss)a(sssssitib)) を返し、旧メソッドは互換のため残す -->
     <method name="GetRepos">
       <arg direction="out" type="av" name="repos"/>
     </method>
@@ -134,8 +135,22 @@
       <arg direction="in"  type="i" name="searchFlags"/>
     </method>
 
+    <method name="SearchPackagesV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="results"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="query"/>
+      <arg direction="in"  type="i" name="searchFlags"/>
+    </method>
+
     <method name="SearchPackagesEx">
       <arg direction="out" type="av" name="results"/>
+      <arg direction="in"  type="a{sv}" name="options"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
+    </method>
+
+    <method name="SearchPackagesExV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="results"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
       <arg direction="in"  type="a{sv}" name="options"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.In0" value="QVariantMap"/>
     </method>
@@ -151,6 +166,24 @@
       <arg direction="in"  type="s" name="repoAlias"/>
     </method>
 
+    <method name="GetPackagesByRepoV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="repoAlias"/>
+    </method>
+
+    <method name="GetPackagesByService">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="alias"/>
+    </method>
+
+    <method name="GetPackagesByNames">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="as" name="names"/>
+    </method>
+
     <!-- 製品一覧 -->
     <method name="GetProducts">
       <arg direction="out" type="av" name="products"/>
@@ -162,6 +195,12 @@
 
     <method name="GetPackagesByPattern">
       <arg direction="out" type="av" name="packages"/>
+      <arg direction="in"  type="s" name="patternName"/>
+    </method>
+
+    <method name="GetPackagesByPatternV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
       <arg direction="in"  type="s" name="patternName"/>
     </method>
 
@@ -180,6 +219,12 @@
       <arg direction="in"  type="s" name="path"/>
     </method>
 
+    <method name="GetPackagesByRpmGroupV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="path"/>
+    </method>
+
     <method name="GetLocales">
       <arg direction="out" type="av" name="locales"/>
     </method>
@@ -189,9 +234,25 @@
       <arg direction="in"  type="s" name="code"/>
     </method>
 
+    <method name="GetPackagesByLocaleV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="code"/>
+    </method>
+
     <method name="GetPackagesByClassification">
       <arg direction="out" type="av" name="packages"/>
       <arg direction="in"  type="s" name="cls"/>
+    </method>
+
+    <method name="GetPackagesByClassificationV2">
+      <arg direction="out" type="(a(ss)a(sssssitib))" name="packages"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="qZypper::PackageListReply"/>
+      <arg direction="in"  type="s" name="cls"/>
+    </method>
+
+    <method name="GetUpdatableCount">
+      <arg direction="out" type="u" name="count"/>
     </method>
 
     <!-- 変更予定一覧 -->

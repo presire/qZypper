@@ -51,7 +51,8 @@ QVariantMap resultAfterPendingRefresh(QVariantMap result, bool refreshed, bool c
 /**
  * @brief パッケージのステータスを変更し、依存関係を非同期で解決する
  *
- * 変更後はソルバーを実行し、成功時にパッケージ一覧と変更予定を再取得する
+ * 状態変更と依存解決の後、差分を適用できる場合は影響を受ける行だけを取り直す
+ * 差分を使えない場合は一覧と変更予定を全件取り直す
  *
  * @param name パッケージ名
  * @param status 新しいステータス (PackageStatus)
@@ -62,20 +63,8 @@ void PackageController::setPackageStatus(const QString &name, int status)
     if (m_busy) return;
 
     setBusy(true);
-    m_dbus->setPackageStatus(name, status, [this](
-                                 bool ok, const QString &, const QString &, const QVariantList &) {
-        if (!ok) {
-            emit errorOccurred(m_dbus->lastError());
-            setBusy(false);
-            return;
-        }
-        m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &, const QVariantList &) {
-            if (!rok)
-                emit errorOccurred(m_dbus->lastError());
-            refreshAfterEdit(false, [this](bool) {
-                setBusy(false);
-            });
-        });
+    refreshAfterStatusEdit(name, status, [this](bool) {
+        setBusy(false);
     });
 }
 
@@ -257,7 +246,7 @@ void PackageController::togglePatternStatus(const QString &patternName)
             if (!m_dbus->isConnected()) {
                 // バックエンドがクラッシュした場合、パッケージリストのみ再取得
                 qWarning() << "Backend disconnected during pattern resolve";
-                m_packages = QVariantList();
+                m_packages.clear();
                 if (sourceChanged)
                     ++m_listGeneration;
                 emit packagesChanged();
@@ -919,7 +908,7 @@ void PackageController::resolveBatchAction(quint64 token, const QVariantMap &res
 void PackageController::completeBatchAction(quint64 token, QVariantMap result, bool solverOk)
 {
     result[QStringLiteral("success")] = solverOk;
-    requestPackageList(true, [this, token, result, solverOk](bool listOk, const QVariantList &) {
+    requestPackageList(true, [this, token, result, solverOk](bool listOk) {
         if (!isBatchActive(token)) {
             return;
         }

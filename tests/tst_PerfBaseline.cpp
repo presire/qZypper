@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <vector>
 #include "PackageInfo.h"
+#include "PackageRow.h"
 #include "RepoInfo.h"
 #include "ZyppManager.h"
 #include "PackageListModel.h"
@@ -98,29 +99,25 @@ private slots:
         printPerf("repo-max", timer.elapsed(),
                   static_cast<int>(largestRepoPackages.size()));
 
-        // (d) (a)の結果をD-Bus転送形式へ変換する時間
+        // (d) (a)の結果をGUIモデルの行形式へ変換する時間
         timer.start();
-        QVariantList packageMaps;
-        for (const PackageInfo &package : searchLib)
-            packageMaps.append(package.toVariantMap());
-        printPerf("variant-list", timer.elapsed(), packageMaps.size());
+        const PackageRows packageRows = toPackageRows(searchLib);
+        printPerf("row-convert", timer.elapsed(), packageRows.size());
 
         // (e) 差分更新モデルへ初めて反映する時間
         PackageListModel model;
         timer.start();
-        model.applyPackages(packageMaps);
+        model.applyPackages(packageRows);
         printPerf("apply-initial", timer.elapsed(), model.rowCount());
 
         // (f) 1行のステータスだけを変えて再適用する時間とdataChangedの回数
-        QVariantList oneRowChanged = packageMaps;
+        PackageRows oneRowChanged = packageRows;
         QVERIFY(!oneRowChanged.isEmpty());
-        QVariantMap firstRow = oneRowChanged.at(0).toMap();
-        const int originalStatus = firstRow.value(QStringLiteral("status")).toInt();
-        const int changedStatus = originalStatus == static_cast<int>(PackageStatus::Install)
-                                      ? static_cast<int>(PackageStatus::NoInst)
-                                      : static_cast<int>(PackageStatus::Install);
-        firstRow.insert(QStringLiteral("status"), changedStatus);
-        oneRowChanged[0] = firstRow;
+        const int originalStatus = oneRowChanged.at(0).status;
+        oneRowChanged[0].status =
+            originalStatus == static_cast<int>(PackageStatus::Install)
+                ? static_cast<int>(PackageStatus::NoInst)
+                : static_cast<int>(PackageStatus::Install);
         QSignalSpy dataChanged(&model, &QAbstractItemModel::dataChanged);
         timer.start();
         model.applyPackages(oneRowChanged);
@@ -136,6 +133,25 @@ private slots:
         proxy.setSourceModel(&model);
         proxy.setSortColumn(PackageFilterProxyModel::NameColumn);
         printPerf("proxy-sort", timer.elapsed(), proxy.rowCount());
+
+        // (i) 安定キーから行番号を引く時間
+        timer.start();
+        int resolvedKeys = 0;
+        for (int row = 0; row < model.rowCount(); ++row) {
+            if (model.rowForKey(model.keyAt(row)) == row)
+                ++resolvedKeys;
+        }
+        printPerf("key-lookup", timer.elapsed(), resolvedKeys);
+
+        // (j) 全行選択後の表示中選択件数を求める時間
+        QList<int> allRows;
+        allRows.reserve(model.rowCount());
+        for (int row = 0; row < model.rowCount(); ++row)
+            allRows.append(row);
+        model.setRowsSelected(allRows, true);
+        timer.start();
+        const int selectedVisible = proxy.selectedVisibleCount();
+        printPerf("selection-count", timer.elapsed(), selectedVisible);
 
         // (h) 未インストールの1パッケージをInstallにし、依存解決と変更予定取得を測る
         const PackageInfo *candidate = nullptr;
@@ -171,8 +187,18 @@ private slots:
         const qint64 resolveMs = timer.elapsed();
 
         timer.start();
-        const int pendingRows = static_cast<int>(manager.getPendingChanges().size());
+        const std::vector<PackageInfo> pendingChanges = manager.getPendingChanges();
+        const int pendingRows = static_cast<int>(pendingChanges.size());
         const qint64 pendingMs = timer.elapsed();
+
+        // (k) 部分取り直し: 選択した名前と変更予定の名前だけを取得する時間
+        std::vector<std::string> refetchNames;
+        refetchNames.push_back(candidate->name.toStdString());
+        for (const PackageInfo &change : pendingChanges)
+            refetchNames.push_back(change.name.toStdString());
+        timer.start();
+        const std::vector<PackageInfo> refetched = manager.getPackagesByNames(refetchNames);
+        const qint64 refetchMs = timer.elapsed();
 
         timer.start();
         manager.restoreState();
@@ -187,6 +213,8 @@ private slots:
                                  .arg(resolveMs)
                                  .arg(pendingMs)
                                  .arg(restoreMs);
+
+        printPerf("partial-refetch", refetchMs, static_cast<int>(refetched.size()));
 
         manager.shutdown();
     }

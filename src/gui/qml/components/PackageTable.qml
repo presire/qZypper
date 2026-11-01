@@ -1398,8 +1398,9 @@ Pane {
     Label {
         anchors.centerIn: parent                                         // ペインの中央に表示する
         visible: packageListView.count === 0 && !PackageController.busy  // 一覧が0件で、処理中でない場合のみ表示する
-        // パッケージが1件もない場合と、ステータスフィルタで全件除外された場合でメッセージを切り替える
-        text: PackageController.packages.length === 0 ? qsTr("No packages to display")
+        // 取得済みの一覧が0件の場合と、一覧はあるがステータスフィルタで全件除外された場合でメッセージを切り替える
+        // PackageController::packageCountは取得済みパッケージ一覧の件数で、packagesChangedで更新される
+        text: PackageController.packageCount === 0 ? qsTr("No packages to display")
                                             : qsTr("No packages match the status filter")
         color: palette.placeholderText                                   // 補足情報として控えめな文字色
     }

@@ -96,12 +96,15 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `SearchPackagesEx(options)` | Extended search: substring, prefix, exact, glob, or POSIX ERE regex (see below) |
 | | `GetPackageDetails(name)` | Get package details |
 | | `GetPackagesByRepo(repoAlias)` | Get packages by repository |
+| | `GetPackagesByService(alias) → (a(ss)a(sssssitib))` | Get packages provided by the repositories of a service (read; see [Package List Reply](#package-list-reply-asssasssssitib)) |
+| | `GetPackagesByNames(names) → (a(ss)a(sssssitib))` | Get packages by name, in request order with duplicates collapsed (read; see [Package List Reply](#package-list-reply-asssasssssitib)) |
 | | `GetProducts() → aa{sv}` | Get the product list (read; see below) |
 | | `GetPatterns()` | Get pattern list |
 | | `GetPackagesByPattern(patternName)` | Get packages by pattern |
 | | `GetPatches(category)` | Get patch list (see Patch Categories) |
 | | `GetPendingChanges()` | Get pending changes |
 | | `GetPackagesByClassification(s classification) → aa{sv}` | Get packages in a classification such as `recommended` or `updatable` (read; see below) |
+| | `GetUpdatableCount() → u` | Get the updatable package count (read; see below) |
 | | `GetRpmGroups() → aa{sv}` | Get the RPM group tree with package counts (read) |
 | | `GetPackagesByRpmGroup(s path) → aa{sv}` | Get packages whose RPM group is `path` or below it (read) |
 | | `GetLocales() → aa{sv}` | Get available and requested locales (read) |
@@ -142,7 +145,7 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `GetOperationState() → a{sv}` | Get the current operation state |
 | | `CancelOperation()` | Request cooperative cancellation (owner only) |
 
-In this document `aa{sv}` means an array of maps. On the bus these values are sent as `av` whose elements are `a{sv}`; the exact signatures are in `src/backend/dbus/org.presire.qzypper.xml`.
+In this document `aa{sv}` means an array of maps. On the bus these values are sent as `av` whose elements are `a{sv}`; the exact signatures are in `src/backend/dbus/org.presire.qzypper.xml`. Package lists returned by the `*V2` methods instead use the struct described in [Package List Reply](#package-list-reply-asssasssssitib).
 
 Privileged and mutating methods are subject to the authorization and owner rules described above. Read-only queries are owner-gated as well: every query requires that `Initialize()` has authorized the caller as the session owner, including `ParseRepoFile` and `GetSelectionRevision`.
 
@@ -234,7 +237,7 @@ Plugin services are discovered by libzypp from `/usr/lib/zypp/plugins/services/`
 | `locked` | Packages whose status is taboo |
 | `updatable` | Installed packages with an update candidate under libzypp's policy (vendor and architecture), excluding Protected packages |
 
-`recommended`, `suggested`, `orphaned`, and `unneeded` are derived from the solver result, so the pool is resolved before the list is built. `updatable` is the set that Update All would update.
+`recommended`, `suggested`, `orphaned`, and `unneeded` are derived from the solver result, so the pool is resolved before the list is built. `updatable` is the set that Update All would update. `GetUpdatableCount()` returns the size of that set without building the list.
 
 ## Batch Package Operations
 
@@ -339,6 +342,24 @@ Methods that return package information (`SearchPackages`, `SearchPackagesEx`, `
 | `keepPackages` | `b` | Keep the package cache |
 | `service` | `s` | Alias of the owning service |
 | `lastRefresh` | `x` | Last metadata refresh in epoch seconds; 0 means unknown |
+
+## Package List Reply (a(ss)a(sssssitib))
+
+The `*V2` list methods (`SearchPackagesV2`, `SearchPackagesExV2`, `GetPackagesByRepoV2`, `GetPackagesByPatternV2`, `GetPackagesByRpmGroupV2`, `GetPackagesByLocaleV2`, `GetPackagesByClassificationV2`) return the struct `(a(ss)a(sssssitib))`. The first member lists the repositories (`alias`, `name`) referenced by `repoIndex`; the second member is the package list. Each package entry has:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | `s` | Package name |
+| `summary` | `s` | Summary |
+| `version` | `s` | Candidate version (edition string) |
+| `installedVersion` | `s` | Installed version; empty when the package is not installed |
+| `arch` | `s` | Architecture |
+| `repoIndex` | `i` | Index into the repository list; `-1` when the package has no repository |
+| `size` | `t` | Package size in bytes |
+| `status` | `i` | `qZypper::PackageStatus` |
+| `updatable` | `b` | Whether an update is available |
+
+The old `SearchPackages`, `SearchPackagesEx`, and `GetPackagesBy*` methods are unchanged and still return the same list as `av` of `a{sv}` maps, so existing clients keep working; the GUI also accepts `aa{sv}` replies. The GUI calls the `*V2` names first; when the backend answers `org.freedesktop.DBus.Error.UnknownMethod`, it retries the same call once with the old name and uses the old names for the rest of the session. `GetPendingChanges` is unchanged and still returns `av`.
 
 ## Repository URL Validation
 
