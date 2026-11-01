@@ -138,6 +138,9 @@ jobs:
   release:
     needs: [validate, build-rpm-leap16, build-rpm-tumbleweed]
     runs-on: ubuntu-latest
+    env:
+      RPM_GPG_PRIVATE_KEY: ${{ secrets.RPM_GPG_PRIVATE_KEY }}
+      RPM_GPG_PASSPHRASE: ${{ secrets.RPM_GPG_PASSPHRASE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -146,6 +149,62 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Check RPM GPG config
+        id: rpm-gpg
+        run: |
+          if [ -n "${RPM_GPG_PRIVATE_KEY:-}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::RPM_GPG_PRIVATE_KEY is not set - publishing unsigned RPMs"
+          fi
+
+      - name: Sign RPMs with GPG
+        if: steps.rpm-gpg.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm gnupg
+          export GNUPGHOME="$(mktemp -d)"
+          RPMVERIFYDB="$(mktemp -d)"
+          trap 'rm -rf "$GNUPGHOME" "$RPMVERIFYDB"' EXIT
+          printf '%s\n' "$RPM_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID="$(gpg --batch --list-keys --with-colons | awk -F: '/^pub:/ { getline; print $10; exit }')"
+          test -n "$KEYID"
+          {
+            printf '%%_gpg_name %s\n' "$KEYID"
+            printf '%%_gpgbin %s\n' /usr/bin/gpg
+            printf '%%__gpg_sign_cmd %s\n' '%{__gpg} gpg --force-mdc --batch --no-verbose --no-armor --pinentry-mode loopback --passphrase-fd 3 --no-secmem-warning -u "%{_gpg_name}" -sbo %{__signature_filename} %{__plaintext_filename}'
+          } > ~/.rpmmacros
+          rpmsign --addsign artifacts/*.rpm 3<<< "${RPM_GPG_PASSPHRASE:-}"
+          gpg --armor --export "$KEYID" > artifacts/RPM-GPG-KEY-qZypper
+
+          # "rpm -K"コマンドは、GnuPGのキーリングではなく、rpmdbのキーリングに対して検証するため、
+          # エクスポートした公開鍵を使い捨てのrpmdbに取り込んでから新たに追加した署名を検証する
+          rpm --dbpath "$RPMVERIFYDB" --initdb
+          rpm --dbpath "$RPMVERIFYDB" --import artifacts/RPM-GPG-KEY-qZypper
+          rpm --dbpath "$RPMVERIFYDB" -Kv artifacts/*.rpm
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum *.rpm > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign SHA256SUMS with GPG
+        if: steps.rpm-gpg.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          trap 'rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$RPM_GPG_PRIVATE_KEY" | gpg --batch --import
+          KEYID="$(gpg --batch --list-keys --with-colons | awk -F: '/^pub:/ { getline; print $10; exit }')"
+          test -n "$KEYID"
+          cd artifacts
+          gpg --batch --pinentry-mode loopback --passphrase-fd 3 -u "$KEYID" \
+            --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS 3<<< "${RPM_GPG_PASSPHRASE:-}"
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
 
       - name: List artifacts
         run: ls -la artifacts/

@@ -215,6 +215,43 @@ Press `Escape` or click the cancel button to cancel the operation; the refresh s
 | PolkitQt6-1 | latest | Polkit authentication (optional, with fallback) |
 | Boost.Thread | 1.86+ | Thread management for ZyppManager (imported Boost::thread target linked into qzypper-zypp) |
 
+## Installation
+
+Download the RPM for your distribution (`leap16` or `tumbleweed`), `RPM-GPG-KEY-qZypper`, `SHA256SUMS`, and `SHA256SUMS.asc` from [Releases](https://github.com/presire/qZypper/releases).  
+
+### 1. Import the GPG public key (first time only)
+
+The RPMs are signed with the qZypper GPG key.  
+Check the fingerprint, then import the key into the RPM database.  
+
+```bash
+gpg --show-keys RPM-GPG-KEY-qZypper
+# Fingerprint: 5BD5 5126 E5B9 46FD 8AC4  B0BE 6A55 0CBE D497 485F
+
+sudo rpm --import RPM-GPG-KEY-qZypper
+```
+
+The same key is also available in this repository as [gpg/RPM-GPG-KEY-qZypper](gpg/RPM-GPG-KEY-qZypper).  
+
+### 2. Verify the downloaded files
+
+```bash
+gpg --import RPM-GPG-KEY-qZypper
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+
+rpm -K qzypper-*.rpm
+# qzypper-<version>-leap16.x86_64.rpm: digests signatures OK
+```
+
+### 3. Install the RPM
+
+```bash
+sudo zypper install ./qzypper-*-leap16.x86_64.rpm
+```
+
+If the public key has not been imported, `zypper` warns that the package signature cannot be verified.  
+
 ## Documentation
 
 - [Build and Installation](docs/BUILD.md) — build dependencies, build options, install, installed files, SELinux policy, directory structure

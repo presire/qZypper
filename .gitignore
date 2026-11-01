@@ -46,6 +46,10 @@ selinux/qzypper.pp
 **/SambaConfig.json
 **/Required_Build.txt
 
+# GPG署名鍵 (公開鍵のみ管理対象)
+/gpg/*
+!/gpg/RPM-GPG-KEY-qZypper
+
 # IDE
 **/*.user
 **/.idea/
