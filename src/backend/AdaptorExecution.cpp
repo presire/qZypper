@@ -1,5 +1,6 @@
 #include <QDBusError>
 #include "PackageManagerAdaptor.h"
+#include "PerfLog.h"
 #include "ZyppManager.h"
 
 namespace qZypper {
@@ -26,7 +27,7 @@ OperationStage initialStage(const QDBusMessage &msg)
         || member == "ApplySolution" || member.startsWith("SetPackage") || member == "SetPatternStatus"
         || member == "SetPatchStatus" || member == "DistUpgrade" || member == "SelectAllNeededPatches"
         || member == "SelectSubpackages" || member == "SelectAllRecommended"
-        || member == "SetLocaleRequested"
+        || member == "SetLocaleRequested" || member == "SetRepoUpgrade"
         || member == "VerifySystem")
         return OperationStage::Resolving;
     if (member == "GetPackagesByClassification" && classificationNeedsSolver(msg))
@@ -96,6 +97,8 @@ void PackageManagerAdaptor::startWorker(const QDBusMessage &msg, const std::func
     if (calledFromDBus()) setDelayedReply(true);
     // アイドルタイマーは止めない
     // 実行中に期限が来ても、終了時に改めて設定する
+    m_workerMember = msg.member();
+    m_workerTimer.start();
     m_busy = true;
     m_executor.control().run(initialStage(msg));
     m_executor.prompts().open();
@@ -185,6 +188,18 @@ void PackageManagerAdaptor::finishPrivileged(const QDBusMessage &msg, const Asyn
             outcome.transactionFinished ? outcome.transactionSummary : outcome.errorText});
     const auto reply = !outcome.errorName.isEmpty() ? msg.createErrorReply(outcome.errorName, outcome.errorText)
         : outcome.value.isValid() ? msg.createReply(QVariantList{outcome.value}) : msg.createReply();
+    // 認可拒否などワーカー未実行の経路では計測しない
+    if (m_workerTimer.isValid() && m_workerMember == msg.member()) {
+        if (qZypper::lcPerf().isDebugEnabled()) {
+            const qint64 execMs = m_workerTimer.elapsed();
+            const int listSize = outcome.value.metaType().id() == QMetaType::QVariantList
+                ? outcome.value.toList().size() : -1;
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf worker member=%1 execMs=%2 listSize=%3")
+                       .arg(m_workerMember).arg(execMs).arg(listSize);
+        }
+        m_workerTimer.invalidate();
+    }
     QDBusConnection::systemBus().send(reply);
     m_executor.control().complete();
     publishState();

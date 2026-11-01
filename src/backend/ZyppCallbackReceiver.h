@@ -54,7 +54,8 @@ public:
                     int &completedSteps,
                     int totalSteps, const std::atomic<bool> &cancelFlag,
                     PromptAskFn ask, std::string &problemDetail,
-                    std::vector<std::string> &ignoredPackages);
+                    std::vector<std::string> &ignoredPackages,
+                    ScriptOutputAggregator *scriptAggregator = nullptr);
 
     void start(zypp::Resolvable::constPtr resolvable) override;                 // 処理開始の通知
     bool progress(int value, zypp::Resolvable::constPtr resolvable) override;   // 進捗の通知
@@ -63,6 +64,7 @@ public:
                    RpmLevel level) override;
     void finish(zypp::Resolvable::constPtr resolvable,                          // 処理完了の通知
                 Error error, const std::string &reason, RpmLevel level) override;
+    void report(const zypp::callback::UserData &userData) override;             // 汎用受信 (classic_rpmtransのrpm出力行)
 
 private:
     ProgressCallbackFn m_callback;          // 進捗通知コールバック
@@ -76,6 +78,7 @@ private:
     std::string m_currentPkg;               // 処理中のパッケージ名
 
     std::vector<std::string> &m_ignoredPackages;  // [Ignore]したパッケージの記録先
+    ScriptOutputAggregator *m_scriptAggregator;   // rpm出力行の集約器 (nullptrなら転送しない)
 };
 
 /**
@@ -91,7 +94,8 @@ public:
                    int &completedSteps,
                    int totalSteps, const std::atomic<bool> &cancelFlag,
                    PromptAskFn ask, std::string &problemDetail,
-                   std::vector<std::string> &ignoredPackages);
+                   std::vector<std::string> &ignoredPackages,
+                   ScriptOutputAggregator *scriptAggregator = nullptr);
 
     void start(zypp::Resolvable::constPtr resolvable) override;                 // 処理開始の通知
     bool progress(int value, zypp::Resolvable::constPtr resolvable) override;   // 進捗の通知
@@ -99,6 +103,7 @@ public:
                    Error error, const std::string &description) override;
     void finish(zypp::Resolvable::constPtr resolvable,                          // 処理完了の通知
                 Error error, const std::string &reason) override;
+    void report(const zypp::callback::UserData &userData) override;             // 汎用受信 (classic_rpmtransのrpm出力行)
 
 private:
     ProgressCallbackFn m_callback;          // 進捗通知コールバック
@@ -112,6 +117,7 @@ private:
     std::string m_currentPkg;               // 処理中のパッケージ名
 
     std::vector<std::string> &m_ignoredPackages;  // [Ignore]したパッケージの記録先
+    ScriptOutputAggregator *m_scriptAggregator;   // rpm出力行の集約器 (nullptrなら転送しない)
 };
 
 /**

@@ -49,6 +49,14 @@ void ZyppManager::shutdown()
     m_zypp.reset();
     m_initialized = false;
     m_rpmStamp.clear();
+
+    // 再初期化後に前回の DistUpgrade 状態や切り替え対象が残ると、新しいプールに存在しない
+    // リポジトリを参照したままになる。resetSolverModesLocked() は未初期化時に何もしないため、
+    // m_initialized を下ろした後はメンバーを直接戻す
+    m_distUpgradeMode = false;
+    m_dupAllowVendorChange = false;
+    m_upgradeRepoAliases.clear();
+    m_savedUpgradeRepoAliases.clear();
 }
 
 /**
@@ -154,7 +162,8 @@ bool ZyppManager::initialize(const std::string& root, bool cacheOnly)
         m_initialized = true;
         // 初期化直後の要求ロケールを差分表示の基準として保持する
         m_savedRequestedLocales = zypp::sat::Pool::instance().getRequestedLocales();
-        m_distUpgradeMode = false;
+        resetSolverModesLocked();
+        m_savedUpgradeRepoAliases.clear();
         recordDatabaseStamp();
         return true;
 

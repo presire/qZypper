@@ -37,6 +37,7 @@ ZyppManager::SolverResult ZyppManager::selectAllRecommended()
         if (onlyRequiresDisabled)
             resolver->setOnlyRequires(false);
 
+        syncUpgradeReposLocked(resolver);
         result.success = resolver->resolvePool();
     }
     catch (const zypp::Exception& e) {
@@ -124,10 +125,10 @@ ZyppManager::SolverResult ZyppManager::resolveDependencies()
         resolver->setDefaultSolverFlags();            // zypp.confデフォルト再適用
         applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);  // 既推奨パッケージの再展開を抑制
+        syncUpgradeReposLocked(resolver);
 
         if (m_distUpgradeMode) {
             // DistUpgrade後の確認・再解決ではdupの操作種別とオプションを維持する
-            resolver->dupSetAllowVendorChange(m_dupAllowVendorChange);
             result.success = resolver->doUpgrade();
         }
         else {
@@ -202,7 +203,9 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
         applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
         m_distUpgradeMode = false;
+        resolver->setUpgradeMode(false);
 
+        syncUpgradeReposLocked(resolver);
         resolver->doUpdate();
         result.success = resolver->resolvePool();
     }
@@ -245,6 +248,28 @@ ZyppManager::SolverResult ZyppManager::updateAllPackages()
 
     result.summary = computeTransactionSummaryLocked();
     return result;
+}
+
+/**
+ * @brief ソルバーのupgradeMode/updateModeとDUP状態を解除する
+ *
+ * 取消し・初期化・再読込・コミットの後にモードが残らないようにする
+ *
+ * @note m_mutex保持中に呼ぶこと (内部でロックしない)
+ */
+void ZyppManager::resetSolverModesLocked()
+{
+    if (!m_initialized || !m_zypp)
+        return;
+
+    m_distUpgradeMode = false;
+    m_dupAllowVendorChange = false;
+    m_upgradeRepoAliases.clear();
+
+    auto resolver = m_zypp->resolver();
+    resolver->removeUpgradeRepos();
+    resolver->setUpgradeMode(false);
+    resolver->setUpdateMode(false);
 }
 
 /**

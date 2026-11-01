@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include "ZyppCallbackReceiver.h"
+#include "CommitReceivers.h"
 
 namespace qZypper {
 
@@ -108,6 +109,35 @@ void recordIgnored(const std::string &pkg, std::vector<std::string> &ignoredPack
     }
 }
 
+/**
+ * @brief classic_rpmtransのrpm出力行を集約器へ転送する
+ * @param aggregator 出力集約器 (nullptrなら何もしない)
+ * @param userData 受信データ
+ * @param currentPkg 処理中のパッケージ名 (solvableが無い場合の代替)
+ * @note SA系レシーバーと同じaddLine経路で集約し、逐次通知と結果のscriptOutputの両方へ反映する
+ */
+void forwardRpmoutLine(ScriptOutputAggregator *aggregator,
+                       const zypp::callback::UserData &userData,
+                       const std::string &currentPkg)
+{
+    if (!aggregator)
+        return;
+
+    const QString line = lineFromUserData(userData);
+
+    if (line.isEmpty())
+        return;
+
+    QString package = QString::fromStdString(currentPkg);
+    zypp::sat::Solvable solvable;
+
+    if (userData.get<zypp::sat::Solvable>("solvable", solvable) && solvable)
+        package = QString::fromStdString(solvable.name());
+
+    // classic_rpmtransではスクリプト種別が通知されないため種別は空とする
+    aggregator->addLine(package, QString(), line, false);
+}
+
 } // anonymous namespace
 
 // --- InstallReceiver ---
@@ -122,12 +152,14 @@ void recordIgnored(const std::string &pkg, std::vector<std::string> &ignoredPack
  * @param ask エラー時の問い合わせコールバック
  * @param problemDetail エラー詳細の格納先
  * @param ignoredPackages [Ignore]したパッケージの記録先
+ * @param scriptAggregator rpm出力行の集約器 (nullptrなら転送しない)
  */
 InstallReceiver::InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                  int &completedSteps,
                                  int totalSteps, const std::atomic<bool> &cancelFlag,
                                  PromptAskFn ask, std::string &problemDetail,
-                                 std::vector<std::string> &ignoredPackages)
+                                 std::vector<std::string> &ignoredPackages,
+                                 ScriptOutputAggregator *scriptAggregator)
     : m_callback(std::move(cb))
     , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
@@ -136,6 +168,7 @@ InstallReceiver::InstallReceiver(ProgressCallbackFn cb, StateEventCallbackFn sta
     , m_ask(std::move(ask))
     , m_problemDetail(problemDetail)
     , m_ignoredPackages(ignoredPackages)
+    , m_scriptAggregator(scriptAggregator)
 {
 }
 
@@ -249,6 +282,22 @@ void InstallReceiver::finish(zypp::Resolvable::constPtr resolvable,
     ++m_completedSteps;
 }
 
+/**
+ * @brief 汎用受信 (classic_rpmtransのrpm出力行) を処理する
+ * @param userData 受信データ
+ *
+ * classic_rpmtransではスクリプトレット出力がInstallResolvableReport::contentRpmout ("rpmout/installpkg") で届く
+ *
+ * それ以外の種別は無視する
+ */
+void InstallReceiver::report(const zypp::callback::UserData &userData)
+{
+    if (userData.type() != zypp::target::rpm::InstallResolvableReport::contentRpmout)
+        return;
+
+    forwardRpmoutLine(m_scriptAggregator, userData, m_currentPkg);
+}
+
 // --- RemoveReceiver ---
 
 /**
@@ -261,12 +310,14 @@ void InstallReceiver::finish(zypp::Resolvable::constPtr resolvable,
  * @param ask エラー時の問い合わせコールバック
  * @param problemDetail エラー詳細の格納先
  * @param ignoredPackages [Ignore]したパッケージの記録先
+ * @param scriptAggregator rpm出力行の集約器 (nullptrなら転送しない)
  */
 RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn stateCb,
                                int &completedSteps,
                                int totalSteps, const std::atomic<bool> &cancelFlag,
                                PromptAskFn ask, std::string &problemDetail,
-                               std::vector<std::string> &ignoredPackages)
+                               std::vector<std::string> &ignoredPackages,
+                               ScriptOutputAggregator *scriptAggregator)
     : m_callback(std::move(cb))
     , m_stateCallback(std::move(stateCb))
     , m_completedSteps(completedSteps)
@@ -275,6 +326,7 @@ RemoveReceiver::RemoveReceiver(ProgressCallbackFn cb, StateEventCallbackFn state
     , m_ask(std::move(ask))
     , m_problemDetail(problemDetail)
     , m_ignoredPackages(ignoredPackages)
+    , m_scriptAggregator(scriptAggregator)
 {
 }
 
@@ -379,6 +431,22 @@ void RemoveReceiver::finish(zypp::Resolvable::constPtr resolvable,
     }
 
     ++m_completedSteps;
+}
+
+/**
+ * @brief 汎用受信 (classic_rpmtransのrpm出力行) を処理する
+ * @param userData 受信データ
+ *
+ * classic_rpmtransではスクリプトレット出力がRemoveResolvableReport::contentRpmout ("rpmout/removepkg") で届く
+ *
+ * それ以外の種別は無視する
+ */
+void RemoveReceiver::report(const zypp::callback::UserData &userData)
+{
+    if (userData.type() != zypp::target::rpm::RemoveResolvableReport::contentRpmout)
+        return;
+
+    forwardRpmoutLine(m_scriptAggregator, userData, m_currentPkg);
 }
 
 // --- DownloadReceiver ---

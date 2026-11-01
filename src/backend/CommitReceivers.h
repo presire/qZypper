@@ -100,6 +100,13 @@ private:
 };
 
 /**
+ * @brief UserDataの"line"キーからrpm出力行を取り出す
+ * @param userData 受信データ
+ * @return 行 (取得できなければ空)
+ */
+QString lineFromUserData(const zypp::callback::UserData &userData);
+
+/**
  * @class CommitScriptReceiver
  * @brief %pre/%post等スクリプトレット出力を受信する
  */

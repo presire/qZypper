@@ -35,7 +35,7 @@ namespace qZypper {
 ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallback,
                                               StateEventCallbackFn stateCallback,
                                               PromptAskFn askCallback,
-                                              ScriptOutputFn scriptOutputCallback)
+                                              ScriptOutputBatchFn scriptOutputCallback)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
 
@@ -54,10 +54,17 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         }
 
         const auto solv = item.satSolvable();
-        if (solv && solv.needToAcceptLicense()
-            && (!item.status().isLicenceConfirmed()
-                || !m_acceptedLicenses.count(licenseApprovalKey(solv.name(), solv.edition().asString(),
-                    solv.arch().asString(), item.repoInfo().alias(), solv.licenseToConfirm())))) {
+        // ライセンス本文を持たない候補は承認対象にならないため、検査しない
+        if (!solv || !solv.needToAcceptLicense()) {
+            continue;
+        }
+        const std::string text = solv.licenseToConfirm();
+        if (text.empty()) {
+            continue;
+        }
+        if (!item.status().isLicenceConfirmed()
+            || !m_acceptedLicenses.count(licenseApprovalKey(solv.name(), solv.edition().asString(),
+                solv.arch().asString(), item.repoInfo().alias(), text))) {
             // ConfirmLicensesを通らない未確認候補を、libzyppの副作用より前に必ず拒否する
             result.errorMessage = "License for package " + solv.name()
                 + " is not confirmed; resolve and confirm licenses before applying changes";
@@ -67,7 +74,6 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
 
     // リポジトリ/プールの変更で、PoolItemを保持する既存の解決結果は無効になる
     m_problems.clear();
-    m_distUpgradeMode = false;
 
     // スクリプト出力の収集器(例外経路でも結果へ反映するためtryの外で生成する)
     ScriptOutputAggregator scriptAggregator(scriptOutputCallback);
@@ -192,8 +198,8 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         std::string problemDetail;
 
         // コールバックレシーバーを登録する
-        InstallReceiver installRcv(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, askCallback, problemDetail, ignoredPackages);
-        RemoveReceiver removeRcv(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, askCallback, problemDetail, ignoredPackages);
+        InstallReceiver installRcv(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, askCallback, problemDetail, ignoredPackages, &scriptAggregator);
+        RemoveReceiver removeRcv(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, askCallback, problemDetail, ignoredPackages, &scriptAggregator);
         DownloadReceiver downloadRcv(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, askCallback, problemDetail, ignoredPackages);
         InstallReceiverSA installRcvSA(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, problemDetail);
         RemoveReceiverSA removeRcvSA(progressCallback, stateCallback, completedSteps, totalSteps, m_cancelRequested, problemDetail);
@@ -212,6 +218,8 @@ ZyppManager::CommitResult ZyppManager::commit(ProgressCallbackFn progressCallbac
         zypp::ZYppCommitPolicy policy;
         policy.dryRun(false);
         policy.downloadMode(zypp::DownloadInAdvance);
+        // ここまで早期returnしていない場合のみ、コミット前にソルバーモードを解除する
+        resetSolverModesLocked();
         auto commitResult = m_zypp->commit(policy);
 
         // レシーバーを切断する

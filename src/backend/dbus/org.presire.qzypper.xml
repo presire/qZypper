@@ -215,6 +215,16 @@
       <arg direction="in"  type="i" name="status"/>
     </method>
 
+    <method name="SetRepoUpgrade">
+      <arg direction="in" type="s" name="alias"/>
+      <arg direction="in" type="b" name="enabled"/>
+      <arg direction="out" type="b" name="success"/>
+    </method>
+
+    <method name="GetUpgradeRepos">
+      <arg direction="out" type="as" name="aliases"/>
+    </method>
+
     <method name="SetPackageVersion">
       <arg direction="out" type="b" name="success"/>
       <arg direction="in"  type="s" name="name"/>
@@ -407,12 +417,6 @@
     </method>
 
     <!-- シグナル (所有者へのユニキャスト送信) -->
-    <signal name="ProgressChanged">
-      <arg type="s" name="packageName"/>
-      <arg type="i" name="percentage"/>
-      <arg type="s" name="stage"/>
-    </signal>
-
     <signal name="CommitProgressChanged">
       <arg type="s" name="packageName"/>
       <arg type="i" name="percentage"/>
@@ -464,9 +468,8 @@
       <arg type="u" name="id"/>
     </signal>
 
-    <signal name="ScriptOutput">
-      <arg type="a{sv}" name="output"/>
-      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="QVariantMap"/>
+    <signal name="ScriptOutputBatch">
+      <arg type="av" name="entries"/>
     </signal>
 
     <signal name="PoolReloaded"/>

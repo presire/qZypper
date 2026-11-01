@@ -116,6 +116,7 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
         applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
         m_distUpgradeMode = false;
+        resolver->setUpgradeMode(false);
 
         auto pool = m_zypp->poolProxy();
         for (auto it = pool.byKindBegin<zypp::Patch>();
@@ -147,6 +148,7 @@ ZyppManager::SolverResult ZyppManager::selectAllNeededPatches(bool securityOnly,
             sel->setStatus(zypp::ui::S_Install);
         }
 
+        syncUpgradeReposLocked(resolver);
         result.success = resolver->resolvePool();
     }
     catch (const zypp::Exception& e) {

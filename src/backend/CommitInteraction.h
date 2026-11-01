@@ -7,6 +7,7 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 #include "PromptRegistry.h"
@@ -30,6 +31,23 @@ using PromptAskFn = std::function<QVariantMap(const PromptRequest &request)>;
 using ScriptOutputFn = std::function<void(const QString &package, const QString &scriptType, const QString &line, bool isError)>;
 
 /**
+ * @struct ScriptOutputEntry
+ * @brief フラッシュ時にまとめて渡すスクリプト出力1行
+ */
+struct ScriptOutputEntry {
+    QString package;                    // パッケージ名
+    QString scriptType;                 // スクリプト種別
+    QString line;                       // 出力行
+    bool isError = false;               // エラー出力か
+};
+
+/**
+ * @brief スクリプト出力をまとめて受け取るコールバック
+ * @param entries フラッシュされた出力行の一覧
+ */
+using ScriptOutputBatchFn = std::function<void(const std::vector<ScriptOutputEntry> &entries)>;
+
+/**
  * @brief コミット時インタラクションの各種上限値
  */
 namespace CommitLimits {
@@ -39,9 +57,59 @@ constexpr int kMaxScriptLineBytes = 8 * 1024;      // スクリプト1行の上�
 constexpr int kMaxScriptLines = 500;               // コミット返信に含める最大行数
 constexpr int kFlushLineThreshold = 50;            // この行数でフラッシュ
 constexpr int kFlushIntervalMs = 100;              // この経過時間でフラッシュ
+constexpr int kProgressIntervalMs = 100;           // 進捗通知の最短送信間隔
 constexpr int kMaxConflictsReported = 200;         // 競合として列挙する最大件数
 constexpr int kMaxProblemTextBytes = 8 * 1024;     // エラー詳細本文の上限 (8 KiB)
 } // namespace CommitLimits
+
+/**
+ * @brief コミット進捗の1サンプル
+ */
+struct ProgressSample
+{
+    QString package;                                // 対象パッケージ名
+    QString stage;                                  // 進捗ステージ
+    int percentage = 0;                             // パッケージ単位の進捗 (%)
+    int totalSteps = 0;                             // 総ステップ数
+    int completedSteps = 0;                         // 完了ステップ数
+    int overallPercentage = 0;                      // 全体進捗 (%)
+};
+
+/**
+ * @brief コミット進捗の重複排除と間引きを行う
+ *
+ * ワーカースレッド上でのみ使用する (排他制御は持たない)。前回送信したサンプルとの比較と
+ * 前回送信時刻からの経過時間でD-Bus送信の可否を判定する。
+ *
+ * 間引かれたサンプルは最新の1件だけ保留する。後続の進捗通知が来ないまま
+ * 長い処理 (RPMスクリプト等) に入ると、利用者に古い進捗が表示され続けるため、
+ * 呼出側は区切り (状態遷移・コミット終了) で takePending() により送り漏れを回収する。
+ */
+class ProgressThrottle
+{
+public:
+    /**
+     * @brief サンプルを送信すべきか判定し、送信時は内部状態を更新する
+     * @param sample 判定対象の進捗サンプル
+     * @param now 現在時刻(テスト用に注入可能)
+     * @return 送信する場合true
+     */
+    bool shouldEmit(const ProgressSample &sample, std::chrono::steady_clock::time_point now);
+
+    /**
+     * @brief 間引かれて未送信の最新サンプルを取り出し、送信済みとして記録する
+     * @param now 現在時刻(テスト用に注入可能)
+     * @return 未送信サンプル。送り漏れが無ければ std::nullopt
+     * @note 一度取り出すと保留は空になり、次の間引きが起きるまで std::nullopt を返す
+     */
+    std::optional<ProgressSample> takePending(std::chrono::steady_clock::time_point now);
+
+private:
+    bool m_hasLast = false;                                  // 前回送信済みか
+    ProgressSample m_last;                                   // 前回送信したサンプル
+    std::chrono::steady_clock::time_point m_lastEmit;        // 前回送信時刻
+    std::optional<ProgressSample> m_pending;                 // 間引かれて未送信の最新サンプル
+};
 
 /**
  * @brief UTF-8バイト長でテキストを上限内に切り詰める
@@ -152,6 +220,12 @@ public:
     explicit ScriptOutputAggregator(ScriptOutputFn sink = nullptr);
 
     /**
+     * @brief 集約器をバッチ送出先付きで構築する
+     * @param batchSink フラッシュ時にまとめて呼ぶコールバック(nullptr可)
+     */
+    explicit ScriptOutputAggregator(ScriptOutputBatchFn batchSink);
+
+    /**
      * @brief スクリプト出力行を追加する
      * @param package パッケージ名
      * @param scriptType スクリプト種別
@@ -202,24 +276,14 @@ public:
 
 private:
     /**
-     * @struct Pending
-     * @brief フラッシュ待ちのスクリプト出力1行
-     */
-    struct Pending {
-        QString package;                // パッケージ名
-        QString scriptType;             // スクリプト種別
-        QString line;                   // 出力行
-        bool isError = false;           // エラー出力か
-    };
-
-    /**
      * @brief 閾値を判定し、必要な場合にフラッシュする
      * @param now 現在時刻
      */
     void maybeFlush(Clock::time_point now);
 
-    ScriptOutputFn m_emit;              // フラッシュ時の送出先
-    std::vector<Pending> m_pending;     // 未送出の行
+    ScriptOutputFn m_emit;              // フラッシュ時の1行単位の送出先
+    ScriptOutputBatchFn m_emitBatch;    // フラッシュ時のバッチ送出先
+    std::vector<ScriptOutputEntry> m_pending;  // 未送出の行
     QStringList m_collected;            // コミット結果に含めるスクリプト出力
     QStringList m_rpmMessages;          // コミット結果に含めるrpmメッセージ
     bool m_truncated = false;           // 上限超過で切り詰めたか

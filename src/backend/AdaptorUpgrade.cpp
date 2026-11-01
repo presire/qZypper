@@ -1,6 +1,7 @@
 #include <QDBusError>
 #include <QMetaType>
 #include "PackageManagerAdaptor.h"
+#include "RepoPolicy.h"
 #include "SearchOptions.h"
 #include "ZyppManager.h"
 
@@ -40,6 +41,52 @@ namespace qZypper {
         }
 
     } // namespace
+
+    /**
+     * @brief エイリアスを検証して、所有者のリポジトリ切り替え要求を保持する
+     * @param alias 切り替え対象のリポジトリエイリアス
+     * @param enabled trueで切り替え対象に追加、falseで解除
+     * @return 常にfalse (結果はワーカー完了後の遅延応答で返す)
+     * @note 不正なエイリアスは InvalidArgs、受理されなかった要求 (未登録・システム・ローカルRPM等)
+     *       は ZyppManager::lastError() の理由付きで org.freedesktop.DBus.Error.Failed を返す
+     */
+    bool PackageManagerAdaptor::SetRepoUpgrade(const QString &alias, bool enabled)
+    {
+        // 他のエイリアス入力と判定を揃えるため、長さ上限も含めて RepoPolicy に一本化する
+        std::string aliasError;
+        if (!RepoPolicy::validateAlias(alias.toStdString(), aliasError)) {
+            if (checkNotBusy() && checkOwner())
+                sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("Invalid repository alias"));
+            return false;
+        }
+        if (!checkNotBusy() || !checkOwner() || !checkArguments())
+            return false;
+
+        // runOwnerSync は拒否理由を返信に載せられないため、失敗時にエラー名と理由を
+        // 設定できる startWorker を直接使い、GUIが原因を表示できるようにする
+        startWorker(message(), [alias, enabled] {
+            AsyncOutcome result;
+            auto &manager = ZyppManager::instance();
+            result.value = manager.setRepoUpgrade(alias.toStdString(), enabled);
+            if (!result.value.toBool()) {
+                result.errorName = QStringLiteral("org.freedesktop.DBus.Error.Failed");
+                result.errorText = QString::fromStdString(manager.lastError());
+            }
+            return result;
+        });
+        return false;
+    }
+
+    /** @brief 所有者の切り替え対象一覧をワーカーから取得する */
+    QStringList PackageManagerAdaptor::GetUpgradeRepos()
+    {
+        return runRead([] {
+            QStringList aliases;
+            for (const auto &alias : ZyppManager::instance().upgradeRepos())
+                aliases.append(QString::fromStdString(alias));
+            return QVariant(aliases);
+        }).toStringList();
+    }
 
     /** @brief 拡張検索オプションを厳格に検証し、PoolQuery検索を実行する */
     QVariantList PackageManagerAdaptor::SearchPackagesEx(const QVariantMap &options)

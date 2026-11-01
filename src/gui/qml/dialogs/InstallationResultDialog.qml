@@ -125,6 +125,17 @@ Dialog {
         font.bold: true           // 太字で表示する
     }
 
+    // ダイアログ下部の[OK]ボタンを並べる行
+    // 表示するボタンは、このダイアログのstandardButtonsの指定 ([OK]のみ) がそのまま使われる
+    footer: DialogButtonBox {
+        // ボタン行の背景を透明にする
+        // Fusionスタイル標準の背景は、ボタン行の端から1px内側までを塗りつぶす
+        // そのため、ダイアログの2pxの枠線のうち内側の1pxが隠れ、ボタン行の部分だけ枠線が細く見えていた
+        background: Item {
+            implicitHeight: 32  // ボタン行の最小の高さ (Fusionスタイル標準と同じ値)
+        }
+    }
+
     // 見出しと項目一覧を表示するパッケージセクション (インラインコンポーネント)
     component PackageSection: ColumnLayout {
         // セクション見出しに表示する文字列

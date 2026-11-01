@@ -23,6 +23,7 @@
 #include <limits>
 #include <vector>
 #include "DBusClient.h"
+#include "PerfLog.h"
 
 namespace qZypper {
 
@@ -232,8 +233,6 @@ bool DBusClient::connectToBackend()
     // 再接続で重複配送しないよう、既存のbus接続を一旦外す
     bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RepoRefreshProgress",
                    this, SIGNAL(repoRefreshProgress(QString, int)));
-    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ProgressChanged",
-                   this, SIGNAL(progressChanged(QString, int, QString)));
     bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CommitProgressChanged",
                    this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int)));
     bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "TransactionFinished",
@@ -252,14 +251,12 @@ bool DBusClient::connectToBackend()
                    this, SIGNAL(promptClosed(uint)));
     bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PoolReloaded",
                    this, SIGNAL(poolReloaded()));
-    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutput",
-                   this, SLOT(onScriptOutput(QVariantMap)));
+    bus.disconnect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutputBatch",
+                   this, SLOT(onScriptOutputBatch(QVariantList)));
 
     // バックエンドのブロードキャストシグナルをGUI側シグナルへ中継
     bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "RepoRefreshProgress",
                 this, SIGNAL(repoRefreshProgress(QString, int)));
-    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ProgressChanged",
-                this, SIGNAL(progressChanged(QString, int, QString)));
     bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "CommitProgressChanged",
                 this, SIGNAL(commitProgressChanged(QString, int, QString, int, int, int)));
     bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "TransactionFinished",
@@ -278,8 +275,8 @@ bool DBusClient::connectToBackend()
                 this, SIGNAL(promptClosed(uint)));
     bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "PoolReloaded",
                 this, SIGNAL(poolReloaded()));
-    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutput",
-                this, SLOT(onScriptOutput(QVariantMap)));
+    bus.connect(SERVICE_NAME, OBJECT_PATH, INTERFACE, "ScriptOutputBatch",
+                this, SLOT(onScriptOutputBatch(QVariantList)));
 
     m_connected = true;
     qDebug() << "DBusClient: connected to backend";
@@ -373,14 +370,16 @@ void DBusClient::callAsync(const QDBusMessage &msg, int timeout, ReplyCallback c
     };
 
     if (kConcurrentMembers.contains(msg.member())) {
-        dispatchCall(msg, timeout, std::move(callback), false);
+        dispatchCall(msg, timeout, std::move(callback), false, 0);
         return;
     }
 
     std::vector<ReplyCallback> superseded;
+    std::vector<QString> supersededMembers;
     if (kLatestOnlyMembers.contains(msg.member())) {
         for (auto it = m_callQueue.begin(); it != m_callQueue.end();) {
             if (it->msg.member() == msg.member()) {
+                supersededMembers.push_back(it->msg.member());
                 superseded.push_back(std::move(it->callback));
                 it = m_callQueue.erase(it);
             } else {
@@ -389,16 +388,26 @@ void DBusClient::callAsync(const QDBusMessage &msg, int timeout, ReplyCallback c
         }
     }
 
-    if (m_serialCallInFlight || !m_callQueue.empty())
-        m_callQueue.push_back({msg, timeout, std::move(callback)});
-    else
-        dispatchCall(msg, timeout, std::move(callback), true);
+    if (m_serialCallInFlight || !m_callQueue.empty()) {
+        QueuedCall queued{msg, timeout, std::move(callback), QElapsedTimer()};
+        if (qZypper::lcPerf().isDebugEnabled())
+            queued.queued.start();
+        m_callQueue.push_back(std::move(queued));
+    } else {
+        dispatchCall(msg, timeout, std::move(callback), true, 0);
+    }
 
     // コールバックが再入してキューを変更しても安全なよう、キュー操作の完了後に通知する
     for (const ReplyCallback &cb : superseded) {
         if (cb)
             cb(false, QStringLiteral("org.presire.qzypper.Error.Superseded"),
                QStringLiteral("Superseded by a newer request"), {});
+    }
+    if (!supersededMembers.empty() && qZypper::lcPerf().isDebugEnabled()) {
+        for (const QString &member : supersededMembers) {
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf dbus member=%1 result=superseded").arg(member);
+        }
     }
 }
 
@@ -412,7 +421,9 @@ void DBusClient::dispatchNextQueuedCall()
         return;
     QueuedCall next = std::move(m_callQueue.front());
     m_callQueue.pop_front();
-    dispatchCall(next.msg, next.timeout, std::move(next.callback), true);
+    const qint64 queueWaitMs = qZypper::lcPerf().isDebugEnabled() && next.queued.isValid()
+        ? next.queued.elapsed() : 0;
+    dispatchCall(next.msg, next.timeout, std::move(next.callback), true, queueWaitMs);
 }
 
 /**
@@ -421,8 +432,10 @@ void DBusClient::dispatchNextQueuedCall()
  * @param timeout タイムアウト (ミリ秒)
  * @param callback 完了時に呼ばれるコールバック
  * @param serialized 直列化キューの対象であればtrue (完了時に次の呼び出しを送信する)
+ * @param queueWaitMs 待ち行列で待機した時間 (ミリ秒、直列化なしは0)
  */
-void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized)
+void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized,
+                              qint64 queueWaitMs)
 {
     if (!isConnected()) {
         m_lastError = QStringLiteral("Not connected to backend");
@@ -440,17 +453,32 @@ void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallbac
 
     const QString member = msg.member();
     const quint64 generation = m_generation;
+    ++m_dispatchedCalls;
+    QElapsedTimer rttTimer;
+    const bool measurePerf = qZypper::lcPerf().isDebugEnabled();
+    if (measurePerf)
+        rttTimer.start();
     QDBusPendingCall pending = QDBusConnection::systemBus().asyncCall(msg, timeout);
     auto *watcher = new QDBusPendingCallWatcher(pending, this);
 
     connect(watcher, &QDBusPendingCallWatcher::finished, this,
-            [this, callback, member, serialized, generation](QDBusPendingCallWatcher *w) {
+            [this, callback, member, serialized, generation, rttTimer, queueWaitMs, measurePerf](QDBusPendingCallWatcher *w) {
         const QDBusMessage reply = w->reply();
         w->deleteLater();
+        qint64 rttMs = 0;
+        if (measurePerf)
+            rttMs = rttTimer.elapsed();
 
         // バックエンド再接続後の古い応答は状態を壊すため破棄する
-        if (generation != m_generation)
+        if (generation != m_generation) {
+            if (measurePerf) {
+                qCDebug(qZypper::lcPerf).noquote()
+                    << QStringLiteral("perf dbus member=%1 queueMs=%2 rttMs=%3 serialized=%4 result=stale")
+                           .arg(member).arg(queueWaitMs).arg(rttMs)
+                           .arg(serialized ? 1 : 0);
+            }
             return;
+        }
 
         // コールバック内で新たな呼び出しが積まれても順序を保つよう、先に完了扱いにする
         if (serialized)
@@ -475,6 +503,16 @@ void DBusClient::dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallbac
         }
         else if (callback) {
             callback(true, QString(), QString(), reply.arguments());
+        }
+
+        if (measurePerf) {
+            const QString result = reply.type() == QDBusMessage::ErrorMessage
+                ? QStringLiteral("error:") + QDBusError(reply).name()
+                : QStringLiteral("ok");
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf dbus member=%1 queueMs=%2 rttMs=%3 serialized=%4 result=%5")
+                       .arg(member).arg(queueWaitMs).arg(rttMs)
+                       .arg(serialized ? 1 : 0).arg(result);
         }
 
         if (serialized)
@@ -745,6 +783,39 @@ void DBusClient::setPackageStatus(const QString &name, int status, ReplyCallback
         if (callback)
             callback(ok, errorName, message,
                      ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief リポジトリを「切り替え」の対象にする/外す
+ * @param alias 対象リポジトリのエイリアス
+ * @param enabled trueで切り替え対象に追加し、falseで取り消す
+ * @param callback 完了時に呼ばれるコールバック (args[0]にbool)
+ */
+void DBusClient::setRepoUpgrade(const QString &alias, bool enabled, ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "SetRepoUpgrade");
+    msg << alias << enabled;
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toBool() } : QVariantList{});
+    });
+}
+
+/**
+ * @brief 「切り替え」の対象になっているリポジトリのエイリアス一覧を取得する
+ * @param callback 完了時に呼ばれるコールバック (args[0]にQStringList)
+ */
+void DBusClient::getUpgradeRepos(ReplyCallback callback)
+{
+    QDBusMessage msg = QDBusMessage::createMethodCall(SERVICE_NAME, OBJECT_PATH, INTERFACE, "GetUpgradeRepos");
+    callAsync(msg, kDefaultTimeout, [callback](bool ok, const QString &errorName,
+                                               const QString &message, const QVariantList &args) {
+        if (callback)
+            callback(ok, errorName, message,
+                     ok && !args.isEmpty() ? QVariantList{ args.at(0).toStringList() } : QVariantList{});
     });
 }
 
@@ -1723,12 +1794,12 @@ void DBusClient::onPromptRequested(uint promptId, const QString &promptType, con
 }
 
 /**
- * @brief RPMスクリプト出力を正規化して中継する
- * @param line バックエンドから受信した1行分の出力
+ * @brief RPMスクリプト出力のバッチを正規化して中継する
+ * @param entries バックエンドから受信した出力行の一覧
  */
-void DBusClient::onScriptOutput(const QVariantMap &line)
+void DBusClient::onScriptOutputBatch(const QVariantList &entries)
 {
-    emit scriptOutput(demarshallMap(line));
+    emit scriptOutputBatch(demarshallArrayOfMaps(QVariant(entries)));
 }
 
 /**

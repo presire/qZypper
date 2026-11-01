@@ -145,7 +145,7 @@ public:
     QVariantList getPendingLocaleChanges() const;
 
     // パッケージ分類 (recommended/suggested/orphaned/unneeded/multiversion/retracted/retractedInstalled/ptf/locked)
-    std::vector<PackageInfo> getPackagesByClassification(const std::string& cls) const;
+    std::vector<PackageInfo> getPackagesByClassification(const std::string& cls);
 
     // パターン・パッチ
     std::vector<PatternInfo> getPatterns() const;                                         // パターン一覧の取得
@@ -201,6 +201,21 @@ public:
     void restoreState();                                         // 選択状態の復元
     static bool isValidPackageStatus(int status);                // PackageStatusの範囲内か
 
+    // アップグレード対象リポジトリ (zypper dup --repo相当)
+    /**
+     * @brief リポジトリをアップグレード対象に切り替える
+     *
+     * 保持したエイリアスは次のソルバー実行時にResolverへ付け直す。
+     * この関数自身は依存関係を解決しない。
+     *
+     * @param alias リポジトリエイリアス
+     * @param enabled アップグレード対象にするか
+     * @return 受け付けた場合true (存在しない・システム・ローカルRPMはfalse)
+     */
+    bool setRepoUpgrade(const std::string& alias, bool enabled);
+    /** @brief 現在アップグレード対象になっている有効なリポジトリのエイリアス一覧 */
+    std::vector<std::string> upgradeRepos() const;
+
     /**
      * @brief 複数パッケージへ同じ操作を一括適用する
      *
@@ -253,7 +268,7 @@ public:
     CommitResult commit(ProgressCallbackFn progressCallback = nullptr,   // コミットの実行
                         StateEventCallbackFn stateCallback = nullptr,
                         PromptAskFn askCallback = nullptr,
-                        ScriptOutputFn scriptOutputCallback = nullptr);
+                        ScriptOutputBatchFn scriptOutputCallback = nullptr);
 
     std::vector<DiskUsageInfo> getDiskUsage() const;             // ディスク使用量の取得
 
@@ -375,6 +390,24 @@ private:
      */
     void resetSolverOverridesLocked();
 
+    /**
+     * @brief ソルバーのupgradeMode/updateModeとDUP状態を解除する
+     * @note m_mutex保持中に呼ぶこと (内部でロックしない)
+     *       初期化済みの場合のみlibzypp側のモードも解除する
+     */
+    void resetSolverModesLocked();
+
+    /**
+     * @brief 保持しているアップグレード対象リポジトリをResolverへ付け直す
+     *
+     * 消滅したリポジトリ・システム・ローカルRPMは保持リストから取り除き、
+     * 切り替え中はベンダー変更を許可する
+     *
+     * @param resolver 対象のリゾルバ
+     * @note m_mutex保持中に呼ぶこと (内部でロックしない)
+     */
+    void syncUpgradeReposLocked(const zypp::Resolver_Ptr& resolver);
+
     // リスクサマリ
     QVariantMap computeTransactionSummary() const;               // リスクサマリの生成 (内部でロック)
     QVariantMap computeTransactionSummaryLocked() const;         // リスクサマリの生成 (m_mutex保持中に呼ぶ)
@@ -428,8 +461,14 @@ private:
     SolverOverrides m_solverOverrides;                                // ソルバー設定の上書き (未設定項目はzypp.conf既定値)
 
     // ディストリビューション更新
+    // libzyppのupgradeModeは常にm_distUpgradeModeと一致させる。
+    // updateModeは全体更新から取消し・コミット・再読込・dist-upgradeまでの間だけ保つ
     bool m_distUpgradeMode = false;                                   // DistUpgrade選択の保持中 (再解決もdup)
     bool m_dupAllowVendorChange = false;                              // DistUpgradeのベンダー変更許可
+
+    // アップグレード対象リポジトリ (aliasで保持し、プール変更後もソルバー実行時に付け直す)
+    std::vector<std::string> m_upgradeRepoAliases;                    // 現在の切り替え対象
+    std::vector<std::string> m_savedUpgradeRepoAliases;               // saveState時の切り替え対象
 
     // 排他制御・エラー・取消し
     mutable std::string m_lastError;                                  // 最新のエラーメッセージ

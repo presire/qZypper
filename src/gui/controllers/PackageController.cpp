@@ -19,6 +19,7 @@
 #include <QDBusPendingReply>
 #include "PackageController.h"
 #include "DBusClient.h"
+#include "PerfLog.h"
 #include "PackageListModel.h"
 #include "PackageFilterProxyModel.h"
 
@@ -51,14 +52,29 @@ PackageController::PackageController(QObject *parent)
         else
             setStatusMessage(tr("Refreshing: %1 (%2%)").arg(alias).arg(pct));
     });
-    connect(m_dbus, &DBusClient::progressChanged,
-            this, &PackageController::progressChanged);
     connect(m_dbus, &DBusClient::commitProgressChanged,
-            this, &PackageController::commitProgressChanged);
+            this, [this](const QString &packageName, int percentage, const QString &stage,
+                         int totalSteps, int completedSteps, int overallPercentage) {
+        ++m_commitProgressSignals;
+        emit commitProgressChanged(packageName, percentage, stage,
+                                   totalSteps, completedSteps, overallPercentage);
+    });
     connect(m_dbus, &DBusClient::packageStateChanged,
-            this, &PackageController::packageStateChanged);
+            this, [this](const QString &packageName, const QString &event) {
+        ++m_commitStateSignals;
+        emit packageStateChanged(packageName, event);
+    });
     connect(m_dbus, &DBusClient::transactionFinished,
-            this, &PackageController::transactionFinished);
+            this, [this](bool success, const QString &summary) {
+        if (qZypper::lcPerf().isDebugEnabled()) {
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf commit progress=%1 scriptSignals=%2 scriptLines=%3 stateEvents=%4")
+                       .arg(m_commitProgressSignals)
+                       .arg(m_commitScriptSignals).arg(m_commitScriptLines)
+                       .arg(m_commitStateSignals);
+        }
+        emit transactionFinished(success, summary);
+    });
     connect(m_dbus, &DBusClient::errorOccurred,
             this, &PackageController::errorOccurred);
     connect(m_dbus, &DBusClient::untrustedKeyDetected,
@@ -77,6 +93,7 @@ PackageController::PackageController(QObject *parent)
         refreshPendingChanges();
         refreshUpdateCount();
         loadPatterns();
+        loadUpgradeRepos();
 
         // 製品一覧はProductsタブを一度表示した場合のみ更新する (未表示なら読み込みもしない)
         if (m_productsLoaded) {
@@ -87,8 +104,13 @@ PackageController::PackageController(QObject *parent)
     });
     connect(m_dbus, &DBusClient::packageLocked,
             this, &PackageController::handlePackageLocked);
-    connect(m_dbus, &DBusClient::scriptOutput,
-            this, &PackageController::scriptOutputReceived);
+    connect(m_dbus, &DBusClient::scriptOutputBatch,
+            this, [this](const QVariantList &entries) {
+        ++m_commitScriptSignals;
+        // 1シグナルに複数行が含まれるため、受信数ではなく行数を加算する
+        m_commitScriptLines += static_cast<quint64>(entries.size());
+        emit scriptOutputBatchReceived(entries);
+    });
 
     // バックエンドが再起動した場合、接続状態と一覧を復元する
     connect(m_dbus, &DBusClient::backendReconnected,
@@ -106,6 +128,7 @@ PackageController::PackageController(QObject *parent)
         clearPrompts();
         loadRepos();
         refreshPendingChanges();
+        loadUpgradeRepos();
     });
     connect(m_dbus, &DBusClient::backendDisconnected,
             this, [this]() {
@@ -121,6 +144,8 @@ PackageController::PackageController(QObject *parent)
         }
         // 旧セッションの一覧要求と一括操作の完了通知を二重に発行しないよう先に無効化する
         ++m_batchGeneration;
+        // 切断前に開始した編集完了処理の遅延応答でbusy解除と通知を二重に発行しない
+        ++m_editGeneration;
         abortListRequests();
         // 切断したバックエンドのプロンプトへの回答が別プロセスの同一IDへ届かないよう全破棄
         clearPrompts();
@@ -136,6 +161,11 @@ PackageController::PackageController(QObject *parent)
         // 破棄されたGetPendingChangesの応答では取得中フラグが解除されないため、
         // 未接続として取得状態とキャッシュを初期化し、待機者へ失敗を通知する
         refreshPendingChanges();
+        // 切断後は「切り替え」対象の一覧も無効なため空にして通知する
+        if (!m_upgradeRepos.isEmpty()) {
+            m_upgradeRepos.clear();
+            emit upgradeReposChanged();
+        }
         // バックエンド消滅後は実行中操作の応答が来ないためビジー状態を1回だけ解除する
         setBusy(false);
         // 通知先が新しい操作を開始してもbusyを解放しないよう、完了通知は最後に発行する
@@ -177,11 +207,26 @@ void PackageController::setBusy(bool busy)
     }
 
     m_busy = busy;
-    emit busyChanged();
 
     if (busy) {
+        if (qZypper::lcPerf().isDebugEnabled()) {
+            m_busyTimer.start();
+            m_busyStartCalls = m_dbus->dispatchedCallCount();
+        }
+        emit busyChanged();
         return;
     }
+    if (m_busyTimer.isValid()) {
+        if (qZypper::lcPerf().isDebugEnabled()) {
+            const qint64 spanMs = m_busyTimer.elapsed();
+            const quint64 calls = m_dbus->dispatchedCallCount() - m_busyStartCalls;
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf busy spanMs=%1 calls=%2")
+                       .arg(spanMs).arg(calls);
+        }
+        m_busyTimer.invalidate();
+    }
+    emit busyChanged();
     // 通知先が新たな操作を開始した場合は、その操作の完了時に改めて保留分を処理する
     if (m_busy || !m_connected) {
         return;
@@ -250,6 +295,7 @@ void PackageController::initialize()
             emit initializedChanged();
             setStatusMessage(tr("Ready"));
             refreshPendingChanges();
+            loadUpgradeRepos();
             m_dbus->getOperationState([this](bool ok, const QString &, const QString &, const QVariantList &args) {
                 if (ok && !args.isEmpty())
                     setOperationState(args.at(0).toMap());
@@ -293,6 +339,89 @@ void PackageController::reconnectBackend(std::function<void(bool)> onDone)
         if (ok)
             refreshPendingChanges();
         if (onDone) onDone(ok);
+    });
+}
+
+/**
+ * @brief 「切り替え」対象リポジトリの一覧をバックエンドから取得する (ビジーガードなし)
+ *
+ * 未接続の場合は一覧を空にし、空でなかった場合だけupgradeReposChangedを通知する
+ * 接続中は取得値が現在のキャッシュと異なる場合だけ更新して通知する
+ * busy状態には触れない
+ */
+void PackageController::loadUpgradeRepos()
+{
+    loadUpgradeReposInternal({});
+}
+
+/**
+ * @brief 「切り替え」対象リポジトリの一覧を完了コールバック付きで取得する (ビジーガードなし)
+ *
+ * 未接続の場合は一覧を空にしてからonDone(false)を呼ぶ
+ * 取得値が変わった場合だけupgradeReposChangedを通知し、busy状態には触れない
+ * @param onDone 完了コールバック (取得できた場合はtrue)
+ */
+void PackageController::loadUpgradeReposInternal(std::function<void(bool)> onDone)
+{
+    if (!m_connected) {
+        if (!m_upgradeRepos.isEmpty()) {
+            m_upgradeRepos.clear();
+            emit upgradeReposChanged();
+        }
+        if (onDone)
+            onDone(false);
+        return;
+    }
+
+    m_dbus->getUpgradeRepos([this, onDone](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok || args.isEmpty()) {
+            if (onDone)
+                onDone(ok);
+            return;
+        }
+        const QStringList repos = args.at(0).toStringList();
+        if (repos == m_upgradeRepos) {
+            if (onDone)
+                onDone(true);
+            return;
+        }
+        m_upgradeRepos = repos;
+        emit upgradeReposChanged();
+        if (onDone)
+            onDone(true);
+    });
+}
+
+/**
+ * @brief リポジトリを「切り替え」の対象にする/外し、依存関係を解決し直す
+ *
+ * 未接続またはビジー中は何もしない
+ * バックエンドが拒否した場合はエラーを通知する
+ * 成功した場合は一覧を更新し、busyを保持したまま依存関係の解決へ引き継ぐ
+ * パッケージ一覧の再取得は依存関係の解決の流れに任せる
+ *
+ * @param alias 対象のリポジトリエイリアス
+ * @param enabled trueで対象に追加し、falseで取り消す
+ */
+void PackageController::setRepoUpgrade(const QString &alias, bool enabled)
+{
+    if (!m_connected || m_busy) {
+        return;
+    }
+
+    setBusy(true);
+    m_dbus->setRepoUpgrade(alias, enabled, [this](bool ok, const QString &, const QString &errorText,
+                                                  const QVariantList &args) {
+        const bool success = ok && !args.isEmpty() && args.at(0).toBool();
+        if (!success) {
+            setBusy(false);
+            emit errorOccurred(!errorText.isEmpty() ? errorText : tr("Failed to change the repository switch setting"));
+            return;
+        }
+        loadUpgradeRepos();
+        // busyを解除するとbusy解除時の保留処理が別の操作を開始し、解決が実行されずに
+        // 切り替えだけが適用された状態になり得るため、busyを保持したまま解決を開始する
+        startResolve();
     });
 }
 

@@ -14,6 +14,7 @@
 #define QZYPPER_GUI_CONTROLLERS_PACKAGECONTROLLER_H
 
 #include <QObject>
+#include <QElapsedTimer>
 #include <QQmlEngine>
 #include <QPalette>
 #include <QVariantList>
@@ -72,6 +73,7 @@ class PackageController : public QObject
     Q_PROPERTY(int updateCount READ updateCount NOTIFY updateCountChanged)                   // 更新可能数 (-1 = 不明)
     Q_PROPERTY(QVariantList rpmGroups READ rpmGroups NOTIFY rpmGroupsChanged)                // RPMグループツリー
     Q_PROPERTY(QVariantList locales READ locales NOTIFY localesChanged)                      // 言語サポート一覧
+    Q_PROPERTY(QStringList upgradeRepos READ upgradeRepos NOTIFY upgradeReposChanged)        // 「切り替え」対象リポジトリのエイリアス一覧
 
 public:
     explicit PackageController(QObject *parent = nullptr); /* QML用コントローラと関連モデルを初期化する */
@@ -103,6 +105,8 @@ public:
     QVariantList rpmGroups() const { return m_rpmGroups; }
     /** @brief 言語サポート一覧のキャッシュを返す */
     QVariantList locales() const { return m_locales; }
+    /** @brief 「切り替え」対象リポジトリのエイリアス一覧のキャッシュを返す */
+    QStringList upgradeRepos() const { return m_upgradeRepos; }
     QVariantMap currentPackageDetails() const {                              // 選択中の詳細
         return m_currentDetails;
     }
@@ -193,6 +197,14 @@ public:
     Q_INVOKABLE void refreshReposAsync();                                     // 全リポ非同期リフレッシュ
     Q_INVOKABLE void cancelRefresh();                                         // リフレッシュキャンセル
     Q_INVOKABLE void refreshSingleRepo(const QString &alias);                 // 個別リポ非同期リフレッシュ
+    /**
+     * @brief リポジトリを「切り替え」の対象にする/外し、依存関係を解決し直す
+     * @param alias 対象リポジトリのエイリアス
+     * @param enabled trueで対象に追加し、falseで取り消す
+     * @note 未接続またはビジー中は何もしない
+     * @note 成功後に一覧を更新し、busyを保持したまま依存関係を解決する
+     */
+    Q_INVOKABLE void setRepoUpgrade(const QString &alias, bool enabled);
 
     // サービス管理
     Q_INVOKABLE void loadServices();                                        // サービス一覧読込
@@ -251,9 +263,6 @@ signals:
     void pendingLocaleChangesChanged();                     // 言語サポート変更予定一覧変更
     void diskUsageChanged();                                // ディスク使用量変更
 
-    void progressChanged(const QString &packageName,        // 操作進捗
-                         int percentage,
-                         const QString &stage);
     void commitProgressChanged(const QString &packageName,  // コミット進捗 (詳細版)
                                int percentage,
                                const QString &stage,
@@ -308,7 +317,7 @@ signals:
 
     void lockFinished(bool success);                               // ロック追加/削除結果
     void solverTestcaseCreated(const QString &path);               // テストケース保存パス
-    void scriptOutputReceived(const QVariantMap &line);            // RPMスクリプト出力 (1行)
+    void scriptOutputBatchReceived(const QVariantList &entries);   // RPMスクリプト出力 (バッチ)
     void localRpmsFinished(const QVariantMap &result);             // ローカルRPM選択結果 (success/problems/summary)
     void repoFilePreviewReady(bool ok, const QVariantList &repos,  // .repo解析結果
                               const QString &content, const QString &error);
@@ -319,6 +328,7 @@ signals:
     void updateCountChanged();                                     // 更新可能パッケージ数変更
     void rpmGroupsChanged();                                       // RPMグループツリー変更
     void localesChanged();                                         // 言語サポート一覧変更
+    void upgradeReposChanged();                                    // 「切り替え」対象リポジトリ一覧変更
     void packagesActionFinished(const QVariantMap &result);        // 一括選択結果 (ok/changed/skipped/failed)
     void startupTasksFinished();                                   // 起動時処理の完了 (成功/失敗/切断のいずれでも1回)
 
@@ -329,6 +339,15 @@ private:
     void setStatusMessage(const QString &msg);                /* ステータスメッセージを更新して通知する */
     void setSearchError(const QString &err);                  /* 検索パラメータエラーを更新して通知する */
     void cacheTransactionSummary(const QVariantMap &result);  /* ソルバー結果内の概要をキャッシュする */
+
+    /**
+     * @brief 依存関係の解決をD-Busで開始し、完了時にresolveFinishedを発行する
+     *
+     * 呼び出し元の操作からbusyを途切れさせずに解決へ引き継ぐために使う
+     * 完了時 (失敗・切断を含む) にbusyを解除する
+     * @pre 呼び出し元がbusyをtrueにしたまま保持していること (本関数はbusyを設定しない)
+     */
+    void startResolve();
 
     /**
      * @brief 現在のソースに応じてパッケージ一覧を非同期で再取得する
@@ -342,11 +361,44 @@ private:
     void refreshPackageStatuses(bool newGeneration = false);            /* シリアル管理下でパッケージ一覧を再取得する */
     void refreshPendingChanges();                                       /* 合体と直列化を行って変更予定を再取得する */
     void refreshPendingChangesThen(std::function<void(bool)> onDone);   /* 選択状態反映後に完了通知する */
+
+    /**
+     * @brief 補助一覧を完了コールバック付きで読み込む (非同期)
+     *
+     * Q_INVOKABLEの公開関数は、これらをコールバックなしで呼ぶ (QMLからの挙動は変えない)
+     * 応答をモデルとシグナルへ反映した後にonDoneを1回だけ呼ぶ
+     * 失敗、未接続、古い応答の破棄でもonDone(false)を1回だけ呼ぶ
+     * バックエンド切断時はDBusClientが応答を破棄するためonDoneは呼ばれない (busyは切断処理が解除する)
+     * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+     */
+    void loadPackageDetailsInternal(const QString &name, std::function<void(bool)> onDone);
+    void loadPatternsInternal(std::function<void(bool)> onDone);
+    void loadPatchesInternal(int category, std::function<void(bool)> onDone);
+    void loadSolverSettingsInternal(std::function<void(bool)> onDone);
+    void loadLocalesInternal(std::function<void(bool)> onDone);
+
     void onRepoFileRead(quint64 request, bool readOk,
                         const QByteArray &contentBytes,
                         const QString &readError);                      /* GUIスレッドで.repo読み込み結果を処理する */
     void fetchCommitRevision(int attemptsLeft);                         /* revisionと変更予定の整合を取得する */
     void clearPrompts();                                                /* 未応答プロンプトを全て破棄する */
+
+    /**
+     * @brief 「切り替え」対象リポジトリの一覧をバックエンドから取得する (ビジーガードなし)
+     *
+     * 未接続の場合は一覧を空にする
+     * 取得値が変わった場合だけupgradeReposChangedを通知し、busy状態には触れない
+     */
+    void loadUpgradeRepos();
+
+    /**
+     * @brief 「切り替え」対象リポジトリの一覧を完了コールバック付きで取得する (ビジーガードなし)
+     *
+     * 未接続の場合は一覧を空にしてからonDone(false)を呼ぶ
+     * 取得値が変わった場合だけupgradeReposChangedを通知し、busy状態には触れない
+     * @param onDone 完了コールバック (取得できた場合はtrue)
+     */
+    void loadUpgradeReposInternal(std::function<void(bool)> onDone);
 
     /**
      * @brief バックエンド切断時に再接続と再初期化を非同期で試みる
@@ -370,6 +422,17 @@ private:
     void resolveBatchAction(quint64 token, const QVariantMap &result); /* 一括変更後に依存関係を解決する */
     void completeBatchAction(quint64 token, QVariantMap result,        /* 一覧と変更予定の再取得後に完了する */
                              bool solverOk);
+
+    /**
+     * @brief 一覧と変更予定を再取得してから編集完了処理を呼ぶ
+     *
+     * 一覧応答と変更予定の両方が反映された後にdoneを呼ぶ
+     * 切断で世代が変わった場合はdoneを呼ばず、busy解除は切断処理に任せる
+     *
+     * @param newGeneration 取得後に世代カウンタを進める場合はtrue
+     * @param done 再取得完了コールバック (一覧と変更予定の両方が成功した場合のみtrue)
+     */
+    void refreshAfterEdit(bool newGeneration, std::function<void(bool ok)> done);
     void failBatchAction(quint64 token, const QVariantMap &result,     /* 一括操作の失敗を通知する */
                          const QString &errorText);
     void finishPackagesAction(quint64 token, const QVariantMap &result); /* 一括操作の結果を1回だけ通知する */
@@ -403,6 +466,12 @@ private:
     bool m_connected = false;                                        // バックエンド接続状態
     bool m_initialized = false;                                      // 初期化完了状態
     bool m_busy = false;                                             // 処理中フラグ
+    QElapsedTimer m_busyTimer;                                       // ビジー継続時間の計測用
+    quint64 m_busyStartCalls = 0;                                    // ビジー開始時の送信済み呼び出し数
+    quint64 m_commitProgressSignals = 0;                             // コミット中のCommitProgressChanged受信数
+    quint64 m_commitScriptSignals = 0;                               // コミット中のScriptOutputBatch受信数
+    quint64 m_commitScriptLines = 0;                                 // コミット中のScriptOutputBatch行数
+    quint64 m_commitStateSignals = 0;                                // コミット中のPackageStateChanged受信数
     QString m_statusMessage;                                         // ステータスメッセージ
     QVariantList m_packages;                                         // パッケージ一覧キャッシュ
     QVariantList m_repos;                                            // リポジトリ一覧キャッシュ
@@ -442,6 +511,7 @@ private:
     int m_updateCount = -1;                                          // 更新可能パッケージ数 (-1 = 不明)
     QVariantList m_rpmGroups;                                        // RPMグループツリーキャッシュ
     QVariantList m_locales;                                          // 言語サポート一覧キャッシュ
+    QStringList m_upgradeRepos;                                      // 「切り替え」対象リポジトリのエイリアス一覧キャッシュ
     bool m_updateCountPending = false;                               // ビジー中の更新可能数取得要求
     bool m_lastSearchCaseSensitive = false;                          // 最後の検索の大文字小文字区別
     bool m_startupPending = false;                                   // 起動時処理の開始待ち
@@ -455,6 +525,7 @@ private:
     std::vector<std::pair<quint64, std::function<void(bool, const QVariantList &)>>>
         m_listWaiters;                                               // 一覧取得の完了待機者 (古い要求も最新結果で通知)
     quint64 m_batchGeneration = 0;                                   // 一括操作の世代 (遅延応答破棄用)
+    quint64 m_editGeneration = 0;                                    // 編集完了処理の世代 (切断時の遅延応答破棄用)
     bool m_batchInFlight = false;                                    // 一括操作が実行中
     QVariantMap m_batchResult;                                       // 一括操作のAPI結果 (切断時の通知用)
 };

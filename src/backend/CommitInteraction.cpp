@@ -260,6 +260,87 @@ bool fileConflictAnswerContinue(const QVariantMap &answer)
     return answer.value(QStringLiteral("action")).toString() == QStringLiteral("continue");
 }
 
+// ─── ProgressThrottle ────────────────────────
+
+/**
+ * @brief サンプルを送信すべきか判定し、送信時は内部状態を更新する
+ * @param sample 判定対象の進捗サンプル
+ * @param now 現在時刻
+ * @return 送信する場合true
+ * @note 初回、package/stage/ステップ数の変化、0/100%、前回送信から
+ *       kProgressIntervalMs 以上の経過のいずれかで送信する。
+ *       送信しなかったサンプルは最新1件を保留し、takePending() で回収できる
+ */
+bool ProgressThrottle::shouldEmit(const ProgressSample &sample,
+                                  std::chrono::steady_clock::time_point now)
+{
+    // 初回は必ず送る
+    if (!m_hasLast) {
+        m_last = sample;
+        m_lastEmit = now;
+        m_hasLast = true;
+        return true;
+    }
+
+    // 全項目が同じサンプルは再送しない
+    const bool identical = sample.package == m_last.package
+        && sample.stage == m_last.stage
+        && sample.percentage == m_last.percentage
+        && sample.totalSteps == m_last.totalSteps
+        && sample.completedSteps == m_last.completedSteps
+        && sample.overallPercentage == m_last.overallPercentage;
+    if (identical) {
+        // 最新値が送信済みと一致するため、それ以前の保留は古い値になっている
+        m_pending.reset();
+        return false;
+    }
+
+    // パッケージ・ステージ・ステップ数の変化は即時通知する
+    bool accepted = sample.package != m_last.package
+        || sample.stage != m_last.stage
+        || sample.totalSteps != m_last.totalSteps
+        || sample.completedSteps != m_last.completedSteps;
+
+    // 0%と100%は間引かずに通知する
+    if (!accepted && (sample.percentage == 0 || sample.percentage == 100))
+        accepted = true;
+
+    // 前回送信から一定時間が経過していれば通知する
+    if (!accepted
+        && (now - m_lastEmit) >= std::chrono::milliseconds(CommitLimits::kProgressIntervalMs))
+        accepted = true;
+
+    if (accepted) {
+        m_last = sample;
+        m_lastEmit = now;
+        m_pending.reset();
+    } else {
+        // 間引いたサンプルを最新1件だけ保留し、takePending() で送り漏れを回収できるようにする
+        m_pending = sample;
+    }
+    return accepted;
+}
+
+/**
+ * @brief 間引かれて未送信の最新サンプルを取り出し、送信済みとして記録する
+ * @param now 現在時刻
+ * @return 未送信サンプル。無ければ std::nullopt
+ * @note 取り出したサンプルは呼出側が必ず送信する前提で m_last / m_lastEmit に反映する。
+ *       これにより同じサンプルの二重送信や、直後の間引き判定の基準ずれを防ぐ
+ */
+std::optional<ProgressSample> ProgressThrottle::takePending(std::chrono::steady_clock::time_point now)
+{
+    if (!m_pending)
+        return std::nullopt;
+
+    std::optional<ProgressSample> pending = std::move(m_pending);
+    m_pending.reset();
+    m_last = *pending;
+    m_lastEmit = now;
+    m_hasLast = true;
+    return pending;
+}
+
 // ─── ScriptOutputAggregator ────────────────────────
 
 /**
@@ -268,6 +349,15 @@ bool fileConflictAnswerContinue(const QVariantMap &answer)
  */
 ScriptOutputAggregator::ScriptOutputAggregator(ScriptOutputFn sink)
     : m_emit(std::move(sink))
+{
+}
+
+/**
+ * @brief 集約器をバッチ送出先付きで構築する
+ * @param batchSink フラッシュ時にまとめて呼ぶコールバック
+ */
+ScriptOutputAggregator::ScriptOutputAggregator(ScriptOutputBatchFn batchSink)
+    : m_emitBatch(std::move(batchSink))
 {
 }
 
@@ -287,7 +377,7 @@ void ScriptOutputAggregator::addLine(const QString &package, const QString &scri
     if (clean.isEmpty())
         return;
 
-    m_pending.push_back(Pending{package, scriptType, clean, isError});
+    m_pending.push_back(ScriptOutputEntry{package, scriptType, clean, isError});
     m_collected.append(clean);
 
     if (m_collected.size() > CommitLimits::kMaxScriptLines) {
@@ -311,7 +401,7 @@ void ScriptOutputAggregator::addRpmMessage(const QString &line, bool isError,
     if (clean.isEmpty())
         return;
 
-    m_pending.push_back(Pending{QString(), QStringLiteral("rpm"), clean, isError});
+    m_pending.push_back(ScriptOutputEntry{QString(), QStringLiteral("rpm"), clean, isError});
     m_rpmMessages.append(clean);
 
     if (m_rpmMessages.size() > CommitLimits::kMaxScriptLines) {
@@ -342,8 +432,11 @@ void ScriptOutputAggregator::maybeFlush(Clock::time_point now)
  */
 void ScriptOutputAggregator::flush(Clock::time_point now)
 {
-    if (m_emit) {
-        for (const Pending &pending : m_pending)
+    if (m_emitBatch) {
+        if (!m_pending.empty())
+            m_emitBatch(m_pending);
+    } else if (m_emit) {
+        for (const ScriptOutputEntry &pending : m_pending)
             m_emit(pending.package, pending.scriptType, pending.line, pending.isError);
     }
 

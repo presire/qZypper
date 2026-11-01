@@ -38,6 +38,16 @@ target_link_libraries(test-PackageListModel PRIVATE Qt6::Test)
 add_test(NAME PackageListModel COMMAND test-PackageListModel)
 set_tests_properties(PackageListModel PROPERTIES TIMEOUT 30)
 
+# リポジトリ切替の性能ベースライン (QZYPPER_PERF=1かつ非rootの時のみ実測、既定はスキップ)
+add_executable(test-PerfBaseline tst_PerfBaseline.cpp
+    ../src/gui/models/PackageListModel.cpp
+    ../src/gui/models/PackageFilterProxyModel.cpp)
+target_include_directories(test-PerfBaseline PRIVATE ../src/gui/models)
+target_link_libraries(test-PerfBaseline PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME PerfBaseline COMMAND test-PerfBaseline)
+set_tests_properties(PerfBaseline PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 600
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
 # リポジトリファイルのプレビュー読み込み (通常ファイル判定 / サイズ上限、root不要)
 add_executable(test-RepoFilePreview tst_RepoFilePreview.cpp
     ../src/gui/controllers/RepoFilePreview.cpp)
@@ -73,6 +83,20 @@ add_executable(test-SolverSettingsReset tst_SolverSettingsReset.cpp)
 target_link_libraries(test-SolverSettingsReset PRIVATE qzypper-zypp Qt6::Test)
 add_test(NAME SolverSettingsReset COMMAND test-SolverSettingsReset)
 set_tests_properties(SolverSettingsReset PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# 取消し後のソルバーモード (upgradeMode / updateMode) のリセット (一時ルート、root / ネットワーク不要)
+add_executable(test-SolverModeReset tst_SolverModeReset.cpp)
+target_link_libraries(test-SolverModeReset PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME SolverModeReset COMMAND test-SolverModeReset)
+set_tests_properties(SolverModeReset PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
+    ENVIRONMENT "ZYPPTMPDIR=/tmp")
+
+# リポジトリ切り替えとベンダー変更許可の保持 (一時ルート、root / ネットワーク不要)
+add_executable(test-RepoSwitch tst_RepoSwitch.cpp)
+target_link_libraries(test-RepoSwitch PRIVATE qzypper-zypp Qt6::Test)
+add_test(NAME RepoSwitch COMMAND test-RepoSwitch)
+set_tests_properties(RepoSwitch PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" TIMEOUT 120
     ENVIRONMENT "ZYPPTMPDIR=/tmp")
 
 # 自動更新対象の必要時リフレッシュ (一時ルート、root / ネットワーク不要)

@@ -8,6 +8,7 @@
 #include <QDBusServiceWatcher>
 #include <QDBusPendingCallWatcher>
 #include <QDBusUnixFileDescriptor>
+#include <QElapsedTimer>
 #include <QMap>
 #include <QVariantMap>
 #include <QVariantList>
@@ -129,6 +130,10 @@ public slots:
     // 状態変更
     /** @brief パッケージの要求状態を変更する */
     bool SetPackageStatus(const QString &name, int status);              // パッケージ状態変更
+    /** @brief リポジトリ切り替え要求を変更する (反映には依存解決が必要) */
+    bool SetRepoUpgrade(const QString &alias, bool enabled);
+    /** @brief プール内に存在する切り替え対象のエイリアス一覧を返す */
+    QStringList GetUpgradeRepos();
     /** @brief リポジトリ内の指定版をパッケージの候補として選択する */
     bool SetPackageVersion(const QString &name,                          // パッケージバージョン変更
                            const QString &version,
@@ -253,7 +258,6 @@ public slots:
     // NOTE: 以下のシグナルはD-Busイントロスペクション用の宣言、
     //       実際の送信は、emitToOwner()による所有者宛て (unicast) で行い、Qtのemitは使用しない
 signals:
-    void ProgressChanged(const QString &packageName, int percentage, const QString &stage);  // 操作進捗
     void CommitProgressChanged(const QString &packageName, int percentage,                   // コミット進捗 (詳細版)
                                const QString &stage, int totalSteps,
                                int completedSteps, int overallPercentage);
@@ -265,7 +269,7 @@ signals:
     void OperationStateChanged(const QVariantMap &state);                                    // 操作状態の更新
     void PromptRequested(uint id, const QString &type, const QVariantMap &data);             // 問合せの表示要求
     void PromptClosed(uint id);                                                              // 問合せ終了 (回答/期限切れ/中断)
-    void ScriptOutput(const QVariantMap &output);                                            // スクリプト/RPM出力行
+    void ScriptOutputBatch(const QVariantList &entries);                                     // スクリプト/RPM出力のバッチ
     void PoolReloaded();                                                                     // パッケージプール再読込
 
 private:
@@ -324,6 +328,8 @@ private:
     void cancelAuthorization(const QString &id);
 
     QTimer m_idleTimer;                                // 所有者不在が5分続くと自動終了するタイマ
+    QElapsedTimer m_workerTimer;                       // ワーカー実行時間の計測用
+    QString m_workerMember;                            // 計測中ワーカーのメソッド名
     QDBusServiceWatcher m_ownerWatcher;                // 所有者のバス接続消失を監視
     QString m_owner;                                   // セッション所有者の一意バス名
     bool m_busy = false;                               // 主スレッドのみが変更する処理中フラグ

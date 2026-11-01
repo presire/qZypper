@@ -266,6 +266,7 @@ ZyppManager::LocalRpmInstallResult ZyppManager::installLocalRpms(std::vector<Loc
         resolver->setDefaultSolverFlags();
         applySolverOverridesLocked(resolver);
         resolver->setIgnoreAlreadyRecommended(true);
+        syncUpgradeReposLocked(resolver);
         result.success = resolver->resolvePool();
     }
     catch (const zypp::Exception &e) {

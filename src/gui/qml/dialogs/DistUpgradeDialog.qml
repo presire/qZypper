@@ -40,6 +40,16 @@ Dialog {
             wrapMode: Text.WordWrap  // 幅に収まらない場合は単語単位で折り返す
         }
 
+        // リポジトリの切り替えが有効なときの注記 (切り替えではベンダー変更が許可されるため)
+        Label {
+            Layout.fillWidth: true                                       // 親の幅いっぱいに広げる
+            visible: PackageController.upgradeRepos.length > 0           // 切り替え対象のリポジトリがあるときだけ表示する
+            text: qsTr("Repository switching is active. Vendor changes are allowed for this upgrade.")  // 注記の文字列
+            color: palette.text                                          // テーマの文字色
+            font.bold: true                                              // 通常の説明文と区別するため太字にする
+            wrapMode: Text.WordWrap                                      // 幅に収まらない場合は単語単位で折り返す
+        }
+
         // ベンダー変更を許可するかの選択
         CheckBox {
             id: vendorChangeCheck  // ベンダー変更チェックボックスの参照名

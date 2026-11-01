@@ -19,6 +19,7 @@
 #include <cerrno>
 #include <QFileInfo>
 #include <QUrl>
+#include <memory>
 #include "PackageController.h"
 #include "DBusClient.h"
 #include "LicenseConfirmationResult.h"
@@ -71,9 +72,9 @@ void PackageController::setPackageStatus(const QString &name, int status)
         m_dbus->resolveDependencies([this](bool rok, const QString &, const QString &, const QVariantList &) {
             if (!rok)
                 emit errorOccurred(m_dbus->lastError());
-            refreshPackageStatuses();
-            refreshPendingChanges();
-            setBusy(false);
+            refreshAfterEdit(false, [this](bool) {
+                setBusy(false);
+            });
         });
     });
 }
@@ -107,10 +108,15 @@ void PackageController::setPackageVersion(const QString &name,
         m_dbus->resolveDependencies([this, name](bool rok, const QString &, const QString &, const QVariantList &) {
             if (!rok)
                 emit errorOccurred(m_dbus->lastError());
-            refreshPackageStatuses();
-            refreshPendingChanges();
-            loadPackageDetails(name);
-            setBusy(false);
+            refreshAfterEdit(false, [this, name](bool) {
+                // 詳細の再取得が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+                const quint64 generation = m_editGeneration;
+                loadPackageDetailsInternal(name, [this, generation](bool) {
+                    if (generation != m_editGeneration)
+                        return;
+                    setBusy(false);
+                });
+            });
         });
     });
 }
@@ -159,10 +165,15 @@ void PackageController::setPackageVersionStatus(const QString &name,
                 emit errorOccurred(m_dbus->lastError());
             }
 
-            refreshPackageStatuses();
-            refreshPendingChanges();
-            loadPackageDetails(name);
-            setBusy(false);
+            refreshAfterEdit(false, [this, name](bool) {
+                // 詳細の再取得が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+                const quint64 generation = m_editGeneration;
+                loadPackageDetailsInternal(name, [this, generation](bool) {
+                    if (generation != m_editGeneration)
+                        return;
+                    setBusy(false);
+                });
+            });
         });
     });
 }
@@ -254,21 +265,22 @@ void PackageController::togglePatternStatus(const QString &patternName)
                 return;
             }
 
-            if (result.value(QStringLiteral("success")).toBool()) {
-                // 成功時は自動選択された依存パッケージの状態を含めて一覧を再取得する
-                refreshPackageStatuses(sourceChanged);
-            } else {
-                // 衝突時は一覧を再取得してからコンフリクトダイアログを表示する
-                refreshPackageStatuses(sourceChanged);
-                auto problems = result.value(QStringLiteral("problems")).toList();
-                if (!problems.isEmpty())
-                    emit conflictsDetected(problems);
-            }
+            // 衝突時は一覧を再取得してからコンフリクトダイアログを表示する
+            QVariantList problems;
+            if (!result.value(QStringLiteral("success")).toBool())
+                problems = result.value(QStringLiteral("problems")).toList();
 
-            // パターン一覧もソルバー結果を反映して再取得
-            loadPatterns();
-            refreshPendingChanges();
-            setBusy(false);
+            refreshAfterEdit(sourceChanged, [this, problems](bool) {
+                // パターン一覧もソルバー結果を反映して再取得し、反映まで編集を受け付けない
+                const quint64 generation = m_editGeneration;
+                loadPatternsInternal([this, problems, generation](bool) {
+                    if (generation != m_editGeneration)
+                        return;
+                    setBusy(false);
+                    if (!problems.isEmpty())
+                        emit conflictsDetected(problems);
+                });
+            });
         });
     });
 }
@@ -281,15 +293,25 @@ void PackageController::togglePatternStatus(const QString &patternName)
 void PackageController::setPatchStatus(const QString &patchId, int status)
 {
     if (!m_connected) return;
+    if (m_busy) return;
+
+    setBusy(true);
 
     m_dbus->setPatchStatus(patchId, status, [this](bool ok, const QString &, const QString &errorText, const QVariantList &) {
         if (!ok) {
+            setBusy(false);
             emit errorOccurred(errorText);
             return;
         }
-        refreshPendingChanges();
-        refreshPackageStatuses();
-        loadPatches(m_patchCategory);
+        refreshAfterEdit(false, [this](bool) {
+            // パッチ一覧の反映が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+            const quint64 generation = m_editGeneration;
+            loadPatchesInternal(m_patchCategory, [this, generation](bool) {
+                if (generation != m_editGeneration)
+                    return;
+                setBusy(false);
+            });
+        });
     });
 }
 
@@ -316,18 +338,25 @@ void PackageController::selectAllNeededPatches(bool securityOnly, bool includeOp
     options[QStringLiteral("skipInteractive")] = true;
 
     m_dbus->selectAllNeededPatches(options, [this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
-        setBusy(false);
         if (!ok) {
+            setBusy(false);
             emit errorOccurred(errorText);
             return;
         }
         QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
-        refreshPackageStatuses(true);
         cacheTransactionSummary(result);
-        loadPatches(m_patchCategory);
-        // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool refreshed) {
-            emit selectPatchesFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+        // パッチ一覧の反映後に変更予定を更新し、その完了まで編集を受け付けない
+        const quint64 generation = m_editGeneration;
+        loadPatchesInternal(m_patchCategory, [this, result, generation](bool) {
+            if (generation != m_editGeneration)
+                return;
+            // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
+            refreshAfterEdit(true, [this, result, generation](bool refreshed) {
+                if (generation != m_editGeneration)
+                    return;
+                setBusy(false);
+                emit selectPatchesFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
+            });
         });
     });
 }
@@ -428,14 +457,17 @@ void PackageController::updateAllPackages()
             result[QStringLiteral("success")] = false;
             result[QStringLiteral("busError")] = true;
             setStatusMessage(message);
-            setBusy(false);
-            refreshPendingChangesThen([this, result](bool refreshed) {
+            // 変更予定の再取得完了まで編集を受け付けない。切断時は切断処理が busy を解除する
+            const quint64 generation = m_editGeneration;
+            refreshPendingChangesThen([this, result, generation](bool refreshed) {
+                if (generation != m_editGeneration)
+                    return;
+                setBusy(false);
                 emit updateAllFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
             });
             return;
         }
 
-        refreshPackageStatuses(true);
         cacheTransactionSummary(result);
 
         if (result[QStringLiteral("success")].toBool())
@@ -443,9 +475,9 @@ void PackageController::updateAllPackages()
         else
             setStatusMessage(tr("Dependency problems found"));
 
-        setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool refreshed) {
+        refreshAfterEdit(true, [this, result](bool refreshed) {
+            setBusy(false);
             emit updateAllFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
         });
     });
@@ -488,7 +520,6 @@ void PackageController::distUpgrade(bool allowVendorChange)
             return;
         }
 
-        refreshPackageStatuses(true);
         cacheTransactionSummary(result);
 
         if (result[QStringLiteral("success")].toBool())
@@ -496,9 +527,9 @@ void PackageController::distUpgrade(bool allowVendorChange)
         else
             setStatusMessage(tr("Dependency problems found"));
 
-        setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool refreshed) {
+        refreshAfterEdit(true, [this, result](bool refreshed) {
+            setBusy(false);
             emit distUpgradeFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
         });
     });
@@ -730,10 +761,15 @@ void PackageController::setSolverOption(const QString &key, bool value)
                 const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
                 applySolverResult(result);
             }
-            refreshPackageStatuses();
-            refreshPendingChanges();
-            loadSolverSettings();
-            setBusy(false);
+            refreshAfterEdit(false, [this](bool) {
+                // ソルバー設定の反映が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+                const quint64 generation = m_editGeneration;
+                loadSolverSettingsInternal([this, generation](bool) {
+                    if (generation != m_editGeneration)
+                        return;
+                    setBusy(false);
+                });
+            });
         });
     });
 }
@@ -779,10 +815,15 @@ void PackageController::setLocaleRequested(const QString &code, bool requested)
                 const QVariantMap result = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
                 applySolverResult(result);
             }
-            refreshPackageStatuses();
-            refreshPendingChanges();
-            loadLocales();
-            setBusy(false);
+            refreshAfterEdit(false, [this](bool) {
+                // 言語サポート一覧の反映が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+                const quint64 generation = m_editGeneration;
+                loadLocalesInternal([this, generation](bool) {
+                    if (generation != m_editGeneration)
+                        return;
+                    setBusy(false);
+                });
+            });
         });
     });
 }
@@ -1007,6 +1048,16 @@ void PackageController::resolveDependencies()
     if (m_busy) return;
 
     setBusy(true);
+    startResolve();
+}
+
+/**
+ * @brief 依存関係の解決を開始する (busyは呼び出し元が保持している前提)
+ *
+ * 成功時にパッケージ一覧と変更予定を再取得し、完了時にbusyを解除する
+ */
+void PackageController::startResolve()
+{
     setStatusMessage(tr("Resolving dependencies..."));
 
     m_dbus->resolveDependencies([this](bool ok, const QString &, const QString &errorText, const QVariantList &args) {
@@ -1036,22 +1087,25 @@ void PackageController::resolveDependencies()
             result[QStringLiteral("success")] = false;
             result[QStringLiteral("busError")] = true;
             setStatusMessage(message);
-            setBusy(false);
-            refreshPendingChangesThen([this, result](bool refreshed) {
+            // 変更予定の再取得完了まで編集を受け付けない。切断時は切断処理が busy を解除する
+            const quint64 generation = m_editGeneration;
+            refreshPendingChangesThen([this, result, generation](bool refreshed) {
+                if (generation != m_editGeneration)
+                    return;
+                setBusy(false);
                 emit resolveFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
             });
             return;
         }
 
-        if (result[QStringLiteral("success")].toBool()) {
+        if (result[QStringLiteral("success")].toBool())
             setStatusMessage(tr("Dependencies resolved"));
-            refreshPackageStatuses();
-        } else {
+        else
             setStatusMessage(tr("Dependency problems found"));
-        }
-        setBusy(false);
+
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool refreshed) {
+        refreshAfterEdit(false, [this, result](bool refreshed) {
+            setBusy(false);
             emit resolveFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
         });
     });
@@ -1298,6 +1352,11 @@ void PackageController::commitAsync()
     if (m_busy) {
         return;
     }
+    // コミット中のシグナル受信数を計測するため、開始時に集計をリセットする
+    m_commitProgressSignals = 0;
+    m_commitScriptSignals = 0;
+    m_commitScriptLines = 0;
+    m_commitStateSignals = 0;
     m_retryAction = [this]() { prepareCommit(); };
 
     if (m_commitRevision == 0) {
@@ -1336,12 +1395,22 @@ void PackageController::commitAsync()
         }
 
         // コミット後は一覧の内容が大きく変わるため、新しい世代として通知する
-        refreshPackageStatuses(true);
-        loadPatterns();
-        refreshPendingChanges();
-        // コミット完了後の更新可能数を解放時に1回だけ取得する
-        m_updateCountPending = true;
-        setBusy(false);
+        refreshAfterEdit(true, [this](bool) {
+            // パターン一覧と切り替え対象の両方の反映が終わるまで編集を受け付けない
+            const quint64 generation = m_editGeneration;
+            auto remaining = std::make_shared<int>(2);
+            auto finish = [this, generation, remaining]() {
+                if (generation != m_editGeneration)
+                    return;
+                if (--(*remaining) > 0)
+                    return;
+                // コミット完了後の更新可能数を解放時に1回だけ取得する
+                m_updateCountPending = true;
+                setBusy(false);
+            };
+            loadPatternsInternal([finish](bool) { finish(); });
+            loadUpgradeReposInternal([finish](bool) { finish(); });
+        });
     });
 }
 
@@ -1363,11 +1432,21 @@ void PackageController::restoreState()
 {
     if (m_busy) return;
 
+    setBusy(true);
+
     m_dbus->restoreState([this](bool ok, const QString &, const QString &, const QVariantList &) {
-        if (!ok && !m_dbus->lastError().isEmpty())
-            emit errorOccurred(m_dbus->lastError());
-        refreshPackageStatuses();
-        refreshPendingChanges();
+        const QString errorText = (!ok && !m_dbus->lastError().isEmpty()) ? m_dbus->lastError() : QString();
+        refreshAfterEdit(false, [this, errorText](bool) {
+            // 切り替え対象の反映が終わるまで編集を受け付けない (切断時は切断処理が解除する)
+            const quint64 generation = m_editGeneration;
+            loadUpgradeReposInternal([this, generation, errorText](bool) {
+                if (generation != m_editGeneration)
+                    return;
+                setBusy(false);
+                if (!errorText.isEmpty())
+                    emit errorOccurred(errorText);
+            });
+        });
     });
 }
 
@@ -1421,7 +1500,6 @@ void PackageController::installLocalRpms(const QVariantList &fileUrls)
             result[QStringLiteral("errorMessage")] = message;
         }
 
-        refreshPackageStatuses(true);
         cacheTransactionSummary(result);
 
         if (result.value(QStringLiteral("success")).toBool())
@@ -1431,9 +1509,9 @@ void PackageController::installLocalRpms(const QVariantList &fileUrls)
         else
             setStatusMessage(tr("Dependency problems found"));
 
-        setBusy(false);
         // 変更予定一覧の更新完了後に通知する (古い一覧で判定しないため)
-        refreshPendingChangesThen([this, result](bool refreshed) {
+        refreshAfterEdit(true, [this, result](bool refreshed) {
+            setBusy(false);
             emit localRpmsFinished(resultAfterPendingRefresh(result, refreshed, m_connected));
         });
     });

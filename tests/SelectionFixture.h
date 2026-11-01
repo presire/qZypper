@@ -14,9 +14,10 @@
 /**
  * @brief 選択系テスト用のrpm-mdリポジトリを生成する
  *
- * qz-avail (候補6件) と @System (導入済み3件)、および候補切り替え検証用の
- * qz-alt (2件) のprimary.xmlを書き出し、repo2solvでsolvへ変換する。
- * qz-altは既定では読み込まず、必要なテストだけが明示的にプールへ追加する
+ * qz-avail (候補6件) と @System (導入済み3件)、候補切り替え検証用の
+ * qz-alt (2件)、ベンダー変更検証用の qz-vendor (1件) のprimary.xmlを書き出し、
+ * repo2solvでsolvへ変換する。qz-altとqz-vendorは既定では読み込まず、
+ * 必要なテストだけが明示的にプールへ追加する
  */
 struct SelectionFixture
 {
@@ -30,6 +31,7 @@ struct SelectionFixture
         QString recommends;
         QString file;
         int checksumSeed;
+        QString vendor = QStringLiteral("openSUSE");
     };
 
     QString skipReason;  // repo2solv不在時のスキップ理由
@@ -37,6 +39,7 @@ struct SelectionFixture
     QString availSolv;   // qz-availのsolvパス
     QString systemSolv;  // @Systemのsolvパス
     QString altSolv;     // qz-altのsolvパス (候補切り替え検証用、既定では読み込まない)
+    QString vendorSolv;  // qz-vendorのsolvパス (ベンダー変更検証用、既定では読み込まない)
 
     /**
      * @brief フィクスチャを生成する
@@ -55,19 +58,24 @@ struct SelectionFixture
         const QString availDir = base + QStringLiteral("/qz-avail");
         const QString systemDir = base + QStringLiteral("/system");
         const QString altDir = base + QStringLiteral("/qz-alt");
+        const QString vendorDir = base + QStringLiteral("/qz-vendor");
         if (!writeRepo(availDir, availablePackages()))
             return false;
         if (!writeRepo(systemDir, systemPackages()))
             return false;
         if (!writeRepo(altDir, alternativePackages()))
             return false;
+        if (!writeRepo(vendorDir, vendorPackages()))
+            return false;
 
         availSolv = base + QStringLiteral("/qz-avail.solv");
         systemSolv = base + QStringLiteral("/system.solv");
         altSolv = base + QStringLiteral("/qz-alt.solv");
+        vendorSolv = base + QStringLiteral("/qz-vendor.solv");
         return runRepo2Solv(repo2solv, availDir, availSolv)
             && runRepo2Solv(repo2solv, systemDir, systemSolv)
-            && runRepo2Solv(repo2solv, altDir, altSolv);
+            && runRepo2Solv(repo2solv, altDir, altSolv)
+            && runRepo2Solv(repo2solv, vendorDir, vendorSolv);
     }
 
 private:
@@ -89,10 +97,11 @@ private:
                 "  <size package=\"1\" installed=\"1\" archive=\"1\"/>\n"
                 "  <location href=\"%1.rpm\"/>\n"
                 "  <format>\n"
-                "    <rpm:vendor>openSUSE</rpm:vendor>\n%5%6  </format>\n"
+                "    <rpm:vendor>%7</rpm:vendor>\n%5%6  </format>\n"
                 "</package>\n")
                 .arg(package.name, package.version, checksum(package.checksumSeed),
-                     package.summary, groupElement(package.group), extraElements(package));
+                     package.summary, groupElement(package.group), extraElements(package),
+                     package.vendor);
         }
         xml += QStringLiteral("</metadata>\n");
 
@@ -198,6 +207,16 @@ private:
             {QStringLiteral("qz-app"), QStringLiteral("1.0"),
              QStringLiteral("Productivity/Text/Editors"), QStringLiteral("Qz Application"),
              {}, {}, 11},
+        };
+    }
+
+    /** @brief ベンダー変更を伴う切り替え検証用のパッケージ (vendorはPackman) */
+    static QList<Package> vendorPackages()
+    {
+        return {
+            {QStringLiteral("qz-lib"), QStringLiteral("1.8"),
+             QStringLiteral("Productivity/Text/Editors"), QStringLiteral("Qz Library"),
+             {}, {}, 12, QStringLiteral("Packman")},
         };
     }
 

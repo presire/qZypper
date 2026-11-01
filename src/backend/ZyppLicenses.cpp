@@ -59,6 +59,10 @@ LicenseConfirmationResult ZyppManager::confirmLicenses(PromptAskFn askCallback)
             }
 
             const std::string text = solv.licenseToConfirm();
+            // needToAcceptLicense()はほぼ全候補で真のため、本文を持たない候補は確認不要として扱う
+            if (text.empty()) {
+                continue;
+            }
             const auto key = licenseApprovalKey(solv.name(), solv.edition().asString(),
                                                 solv.arch().asString(), item.repoInfo().alias(), text);
             if (m_acceptedLicenses.count(key)) {
@@ -66,8 +70,8 @@ LicenseConfirmationResult ZyppManager::confirmLicenses(PromptAskFn askCallback)
                 continue;
             }
 
-            // 本文なしまたは対話手段がない場合は安全側に倒し、未確認候補をコミットへ渡さない
-            if (text.empty() || !askCallback) {
+            // 本文があるのに対話手段がない場合は安全側に倒し、未確認候補をコミットへ渡さない
+            if (!askCallback) {
                 result.errorMessage = QStringLiteral("Cannot confirm the license for package %1")
                                           .arg(QString::fromStdString(solv.name()));
                 return result;

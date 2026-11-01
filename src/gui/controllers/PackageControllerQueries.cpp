@@ -12,7 +12,9 @@
  */
 #include <utility>
 #include <QDebug>
+#include <QElapsedTimer>
 #include "PackageController.h"
+#include "PerfLog.h"
 #include "DBusClient.h"
 #include "PackageListModel.h"
 #include "PackageFilterProxyModel.h"
@@ -144,6 +146,11 @@ void PackageController::requestPackageList(bool newGeneration,
                                                const QString &errorText, const QVariantList &args) {
         // 後続の要求がある場合は最新の応答を待ち、その完了時にまとめて通知する
         if (serial != m_listRequestSerial) {
+            if (qZypper::lcPerf().isDebugEnabled()) {
+                qCDebug(qZypper::lcPerf).noquote()
+                    << QStringLiteral("perf list stale serial=%1 latest=%2")
+                           .arg(serial).arg(m_listRequestSerial);
+            }
             return;
         }
         if (!ok) {
@@ -156,7 +163,31 @@ void PackageController::requestPackageList(bool newGeneration,
         }
         setSearchError(QString());
         m_packages = args.isEmpty() ? QVariantList() : args.at(0).toList();
+        const bool measurePerf = qZypper::lcPerf().isDebugEnabled();
+        QElapsedTimer applyTimer;
+        if (measurePerf)
+            applyTimer.start();
         m_packageModel->applyPackages(m_packages);
+        if (measurePerf) {
+            const qint64 applyMs = applyTimer.elapsed();
+            const char *sourceName = "Unknown";
+            switch (m_lastSource) {
+            case PackageSource::None: sourceName = "None"; break;
+            case PackageSource::Search: sourceName = "Search"; break;
+            case PackageSource::Repo: sourceName = "Repo"; break;
+            case PackageSource::Pattern: sourceName = "Pattern"; break;
+            case PackageSource::Patches: sourceName = "Patches"; break;
+            case PackageSource::Classification: sourceName = "Classification"; break;
+            case PackageSource::RpmGroup: sourceName = "RpmGroup"; break;
+            case PackageSource::Locale: sourceName = "Locale"; break;
+            }
+            // 検索文字列は利用者入力のため、改行や制御文字によるログ行の偽装を避けて長さだけを出力する
+            qCDebug(qZypper::lcPerf).noquote()
+                << QStringLiteral("perf list source=%1 paramLen=%2 rows=%3 applyMs=%4 visibleRows=%5 serial=%6")
+                       .arg(QLatin1String(sourceName)).arg(m_lastSourceParam.size())
+                       .arg(m_packages.size()).arg(applyMs)
+                       .arg(m_packageProxy->rowCount()).arg(serial);
+        }
         if (newGeneration) {
             ++m_listGeneration;
         }
@@ -287,17 +318,40 @@ void PackageController::loadPackagesByRepo(const QString &repoAlias)
  */
 void PackageController::loadPackageDetails(const QString &name)
 {
-    if (!m_connected) return;
+    loadPackageDetailsInternal(name, {});
+}
+
+/**
+ * @brief パッケージの詳細情報を完了コールバック付きで読み込む (非同期)
+ *
+ * 応答をcurrentPackageDetailsへ反映してcurrentPackageDetailsChangedを発行した後にonDoneを1回だけ呼ぶ
+ * 失敗、未接続、古い応答の破棄でもonDone(false)を1回だけ呼ぶ
+ * @param name パッケージ名
+ * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+ */
+void PackageController::loadPackageDetailsInternal(const QString &name, std::function<void(bool)> onDone)
+{
+    if (!m_connected) {
+        if (onDone)
+            onDone(false);
+        return;
+    }
 
     ++m_detailsRequestSerial;
     const quint64 serial = m_detailsRequestSerial;
 
-    m_dbus->getPackageDetails(name, [this, serial](
+    m_dbus->getPackageDetails(name, [this, serial, onDone](
                                    bool ok, const QString &, const QString &, const QVariantList &args) {
-        if (serial != m_detailsRequestSerial || !ok)
+        // 古い応答を破棄した場合も待機側の待機は解除する
+        if (serial != m_detailsRequestSerial || !ok) {
+            if (onDone)
+                onDone(false);
             return;
+        }
         m_currentDetails = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
         emit currentPackageDetailsChanged();
+        if (onDone)
+            onDone(true);
     });
 }
 
@@ -348,13 +402,34 @@ void PackageController::loadClassification(const QString &classification)
  */
 void PackageController::loadPatterns()
 {
-    if (!m_connected) return;
+    loadPatternsInternal({});
+}
 
-    m_dbus->getPatterns([this](bool ok, const QString &, const QString &, const QVariantList &args) {
-        if (!ok)
+/**
+ * @brief パターン一覧を完了コールバック付きで読み込む (非同期)
+ *
+ * 応答をm_patternsへ反映してpatternsChangedを発行した後にonDoneを1回だけ呼ぶ
+ * 失敗、未接続でもonDone(false)を1回だけ呼ぶ
+ * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+ */
+void PackageController::loadPatternsInternal(std::function<void(bool)> onDone)
+{
+    if (!m_connected) {
+        if (onDone)
+            onDone(false);
+        return;
+    }
+
+    m_dbus->getPatterns([this, onDone](bool ok, const QString &, const QString &, const QVariantList &args) {
+        if (!ok) {
+            if (onDone)
+                onDone(false);
             return;
+        }
         m_patterns = args.isEmpty() ? QVariantList() : args.at(0).toList();
         emit patternsChanged();
+        if (onDone)
+            onDone(true);
     });
 }
 
@@ -419,20 +494,45 @@ void PackageController::loadPackagesByPattern(const QString &patternName)
  */
 void PackageController::loadPatches(int category)
 {
-    if (!m_connected) return;
+    loadPatchesInternal(category, {});
+}
+
+/**
+ * @brief パッチ一覧を完了コールバック付きで読み込む (非同期)
+ *
+ * 応答をm_patchesへ反映してpatchesChangedを発行した後にonDoneを1回だけ呼ぶ
+ * 失敗、未接続、カテゴリ切り替えによる古い応答の破棄でもonDone(false)を1回だけ呼ぶ
+ * @param category パッチカテゴリ (PatchCategory)
+ * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+ */
+void PackageController::loadPatchesInternal(int category, std::function<void(bool)> onDone)
+{
+    if (!m_connected) {
+        if (onDone)
+            onDone(false);
+        return;
+    }
 
     // パッチはパッケージ一覧モデルとは別に保持する (パッケージ表へ混入させない)
     m_patchCategory = category;
-    m_dbus->getPatches(category, [this, category](bool ok, const QString &, const QString &errorText,
-                                                  const QVariantList &args) {
-        if (category != m_patchCategory)
-            return;  // 古い応答は破棄
+    m_dbus->getPatches(category, [this, category, onDone](bool ok, const QString &, const QString &errorText,
+                                                         const QVariantList &args) {
+        // 古い応答を破棄した場合も待機側の待機は解除する
+        if (category != m_patchCategory) {
+            if (onDone)
+                onDone(false);
+            return;
+        }
         if (!ok) {
             emit errorOccurred(errorText);
+            if (onDone)
+                onDone(false);
             return;
         }
         m_patches = args.isEmpty() ? QVariantList() : args.at(0).toList();
         emit patchesChanged();
+        if (onDone)
+            onDone(true);
     });
 }
 
@@ -542,6 +642,31 @@ void PackageController::refreshPendingChangesThen(std::function<void(bool)> onDo
 }
 
 /**
+ * @brief 一覧と変更予定を再取得してから編集完了処理を呼ぶ
+ *
+ * 一覧応答と変更予定の両方が反映された後にdoneを呼ぶ
+ * 切断で世代が変わった場合はdoneを呼ばず、busy解除は切断処理に任せる
+ *
+ * @param newGeneration 取得後に世代カウンタを進める場合はtrue
+ * @param done 再取得完了コールバック (一覧と変更予定の両方が成功した場合のみtrue)
+ */
+void PackageController::refreshAfterEdit(bool newGeneration, std::function<void(bool ok)> done)
+{
+    const quint64 generation = m_editGeneration;
+    requestPackageList(newGeneration, [this, generation, done](bool listOk, const QVariantList &) {
+        if (generation != m_editGeneration)
+            return;
+        refreshPendingChangesThen([this, generation, done, listOk](bool pendingOk) {
+            // 切断で世代が変わった場合はbusy解除も通知も切断処理が行う
+            if (generation != m_editGeneration)
+                return;
+            if (done)
+                done(listOk && pendingOk);
+        });
+    });
+}
+
+/**
  * @brief ディスク使用量を非同期で再取得する (キャッシュ更新)
  *
  * 完了後、diskUsageChangedシグナルが発行される
@@ -617,23 +742,44 @@ void PackageController::loadHistoryGroups(const QVariantMap &options, int reques
  */
 void PackageController::loadSolverSettings()
 {
+    loadSolverSettingsInternal({});
+}
+
+/**
+ * @brief ソルバー設定を完了コールバック付きで読み込む (非同期)
+ *
+ * 応答をsolverSettingsへ反映してsolverSettingsChangedを発行した後にonDoneを1回だけ呼ぶ
+ * 未対応バックエンドでは設定を空にして成功として扱う
+ * 失敗、未接続でもonDone(false)を1回だけ呼ぶ
+ * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+ */
+void PackageController::loadSolverSettingsInternal(std::function<void(bool)> onDone)
+{
     if (!m_connected) {
+        if (onDone)
+            onDone(false);
         return;
     }
 
-    m_dbus->getSolverSettings([this](bool ok, const QString &errorName,
-                                      const QString &errorText, const QVariantList &args) {
+    m_dbus->getSolverSettings([this, onDone](bool ok, const QString &errorName,
+                                            const QString &errorText, const QVariantList &args) {
         if (!ok) {
             if (errorName == QLatin1String("org.freedesktop.DBus.Error.UnknownMethod")) {
                 m_solverSettings.clear();
                 emit solverSettingsChanged();
+                if (onDone)
+                    onDone(true);
                 return;
             }
             emit errorOccurred(errorText);
+            if (onDone)
+                onDone(false);
             return;
         }
         m_solverSettings = args.isEmpty() ? QVariantMap() : args.at(0).toMap();
         emit solverSettingsChanged();
+        if (onDone)
+            onDone(true);
     });
 }
 
@@ -707,23 +853,44 @@ void PackageController::loadPackagesByRpmGroup(const QString &path)
  */
 void PackageController::loadLocales()
 {
+    loadLocalesInternal({});
+}
+
+/**
+ * @brief 言語サポート一覧を完了コールバック付きで読み込む (非同期)
+ *
+ * 応答をlocalesへ反映してlocalesChangedを発行した後にonDoneを1回だけ呼ぶ
+ * 未対応バックエンドでは空の一覧にして成功として扱う
+ * 失敗、未接続でもonDone(false)を1回だけ呼ぶ
+ * @param onDone 完了コールバック (応答を反映できた場合はtrue)
+ */
+void PackageController::loadLocalesInternal(std::function<void(bool)> onDone)
+{
     if (!m_connected) {
+        if (onDone)
+            onDone(false);
         return;
     }
 
-    m_dbus->getLocales([this](bool ok, const QString &errorName,
-                               const QString &errorText, const QVariantList &args) {
+    m_dbus->getLocales([this, onDone](bool ok, const QString &errorName,
+                                     const QString &errorText, const QVariantList &args) {
         if (!ok) {
             if (errorName == QLatin1String("org.freedesktop.DBus.Error.UnknownMethod")) {
                 m_locales.clear();
                 emit localesChanged();
+                if (onDone)
+                    onDone(true);
                 return;
             }
             emit errorOccurred(errorText);
+            if (onDone)
+                onDone(false);
             return;
         }
         m_locales = args.isEmpty() ? QVariantList() : args.at(0).toList();
         emit localesChanged();
+        if (onDone)
+            onDone(true);
     });
 }
 

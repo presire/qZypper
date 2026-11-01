@@ -51,7 +51,7 @@ On normal GUI exit (`Ctrl` + `Q` → `Qt.quit()`) the GUI's bus connection close
 - Mutating methods are owner-only. Only one operation runs at a time: a single worker thread executes it and the D-Bus reply is delayed until it finishes. Concurrent calls fail with `org.presire.qzypper.Error.Busy`. `CancelOperation()` (owner only) requests cooperative cancellation through a cancellation token.  
 - `Commit(t expectedRevision)`: the GUI reads the current selection revision with `GetSelectionRevision()` and passes it back. Dependencies must have been resolved for that exact revision, otherwise the call is rejected with `org.presire.qzypper.Error.SelectionChanged`.  
 - When an operation hits a repository signing key that is not yet trusted, the backend sends `PromptRequested(id, "gpg-key", data)` (with the key ID, fingerprint, owner, and dates) to the session owner. The owner answers with `AnswerPrompt(id, {"action": ...})`: `trust-temporary` trusts the key for the current operation only, `trust-permanent` imports it into the keyring, and `reject` refuses it. Both trust actions additionally require Polkit `trust-key`; while that authorization is pending, the prompt's 60-second timeout is paused, and a denied authorization rejects the key. An unanswered, expired, or invalid prompt rejects the key. If no prompt handler is available, the backend emits `UntrustedKeyDetected(a{sv})` and refuses the key; the user can then pre-approve that exact fingerprint with `TrustKey(s fingerprint)` (Polkit `trust-key`), and the key is imported once the next time libzypp asks for it. Signature problems (unsigned files, unknown key IDs, verification failures) and digest problems are always rejected without any prompt; there is no accept-once for them.  
-- Progress and state signals (`ProgressChanged`, `CommitProgressChanged`, `RepoRefreshProgress`, `TransactionFinished`, `ErrorOccurred`, `PackageStateChanged`, `UntrustedKeyDetected`, `PromptRequested`, `PromptClosed`) are unicast: they are sent only to the session owner, not broadcast to the bus.  
+- Progress and state signals (`CommitProgressChanged`, `RepoRefreshProgress`, `TransactionFinished`, `ErrorOccurred`, `PackageStateChanged`, `UntrustedKeyDetected`, `PromptRequested`, `PromptClosed`, `ScriptOutputBatch`) are unicast: they are sent only to the session owner, not broadcast to the bus.  
 
 ## Polkit Actions
 
@@ -108,6 +108,8 @@ The `org.presire.qzypper.initialize` action carries the annotation `org.freedesk
 | | `GetPackagesByLocale(s code) → aa{sv}` | Get packages for a locale (read) |
 | | `GetPendingLocaleChanges() → aa{sv}` | Get locale changes not yet committed (read) |
 | Status | `SetPackageStatus(name, status)` | Change package status |
+| | `SetRepoUpgrade(s alias, b enabled) → b` | Enable / disable a repository switch (owner only, no additional Polkit authorization). Advances the selection revision; call `ResolveDependencies()` to apply it. The alias is validated with the same rules as repository addition (non-empty, at most 200 UTF-8 bytes, no leading `.`, no control characters or path separators, etc.); an invalid alias returns `InvalidArgs`. Requests that are not accepted (unknown, system and local RPM repositories, etc.) return an `org.freedesktop.DBus.Error.Failed` error carrying the reason. Switching explicitly permits vendor changes, including with `DistUpgrade({allowVendorChange: false})`. |
+| | `GetUpgradeRepos() → as` | Get switch-target aliases still present in the pool (owner only, no additional Polkit authorization). Does not change the selection revision. |
 | | `SetPackageVersion(name, version, arch, repoAlias)` | Select specific package version |
 | | `SetPackageVersionStatus(s name, s version, s arch, s repoAlias, i status) → b` | Install or remove one version of a multiversion package (owner only; see below) |
 | | `SetPatternStatus(name, status)` | Change pattern status |
@@ -354,7 +356,6 @@ Repository URLs are validated before use. The scheme must be one of `http`, `htt
 
 | Signal | Description |
 |---|---|
-| `ProgressChanged(packageName, percentage, stage)` | Operation progress |
 | `CommitProgressChanged(packageName, percentage, stage, totalSteps, completedSteps, overallPercentage)` | Detailed commit progress |
 | `TransactionFinished(success, summary)` | Transaction completed |
 | `RepoRefreshProgress(repoAlias, percentage)` | Repository refresh progress |
@@ -364,7 +365,9 @@ Repository URLs are validated before use. The scheme must be one of `http`, `htt
 | `PromptRequested(id, type, data)` | In-flight prompt that needs an answer via `AnswerPrompt` (e.g. `gpg-key`, `license`, `media-change`, `file-conflicts`, `download-error`, `install-error`, `remove-error`) |
 | `PromptClosed(id)` | Prompt ended (answered, expired, or interrupted) |
 | `OperationStateChanged(state)` | Operation state changed (`a{sv}`, same keys as `GetOperationState()`) |
-| `ScriptOutput(output)` | Output of RPM scripts during commit (`a{sv}`) |
+| `ScriptOutputBatch(entries)` | Output of RPM scripts during commit, sent once per aggregator flush (`av` of `a{sv}` with `package`, `scriptType`, `line`, `isError`) |
 | `PoolReloaded()` | The package pool was reloaded; clients must reload lists |
+
+`CommitProgressChanged` is deduplicated and throttled to at least 100 ms between signals, except when the package, stage, or step counts change, or when the percentage is 0 or 100.
 
 These signals are unicast: they are sent only to the session owner, not broadcast to all bus clients.

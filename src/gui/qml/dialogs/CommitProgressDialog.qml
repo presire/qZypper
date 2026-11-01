@@ -40,34 +40,58 @@ Dialog {
     // PackageStateChangedを受信済みかどうか (受信後は推定を行わない)
     property bool _hasStateSignal: false  // 状態シグナル受信済みか
 
-    // 蓄積したスクリプト出力の行
-    property var scriptLines: []                 // 蓄積したスクリプト出力
+    // 蓄積したスクリプト出力の行数
+    property int scriptLineCount: 0              // 蓄積したスクリプト出力の行数
     // スクリプト出力のうちエラー行の数
     property int scriptErrorCount: 0             // 出力中のエラー行数
     // RPMスクリプト出力 (メモリ肥大化を防ぐため最新kMaxScriptLines行のみ保持)
     readonly property int kMaxScriptLines: 2000  // 保持する出力行の上限
 
     /**
-     * @brief スクリプト出力の1行を蓄積し、保持上限を超えた分は古い行から捨てる
-     * @param entry パッケージ名、行の内容、エラー種別を持つ出力要素
+     * @brief スクリプト出力のバッチを追記し、保持上限を超えた分は古い行から捨てる
+     * @param entries パッケージ名、行の内容、エラー種別を持つ出力要素の一覧
      */
-    function appendScriptLine(entry) {
-        var prefix = entry.package ? ("[" + entry.package + "] ") : ""
-        var lines = scriptLines
-        lines.push(prefix + (entry.line || ""))
-
-        // 保持上限を超えた場合は古い行から捨てる
-        if (lines.length > kMaxScriptLines) {
-            lines.splice(0, lines.length - kMaxScriptLines)
+    function appendScriptLines(entries) {
+        // 空のバッチでは表示を変更しない
+        if (!entries || entries.length === 0) {
+            return
         }
 
-        // エラー行の場合はエラー件数を数える
-        if (entry.isError === true) {
-            scriptErrorCount++
+        var parts = []
+        for (var i = 0; i < entries.length; ++i) {
+            var entry = entries[i]
+            var prefix = entry.package ? ("[" + entry.package + "] ") : ""
+            parts.push(prefix + (entry.line || ""))
+
+            // エラー行の場合はエラー件数を数える
+            if (entry.isError === true) {
+                scriptErrorCount++
+            }
         }
 
-        // 配列を再代入して表示を更新させる
-        scriptLines = lines
+        // バッチ全体を1回だけ追記する
+        var chunk = parts.join("\n")
+        scriptArea.insert(scriptArea.length, (scriptLineCount > 0 ? "\n" : "") + chunk)
+        scriptLineCount += parts.length
+
+        // 保持上限を超えた場合は、先頭から超過行数分の改行までを削除する
+        var excess = scriptLineCount - kMaxScriptLines
+        if (excess > 0) {
+            var text = scriptArea.text
+            var pos = -1
+            for (var n = 0; n < excess; ++n) {
+                var next = text.indexOf("\n", pos + 1)
+                if (next < 0) {
+                    break
+                }
+                pos = next
+            }
+
+            if (pos >= 0) {
+                scriptArea.remove(0, pos + 1)
+            }
+            scriptLineCount = kMaxScriptLines
+        }
     }
 
     // モデル操作ヘルパー、重複を防ぎ現在カードを考慮した検索と移動を行う
@@ -286,7 +310,8 @@ Dialog {
         _prevPkg = ""
         _prevStage = ""
         _hasStateSignal = false
-        scriptLines = []
+        scriptArea.clear()
+        scriptLineCount = 0
         scriptErrorCount = 0
 
         var sorted = pendingList.slice().sort(function(a, b) {
@@ -605,7 +630,7 @@ Dialog {
         ColumnLayout {
             Layout.fillWidth: true                                // 親の幅いっぱいに広げる
             spacing: 4                                            // 項目の間隔
-            visible: commitProgressDialog.scriptLines.length > 0  // 出力がある場合のみ表示する
+            visible: commitProgressDialog.scriptLineCount > 0     // 出力がある場合のみ表示する
 
             // 開閉ボタンとエラー件数の行
             RowLayout {
@@ -617,7 +642,7 @@ Dialog {
 
                     // 開閉状態を表す三角記号と行数付きの文字列
                     text: (checked ? "\u25BE " : "\u25B8 ")
-                          + qsTr("Package script output (%1 lines)").arg(commitProgressDialog.scriptLines.length)
+                          + qsTr("Package script output (%n line(s))", "", commitProgressDialog.scriptLineCount)
                     checkable: true                                      // 押すたびにオン/オフを切り替える
                     checked: false                                       // 初期状態は閉じておく
                     Accessible.name: qsTr("Show package script output")  // スクリーンリーダー向けの名前
@@ -626,9 +651,9 @@ Dialog {
                 // エラー行の件数バッジ
                 Label {
                     visible: commitProgressDialog.scriptErrorCount > 0                       // エラー行がある場合のみ表示する
-                    text: qsTr("%1 error lines").arg(commitProgressDialog.scriptErrorCount)  // エラー行の件数
-                    color: "#F44336"                                                         // エラー色 (赤)
-                    font.pixelSize: 12                                                       // 文字サイズ
+                    text: qsTr("%n error line(s)", "", commitProgressDialog.scriptErrorCount)  // エラー行の件数
+                    color: "#F44336"                                                                  // エラー色 (赤)
+                    font.pixelSize: 12                                                                // 文字サイズ
                 }
 
                 // ボタンとバッジを左寄せにするための余白
@@ -649,7 +674,6 @@ Dialog {
                 TextArea {
                     id: scriptArea  // スクリプト出力欄の参照名
 
-                    text: commitProgressDialog.scriptLines.join("\n")  // 蓄積したスクリプト出力
                     textFormat: TextEdit.PlainText                     // HTMLとして解釈させない
                     font.family: "monospace"                           // 等幅フォント
                     font.pixelSize: 12                                 // 文字サイズ
@@ -822,13 +846,13 @@ Dialog {
         }
 
         /**
-         * @brief スクリプト出力を受け取り、表示中なら蓄積する
-         * @param entry 出力要素
+         * @brief スクリプト出力のバッチを受け取り、表示中なら蓄積する
+         * @param entries 出力要素の一覧
          */
-        function onScriptOutputReceived(entry) {
+        function onScriptOutputBatchReceived(entries) {
             // ダイアログを表示中の場合のみ蓄積する
             if (commitProgressDialog.visible) {
-                commitProgressDialog.appendScriptLine(entry)
+                commitProgressDialog.appendScriptLines(entries)
             }
         }
 

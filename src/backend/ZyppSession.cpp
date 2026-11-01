@@ -52,6 +52,7 @@ bool ZyppManager::reloadIfChanged()
         return false;
     m_problems.clear();
     m_zypp->resolver()->undo();
+    resetSolverModesLocked();
     m_zypp->target()->reload();
     m_rpmStamp = databaseStamp(*m_zypp->target());
     return true;

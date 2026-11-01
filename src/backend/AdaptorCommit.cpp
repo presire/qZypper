@@ -1,5 +1,8 @@
 #include "PackageManagerAdaptor.h"
+#include "CommitInteraction.h"
 #include "ZyppManager.h"
+#include <chrono>
+#include <memory>
 
 namespace qZypper {
 namespace {
@@ -58,17 +61,43 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
         return {};
     }
     startPrivileged(QStringLiteral("org.presire.qzypper.install-packages"), [this] {
-        const auto commit = ZyppManager::instance().commit([this](const CommitProgressInfo &info) {
-            m_executor.control().stage(info.stage == "downloading" ? OperationStage::Downloading : OperationStage::Installing);
-            QMetaObject::invokeMethod(this, [this, info] {
+        // 間引きの状態はワーカースレッド内に閉じ込め、送信時だけmainスレッドへ渡す
+        // 進捗・状態の両コールバックと commit() 後の処理は、いずれも commit() を呼んだ
+        // このワーカースレッド上で同期的に実行される (ZyppCommit.cpp は libzypp の
+        // commit() を同一スレッドで呼び、受信側を別スレッドへ渡さない)。
+        // そのため throttle は排他制御なしで共有できる。
+        auto throttle = std::make_shared<ProgressThrottle>();
+
+        // 進捗の送信をmainスレッドへ引き渡す。間引き済みの保留サンプルの回収にも使う
+        const auto sendProgress = [this](const ProgressSample &sample) {
+            QMetaObject::invokeMethod(this, [this, sample] {
                 publishState();
-                const auto pkg = QString::fromStdString(info.packageName);
-                const auto stage = QString::fromStdString(info.stage);
-                emitToOwner(QStringLiteral("CommitProgressChanged"), {pkg, info.percentage, stage,
-                    info.totalSteps, info.completedSteps, info.overallPercentage});
-                emitToOwner(QStringLiteral("ProgressChanged"), {pkg, info.percentage, stage});
+                emitToOwner(QStringLiteral("CommitProgressChanged"),
+                            {sample.package, sample.percentage, sample.stage,
+                             sample.totalSteps, sample.completedSteps,
+                             sample.overallPercentage});
             }, Qt::QueuedConnection);
-        }, [this](const std::string &package, const std::string &event) {
+        };
+
+        // 間引きで送られなかった最新の進捗があれば送る。後続の進捗通知が来ないまま
+        // 長いRPMスクリプトに入っても、利用者に古い進捗が表示され続けないようにする
+        const auto flushPendingProgress = [throttle, sendProgress] {
+            if (const auto pending = throttle->takePending(std::chrono::steady_clock::now()))
+                sendProgress(*pending);
+        };
+
+        const auto commit = ZyppManager::instance().commit([throttle, sendProgress, this](const CommitProgressInfo &info) {
+            m_executor.control().stage(info.stage == "downloading" ? OperationStage::Downloading : OperationStage::Installing);
+            const ProgressSample sample{QString::fromStdString(info.packageName),
+                                        QString::fromStdString(info.stage),
+                                        info.percentage, info.totalSteps,
+                                        info.completedSteps, info.overallPercentage};
+            if (!throttle->shouldEmit(sample, std::chrono::steady_clock::now()))
+                return;
+            sendProgress(sample);
+        }, [this, flushPendingProgress](const std::string &package, const std::string &event) {
+            // 状態遷移の前に保留中の進捗を送り、受信側で「進捗→状態」の順序を保つ
+            flushPendingProgress();
             if (event == "install_start" || event == "remove_start")
                 m_executor.control().stage(OperationStage::Installing);
             QMetaObject::invokeMethod(this, [this, package, event] {
@@ -78,14 +107,22 @@ QVariantMap PackageManagerAdaptor::Commit(qulonglong expectedRevision)
         }, [this](const PromptRequest &request) {
             // libzyppワーカースレッド上で所有者の回答を同期的に待つ
             return m_executor.ask(request);
-        }, [this](const QString &package, const QString &scriptType, const QString &line, bool isError) {
-            // スクリプト/rpm出力はメインスレッドへ引き渡して送信する
-            QMetaObject::invokeMethod(this, [this, package, scriptType, line, isError] {
-                emitToOwner(QStringLiteral("ScriptOutput"), {QVariantMap{
-                    {"package", package}, {"scriptType", scriptType},
-                    {"line", line}, {"isError", isError}}});
+        }, [this](const std::vector<ScriptOutputEntry> &entries) {
+            // 行の変換はワーカースレッドで済ませ、送信だけをメインスレッドへ引き渡す
+            QVariantList batch;
+            batch.reserve(static_cast<int>(entries.size()));
+            for (const ScriptOutputEntry &entry : entries) {
+                batch.append(QVariantMap{
+                    {"package", entry.package}, {"scriptType", entry.scriptType},
+                    {"line", entry.line}, {"isError", entry.isError}});
+            }
+            QMetaObject::invokeMethod(this, [this, batch] {
+                emitToOwner(QStringLiteral("ScriptOutputBatch"), {batch});
             }, Qt::QueuedConnection);
         });
+
+        // 最後の進捗が間引かれていても、完了結果より先に利用者へ届ける
+        flushPendingProgress();
 
         const auto &classification = commit.classification;
         QVariantMap value{{"success", commit.success},

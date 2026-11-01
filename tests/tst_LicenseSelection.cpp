@@ -244,6 +244,49 @@ private slots:
         QCOMPARE(package("qz-new")->status(), zypp::ui::S_Install);
     }
 
+    /** @brief ライセンス本文を持たない候補は対話も状態変更もせず確認を通過することを検証する */
+    void unlicensedCandidatePassesWithoutPrompt()
+    {
+        loadUnlicensedRepo();
+        auto &manager = ZyppManager::instance();
+        const auto sel = package("qz-new");
+        QVERIFY(sel && sel->candidateObj());
+        const auto solv = sel->candidateObj().satSolvable();
+        QVERIFY(solv.needToAcceptLicense());
+        QVERIFY(solv.licenseToConfirm().empty());
+        QVERIFY(sel->setStatus(zypp::ui::S_Install));
+        const auto before = sel->candidateObj().status();
+        int prompts = 0;
+        const auto result = manager.confirmLicenses([&prompts](const PromptRequest &) {
+            ++prompts;
+            return QVariantMap{{QStringLiteral("action"), QStringLiteral("accept")}};
+        });
+        QVERIFY2(result.success, qPrintable(result.errorMessage));
+        QVERIFY(!result.changed);
+        QCOMPARE(prompts, 0);
+        QCOMPARE(result.acceptedCount, 0);
+        QCOMPARE(sel->status(), zypp::ui::S_Install);
+        QCOMPARE(sel->candidateObj().status(), before);
+        const auto withoutPrompt = manager.confirmLicenses({});
+        QVERIFY2(withoutPrompt.success, qPrintable(withoutPrompt.errorMessage));
+    }
+
+    /** @brief ライセンス本文を持たない候補をコミット前検査が未確認として拒否しないことを検証する */
+    void unlicensedCandidatePassesCommitPrecheck()
+    {
+        loadUnlicensedRepo();
+        auto &manager = ZyppManager::instance();
+        QVERIFY(package("qz-new")->setStatus(zypp::ui::S_Install));
+        // ライセンス検査の直後にキャンセル経路で戻し、rpmやダウンロードの副作用を起こさない
+        manager.cancelOperation();
+        const auto result = manager.commit();
+        manager.clearCancelRequest();
+        QVERIFY(!result.success);
+        QVERIFY2(!QString::fromStdString(result.errorMessage).contains(QStringLiteral("not confirmed")),
+                 result.errorMessage.c_str());
+        QCOMPARE(result.classification.outcome, CommitOutcome::Cancelled);
+    }
+
     /** @brief テスト後にZyppManagerを停止してグローバル状態を解放する */
     void cleanupTestCase()
     {
@@ -267,6 +310,18 @@ private:
         repo.setAlias("qz-avail");
         zypp::sat::Pool::instance().addRepoSolv(zypp::Pathname(output.toStdString()), repo);
         return true;
+    }
+
+    /**
+     * @brief ライセンス本文を持たない元のテスト用リポジトリへ候補プールを差し替える
+     * @note libzyppプールのqz-availを削除し、未加工のsolvを同じエイリアスで追加する
+     */
+    void loadUnlicensedRepo()
+    {
+        zypp::sat::Pool::instance().reposErase("qz-avail");
+        zypp::RepoInfo repo;
+        repo.setAlias("qz-avail");
+        zypp::sat::Pool::instance().addRepoSolv(zypp::Pathname(m_fixture.availSolv.toStdString()), repo);
     }
 
     QTemporaryDir m_root;          // テスト用の隔離ルート

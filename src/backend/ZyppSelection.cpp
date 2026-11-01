@@ -582,6 +582,7 @@ void ZyppManager::saveState()
         m_zypp->pool().proxy().saveState<zypp::Pattern>();
         m_zypp->pool().proxy().saveState<zypp::Patch>();
         m_savedRequestedLocales = zypp::sat::Pool::instance().getRequestedLocales();
+        m_savedUpgradeRepoAliases = m_upgradeRepoAliases;
     }
 }
 
@@ -593,6 +594,8 @@ void ZyppManager::restoreState()
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_initialized) {
         m_problems.clear();
+        resetSolverModesLocked();
+        m_upgradeRepoAliases = m_savedUpgradeRepoAliases;
         m_zypp->pool().proxy().restoreState<zypp::Package>();
         m_zypp->pool().proxy().restoreState<zypp::Pattern>();
         m_zypp->pool().proxy().restoreState<zypp::Patch>();

@@ -1,8 +1,53 @@
 #include <QtTest>
 #include <chrono>
 #include "CommitInteraction.h"
+#include "ZyppCallbackReceiver.h"
 
 using namespace qZypper;
+
+namespace {
+/**
+ * @brief 進捗スロットルのテスト用サンプルを生成する
+ * @param package パッケージ名
+ * @param stage 進捗ステージ
+ * @param percentage パッケージ単位の進捗 (%)
+ * @param totalSteps 総ステップ数
+ * @param completedSteps 完了ステップ数
+ * @param overallPercentage 全体進捗 (%)
+ * @return 生成した進捗サンプル
+ */
+ProgressSample progressSample(const QString &package, const QString &stage, int percentage,
+                              int totalSteps = 10, int completedSteps = 0,
+                              int overallPercentage = 0)
+{
+    return ProgressSample{package, stage, percentage, totalSteps, completedSteps, overallPercentage};
+}
+/**
+ * @brief rpm出力行を持つUserDataを生成する
+ * @param type UserDataの種別
+ * @param line 出力行 (呼び出し側で寿命を保証する)
+ * @return 生成したUserData
+ * @note libzyppのclassic_rpmtransと同じくstd::reference_wrapper<const std::string>で格納する
+ */
+zypp::callback::UserData rpmoutUserData(const zypp::callback::UserData::ContentType &type,
+                                        const std::string &line)
+{
+    zypp::callback::UserData data(type);
+    data.set("line", std::cref(line));
+    data.set("lineno", 1);
+    return data;
+}
+
+/**
+ * @brief 受信クラスの構築に必要な共有状態をまとめる
+ */
+struct ReceiverFixture {
+    int completedSteps = 0;                 // 完了ステップ数
+    std::atomic<bool> cancelFlag{false};    // キャンセルフラグ
+    std::string problemDetail;              // エラー詳細
+    std::vector<std::string> ignored;       // [Ignore]したパッケージ
+};
+} // namespace
 
 /**
  * @class CommitInteractionTest
@@ -221,6 +266,121 @@ private slots:
         QCOMPARE(aggregator.pendingCount(), 0);
     }
 
+    /** @brief バッチ送出先では先頭行が要素数1のバッチで届くことを検証する */
+    void batchAggregatorDeliversFirstLineAsBatch()
+    {
+        std::vector<ScriptOutputEntry> lastBatch;
+        int callCount = 0;
+        ScriptOutputAggregator aggregator([&](const std::vector<ScriptOutputEntry> &entries) {
+            ++callCount;
+            lastBatch = entries;
+        });
+        const auto t0 = ScriptOutputAggregator::Clock::time_point{};
+
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("post"), QStringLiteral("first"), false, t0);
+
+        QCOMPARE(callCount, 1);
+        QCOMPARE(static_cast<int>(lastBatch.size()), 1);
+        QCOMPARE(lastBatch.at(0).package, QStringLiteral("pkg"));
+        QCOMPARE(lastBatch.at(0).scriptType, QStringLiteral("post"));
+        QCOMPARE(lastBatch.at(0).line, QStringLiteral("first"));
+        QVERIFY(!lastBatch.at(0).isError);
+        QCOMPARE(aggregator.pendingCount(), 0);
+    }
+
+    /** @brief 行数閾値までは溜め、到達時に未送信分を1バッチで届けることを検証する */
+    void batchAggregatorBatchesUntilThreshold()
+    {
+        std::vector<ScriptOutputEntry> lastBatch;
+        int callCount = 0;
+        ScriptOutputAggregator aggregator([&](const std::vector<ScriptOutputEntry> &entries) {
+            ++callCount;
+            lastBatch = entries;
+        });
+        const auto t0 = ScriptOutputAggregator::Clock::time_point{};
+
+        // 1行目は即時フラッシュされる
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("post"), QStringLiteral("first"), false, t0);
+        QCOMPARE(callCount, 1);
+        QCOMPARE(static_cast<int>(lastBatch.size()), 1);
+
+        // 2行目から50行目までは保留されたままになる
+        for (int i = 0; i < CommitLimits::kFlushLineThreshold - 1; ++i)
+            aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("post"),
+                               QStringLiteral("l%1").arg(i), false, t0);
+        QCOMPARE(callCount, 1);
+        QCOMPARE(aggregator.pendingCount(), CommitLimits::kFlushLineThreshold - 1);
+
+        // 51行目で保留が閾値に達し、1バッチだけ届く
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("post"),
+                           QStringLiteral("trigger"), false, t0);
+        QCOMPARE(callCount, 2);
+        QCOMPARE(static_cast<int>(lastBatch.size()), CommitLimits::kFlushLineThreshold);
+        QCOMPARE(lastBatch.front().line, QStringLiteral("l0"));
+        QCOMPARE(lastBatch.back().line, QStringLiteral("trigger"));
+        QCOMPARE(aggregator.pendingCount(), 0);
+    }
+
+    /** @brief flush()が残りの行を1バッチで届け、行の無害化も従来どおり行うことを検証する */
+    void batchAggregatorFinalFlushDeliversRemainder()
+    {
+        std::vector<ScriptOutputEntry> lastBatch;
+        int callCount = 0;
+        ScriptOutputAggregator aggregator([&](const std::vector<ScriptOutputEntry> &entries) {
+            ++callCount;
+            lastBatch = entries;
+        });
+        const auto t0 = ScriptOutputAggregator::Clock::time_point{};
+
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("pre"), QStringLiteral("first"),
+                           false, t0);
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("pre"),
+                           QStringLiteral("\x1b[31mred"), true, t0);
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("pre"),
+                           QStringLiteral("a\nb\tc\x01"), false, t0);
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("pre"),
+                           QString(CommitLimits::kMaxScriptLineBytes + 500, QLatin1Char('x')),
+                           false, t0);
+        QCOMPARE(callCount, 1);
+        QCOMPARE(aggregator.pendingCount(), 3);
+
+        aggregator.flush(t0);
+
+        QCOMPARE(callCount, 2);
+        QCOMPARE(static_cast<int>(lastBatch.size()), 3);
+        // 制御文字は1行単位の経路と同じく除去される
+        QCOMPARE(lastBatch.at(0).line, QStringLiteral("[31mred"));
+        QVERIFY(lastBatch.at(0).isError);
+        QCOMPARE(lastBatch.at(1).line, QStringLiteral("ab\tc"));
+        QVERIFY(lastBatch.at(2).line.toUtf8().size() <= CommitLimits::kMaxScriptLineBytes);
+        QCOMPARE(aggregator.pendingCount(), 0);
+    }
+
+    /** @brief 保留が無い状態のflush()が空バッチを送出しないことを検証する */
+    void batchAggregatorSkipsEmptyFlush()
+    {
+        int callCount = 0;
+        int lastSize = -1;
+        ScriptOutputAggregator aggregator([&](const std::vector<ScriptOutputEntry> &entries) {
+            ++callCount;
+            lastSize = static_cast<int>(entries.size());
+        });
+        const auto t0 = ScriptOutputAggregator::Clock::time_point{};
+
+        aggregator.flush(t0);
+        QCOMPARE(callCount, 0);
+
+        // 直前のflush()でthrottle時刻が更新されるため、間隔を超えた時刻で追加する
+        const auto t1 = t0 + std::chrono::milliseconds(CommitLimits::kFlushIntervalMs + 1);
+        aggregator.addLine(QStringLiteral("pkg"), QStringLiteral("post"), QStringLiteral("first"),
+                           false, t1);
+        QCOMPARE(callCount, 1);
+        QCOMPARE(lastSize, 1);
+
+        aggregator.flush(t1);
+        QCOMPARE(callCount, 1);
+    }
+
     /** @brief 操作エラープロンプトの本文・ボタン・操作種別を検証する */
     void problemPromptDataHasButtonsAndPackage()
     {
@@ -264,6 +424,224 @@ private slots:
         QCOMPARE(problemAnswerAction({}, noIgnore), QStringLiteral("abort"));
         QCOMPARE(problemAnswerAction({{QStringLiteral("action"), QStringLiteral("bogus")}}, all),
                  QStringLiteral("abort"));
+    }
+
+    /** @brief 最初のサンプルは必ず送信することを検証する */
+    void throttleEmitsFirstSample()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+    }
+
+    /** @brief 全項目が同じサンプルは経過時間にかかわらず送信しないことを検証する */
+    void throttleDropsExactDuplicate()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        const ProgressSample sample =
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10);
+        QVERIFY(throttle.shouldEmit(sample, t0));
+        QVERIFY(!throttle.shouldEmit(sample, t0 + std::chrono::milliseconds(10)));
+        QVERIFY(!throttle.shouldEmit(sample, t0 + std::chrono::milliseconds(500)));
+    }
+
+    /** @brief パッケージまたはステージが変われば間隔内でも送信することを検証する */
+    void throttleEmitsOnPackageOrStageChange()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg-a"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg-a"), QStringLiteral("install"), 11),
+            t0 + std::chrono::milliseconds(10)));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg-b"), QStringLiteral("install"), 11),
+            t0 + std::chrono::milliseconds(20)));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg-b"), QStringLiteral("download"), 11),
+            t0 + std::chrono::milliseconds(30)));
+    }
+
+    /** @brief 0%と100%は間隔内でも送信し、同値の再送はしないことを検証する */
+    void throttleEmitsZeroAndHundred()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 50), t0));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 0),
+            t0 + std::chrono::milliseconds(10)));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 0),
+            t0 + std::chrono::milliseconds(20)));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 100),
+            t0 + std::chrono::milliseconds(30)));
+    }
+
+    /** @brief 同じパッケージの小さな進捗変化は間隔内では送信しないことを検証する */
+    void throttleSuppressesWithinInterval()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 11),
+            t0 + std::chrono::milliseconds(10)));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 12),
+            t0 + std::chrono::milliseconds(20)));
+    }
+
+    /** @brief 前回送信から間隔が経過すれば同じパッケージでも送信することを検証する */
+    void throttleEmitsAfterInterval()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 11),
+            t0 + std::chrono::milliseconds(CommitLimits::kProgressIntervalMs + 20)));
+    }
+
+    /** @brief 間引かれた最新サンプルが1回だけ回収されることを検証する */
+    void throttleTakePendingReturnsSuppressedSampleOnce()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 88),
+            t0 + std::chrono::milliseconds(10)));
+
+        const auto pending = throttle.takePending(t0 + std::chrono::milliseconds(20));
+        QVERIFY(pending.has_value());
+        QCOMPARE(pending->percentage, 88);
+        QCOMPARE(pending->package, QStringLiteral("pkg"));
+        QVERIFY(!throttle.takePending(t0 + std::chrono::milliseconds(30)).has_value());
+    }
+
+    /** @brief 最後のサンプルが送信済みなら回収対象が無いことを検証する */
+    void throttleTakePendingEmptyWhenLastSampleSent()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(!throttle.takePending(t0).has_value());
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.takePending(t0 + std::chrono::milliseconds(10)).has_value());
+
+        // 間引き後に間隔経過で送信された場合も、保留は残らない
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 50),
+            t0 + std::chrono::milliseconds(20)));
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 60),
+            t0 + std::chrono::milliseconds(CommitLimits::kProgressIntervalMs + 20)));
+        QVERIFY(!throttle.takePending(
+            t0 + std::chrono::milliseconds(CommitLimits::kProgressIntervalMs + 30)).has_value());
+    }
+
+    /** @brief 回収後は送信済みとして扱い、同値の再送や二重回収をしないことを検証する */
+    void throttleTakePendingRecordsSampleAsSent()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        const ProgressSample suppressed =
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 88);
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.shouldEmit(suppressed, t0 + std::chrono::milliseconds(10)));
+        QVERIFY(throttle.takePending(t0 + std::chrono::milliseconds(20)).has_value());
+
+        // 回収済みの値と同じサンプルは重複として送らない
+        QVERIFY(!throttle.shouldEmit(suppressed, t0 + std::chrono::milliseconds(500)));
+        QVERIFY(!throttle.takePending(t0 + std::chrono::milliseconds(510)).has_value());
+    }
+
+    /** @brief 最新値が送信済みと同値に戻った場合、古い保留を回収しないことを検証する */
+    void throttleTakePendingDroppedWhenNewestMatchesSent()
+    {
+        ProgressThrottle throttle;
+        const auto t0 = std::chrono::steady_clock::time_point{};
+        QVERIFY(throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10), t0));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 11),
+            t0 + std::chrono::milliseconds(10)));
+        QVERIFY(!throttle.shouldEmit(
+            progressSample(QStringLiteral("pkg"), QStringLiteral("install"), 10),
+            t0 + std::chrono::milliseconds(20)));
+        QVERIFY(!throttle.takePending(t0 + std::chrono::milliseconds(30)).has_value());
+    }
+    /** @brief classic_rpmtransのインストール時rpm出力行が集約器と逐次通知へ届くことを検証する */
+    void installReceiverForwardsClassicRpmout()
+    {
+        QStringList emitted;
+        ScriptOutputAggregator aggregator(
+            [&emitted](const QString &, const QString &, const QString &line, bool) { emitted.append(line); });
+        ReceiverFixture fx;
+        InstallReceiver receiver(ProgressCallbackFn(), StateEventCallbackFn(), fx.completedSteps, 1,
+                                 fx.cancelFlag, PromptAskFn(), fx.problemDetail, fx.ignored, &aggregator);
+
+        const std::string line = "Updating /etc/sysconfig/lifecycle-report ...";
+        receiver.report(rpmoutUserData(zypp::target::rpm::InstallResolvableReport::contentRpmout, line));
+        aggregator.flush();
+
+        QCOMPARE(aggregator.collected(), QStringList{QString::fromStdString(line)});
+        QCOMPARE(emitted, QStringList{QString::fromStdString(line)});
+        QVERIFY(aggregator.rpmMessages().isEmpty());
+    }
+
+    /** @brief classic_rpmtransの削除時rpm出力行が集約器と逐次通知へ届くことを検証する */
+    void removeReceiverForwardsClassicRpmout()
+    {
+        QStringList emitted;
+        ScriptOutputAggregator aggregator(
+            [&emitted](const QString &, const QString &, const QString &line, bool) { emitted.append(line); });
+        ReceiverFixture fx;
+        RemoveReceiver receiver(ProgressCallbackFn(), StateEventCallbackFn(), fx.completedSteps, 1,
+                                fx.cancelFlag, PromptAskFn(), fx.problemDetail, fx.ignored, &aggregator);
+
+        const std::string line = "Removing lifecycle data";
+        receiver.report(rpmoutUserData(zypp::target::rpm::RemoveResolvableReport::contentRpmout, line));
+        aggregator.flush();
+
+        QCOMPARE(aggregator.collected(), QStringList{QString::fromStdString(line)});
+        QCOMPARE(emitted, QStringList{QString::fromStdString(line)});
+    }
+
+    /** @brief rpmout以外の種別や集約器未指定の場合は何も転送しないことを検証する */
+    void classicReceiversIgnoreOtherUserData()
+    {
+        int emitted = 0;
+        ScriptOutputAggregator aggregator(
+            [&emitted](const QString &, const QString &, const QString &, bool) { ++emitted; });
+        ReceiverFixture fx;
+        InstallReceiver install(ProgressCallbackFn(), StateEventCallbackFn(), fx.completedSteps, 1,
+                                fx.cancelFlag, PromptAskFn(), fx.problemDetail, fx.ignored, &aggregator);
+        RemoveReceiver remove(ProgressCallbackFn(), StateEventCallbackFn(), fx.completedSteps, 1,
+                              fx.cancelFlag, PromptAskFn(), fx.problemDetail, fx.ignored, &aggregator);
+        InstallReceiver noAggregator(ProgressCallbackFn(), StateEventCallbackFn(), fx.completedSteps, 1,
+                                     fx.cancelFlag, PromptAskFn(), fx.problemDetail, fx.ignored);
+
+        const std::string line = "should not appear";
+        // 種別が異なる(削除用をインストール側へ、インストール用を削除側へ)ものは無視する
+        install.report(rpmoutUserData(zypp::target::rpm::RemoveResolvableReport::contentRpmout, line));
+        remove.report(rpmoutUserData(zypp::target::rpm::InstallResolvableReport::contentRpmout, line));
+        install.report(rpmoutUserData(zypp::callback::UserData::ContentType("other", "type"), line));
+        noAggregator.report(rpmoutUserData(zypp::target::rpm::InstallResolvableReport::contentRpmout, line));
+        aggregator.flush();
+
+        QVERIFY(aggregator.collected().isEmpty());
+        QCOMPARE(emitted, 0);
     }
 };
 

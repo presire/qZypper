@@ -20,6 +20,7 @@
 #include <QDBusVariant>
 #include <QDBusUnixFileDescriptor>
 #include <QDBusServiceWatcher>
+#include <QElapsedTimer>
 #include <QVariantMap>
 #include <QVariantList>
 #include <deque>
@@ -62,6 +63,7 @@ public:
     bool connectToBackend();                                        /* バックエンドへ接続する */
     bool isConnected() const;                                       /* 接続状態を返す */
     QString lastError() const { return m_lastError; }               /* 最新エラーメッセージを返す */
+    quint64 dispatchedCallCount() const { return m_dispatchedCalls; } /* 送信済み呼び出し数を返す */
 
     // 初期化 (バックエンド側)
     void initializeBackend(ReplyCallback callback);
@@ -93,6 +95,9 @@ public:
     // パッケージ状態変更
     void setPackageStatus(const QString &name, int status,                   // パッケージ状態変更
                           ReplyCallback callback);
+    void setRepoUpgrade(const QString &alias, bool enabled,                  // リポジトリの切り替え対象指定 (args[0]にbool)
+                        ReplyCallback callback);
+    void getUpgradeRepos(ReplyCallback callback);                            // 切り替え対象リポジトリ一覧 (args[0]にQStringList)
     void setPatchStatus(const QString &patchId, int status,                  // パッチ状態変更
                         ReplyCallback callback);
     void selectAllNeededPatches(const QVariantMap &options,                  // 必要パッチ一括選択
@@ -207,9 +212,6 @@ signals:
     void backendReconnected();                                  // バックエンド再接続
     void repoRefreshProgress(const QString &alias,              // リポジトリリフレッシュ進捗
                              int percentage);
-    void progressChanged(const QString &packageName,            // 操作進捗
-                         int percentage,
-                         const QString &stage);
     void commitProgressChanged(const QString &packageName,      // コミット進捗 (詳細版)
                                int percentage,
                                const QString &stage,
@@ -231,14 +233,14 @@ signals:
     void packageLocked(const QString &lockerName,               // Zyppロック検出 (Wave1)
                        int lockerPid,
                        const QString &message);
-    void scriptOutput(const QVariantMap &line);                 // RPMスクリプト出力 (1行)
+    void scriptOutputBatch(const QVariantList &entries);        // RPMスクリプト出力 (バッチ)
 
 private slots:
     // 入れ子のQDBusArgumentを正規化してから中継する
     void onUntrustedKeyDetected(const QVariantMap &keyInfo);
     void onOperationStateChanged(const QVariantMap &state);
     void onPromptRequested(uint promptId, const QString &promptType, const QVariantMap &data);
-    void onScriptOutput(const QVariantMap &line);
+    void onScriptOutputBatch(const QVariantList &entries);
 
 private:
     // D-Busのサービス名
@@ -267,7 +269,8 @@ private:
      * @param callback 完了時に呼ばれるコールバック
      */
     void callAsync(const QDBusMessage &msg, int timeout, ReplyCallback callback); /* 非同期呼び出しを要求する */
-    void dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized); /* 呼び出しを送信する */
+    void dispatchCall(const QDBusMessage &msg, int timeout, ReplyCallback callback, bool serialized,
+                      qint64 queueWaitMs);                      /* 呼び出しを送信する */
     void dispatchNextQueuedCall();                              /* 次の直列化済み呼び出しを送信する */
 
     /** @brief バックエンドは同時に1操作しか受け付けないため、直列化待ちの呼び出し */
@@ -275,6 +278,7 @@ private:
         QDBusMessage msg;
         int timeout;
         ReplyCallback callback;
+        QElapsedTimer queued;             // 待ち行列へ入った時刻
     };
     std::deque<QueuedCall> m_callQueue;   // 直列化対象の待ち行列
     bool m_serialCallInFlight = false;    // 直列化対象の呼び出しが応答待ちか
@@ -285,6 +289,8 @@ private:
      * 送信時点の世代と不一致になった応答は、バックエンド消滅後の古い応答とみなし破棄する
      */
     quint64 m_generation = 0;
+
+    quint64 m_dispatchedCalls = 0;        // 送信したD-Bus呼び出しの累計 (性能計測用)
 
     /** @brief バックエンド消滅時に待機中の呼び出しを破棄し、応答を無効化する */
     void resetPendingCalls();

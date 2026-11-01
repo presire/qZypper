@@ -899,12 +899,21 @@ Pane {
 
                             // アイコンのクリックでステータスを切り替える
                             MouseArea {
-                                anchors.fill: parent                // チェックボックス列全体で受け付ける
-                                cursorShape: Qt.PointingHandCursor  // クリックできることを示す指差しカーソル
+                                anchors.fill: parent                             // チェックボックス列全体で受け付ける
+                                // 無効化するとクリックが背後の行(TapHandler)へ抜け、再取得中に行選択やメニュー表示が走るため、
+                                // 有効のままクリックを受け取り、再取得中は何もせずに消費する
+                                cursorShape: PackageController.busy
+                                             ? Qt.ArrowCursor : Qt.PointingHandCursor  // 受付可否をカーソルで示す
 
                                 // 現在のステータスに応じて、削除取り消し・インストール・解除のいずれかを要求する
+                                // 再取得中は古い一覧を操作させない
                                 onClicked: function(mouse) {
                                     mouse.accepted = true
+
+                                    if (PackageController.busy) {
+                                        return
+                                    }
+
                                     var pkg = ({ name: pkgDelegate.name, installedVersion: pkgDelegate.installedVersion, status: pkgDelegate.status })
                                     var s = pkg.status
 

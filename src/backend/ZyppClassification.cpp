@@ -73,7 +73,7 @@ bool matchesClassification(const zypp::ui::Selectable::Ptr &selectable, const st
  * @param cls 分類名 (multiversion/locked/retracted/retractedInstalled/ptf/recommended/suggested/orphaned/unneeded)
  * @return 該当するパッケージ情報の一覧
  */
-std::vector<PackageInfo> ZyppManager::getPackagesByClassification(const std::string &cls) const
+std::vector<PackageInfo> ZyppManager::getPackagesByClassification(const std::string &cls)
 {
     std::lock_guard<std::mutex> guard(m_mutex);
     std::vector<PackageInfo> result;
@@ -86,6 +86,7 @@ std::vector<PackageInfo> ZyppManager::getPackagesByClassification(const std::str
                               || cls == "orphaned" || cls == "unneeded");
     if (needsSolver) {
         try {
+            syncUpgradeReposLocked(m_zypp->resolver());
             m_zypp->resolver()->resolvePool();
         } catch (const zypp::Exception &e) {
             m_lastError = e.asString();

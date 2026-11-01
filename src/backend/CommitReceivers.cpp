@@ -30,6 +30,8 @@ QString mediaErrorMessage(zypp::media::MediaChangeReport::Error error)
     return QStringLiteral("Media change required.");
 }
 
+} // anonymous namespace
+
 /**
  * @brief UserDataからrpm出力行を取り出す
  * @param userData 受信データ
@@ -58,8 +60,6 @@ QString lineFromUserData(const zypp::callback::UserData &userData)
         return QString();
     }
 }
-
-} // anonymous namespace
 
 // --- MediaChangeReceiver ---
 
